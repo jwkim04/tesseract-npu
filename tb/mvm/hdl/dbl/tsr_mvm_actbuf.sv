@@ -73,7 +73,10 @@ module tsr_mvm_actbuf
   always_ff @(posedge clk) begin
     if (rst_n && on_q) begin
       if (wr_valid) begin
-        assert (32'(wr_line.tok) < T_MAX && wr_tmask == (T_MAX'(1) << wr_line.tok))
+        // the cluster of a dual MVM (docs/rtl-mvm.md §15) also writes the token tok + T_MAX / 2
+        assert (32'(wr_line.tok) < T_MAX && (wr_tmask == (T_MAX'(1) << wr_line.tok) ||
+                (T_MAX % 2 == 0 && 32'(wr_line.tok) < T_MAX / 2 &&
+                 wr_tmask == ((T_MAX'(1) << wr_line.tok) | (T_MAX'(1) << (32'(wr_line.tok) + T_MAX / 2))))))
           else $error("%m: write of token %0d >= T_MAX or token mask %b", wr_line.tok, wr_tmask);
         if (!wr_line.dbs) begin
           assert (32'(wr_line.addr) < 2 * QS_WORDS) else $error("%m: QS line %0d out of range", wr_line.addr);

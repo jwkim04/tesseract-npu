@@ -632,3 +632,113 @@ without them.
    simulation assertion checks every copy.
 4. `tsr_vpipe` names its keep parameter `KEEP_REGS` (§14.4 item 1).
 
+
+## 15. Dual weight stream
+
+### 15.1 Scope
+
+A cluster that reads one weight beat per cycle is bound by its own stream and not by its DDR bank. In the dual configuration
+(`MVM_DUAL` of `tsr_core` and `tsr_core_dp`, `DUAL` below it) a cluster reads two weight streams at once, each through its own
+front end, and the DDR bank is the limit. The token slots at and above `TH = T_MAX / 2` are idle when `T <= TH`, and the second
+stream uses them. Output bits, the weight layout and the broadcast format do not change. Only timing and the memory ports change.
+
+An MVM runs as two streams when all of these hold: the build has `MVM_DUAL = 1`, the run-time input `cfg_dual_en` is 1 at the
+accept of the MVM, the op is a weight MVM (not ATTQK or ATTPV) and `T <= TH`. `tsr_mvm` samples the condition once per MVM into
+`ccmd.dual`. Any other MVM runs as in a build without the parameter. `MVM_DUAL` needs `HAS_MVM`, an even `T_MAX >= 2` and
+`ADDR_BEAT_W <= 32`. With `MVM_DUAL = 0` the design has no second front end, no extra result fields and no B ports (`mb_rd_*`
+is tied off, `cfg_dual_en` is ignored), and its cycles equal those of a design without the feature. `CAPS` bit 16
+(`MVM_DUAL`) reports the build ([EX §7.5](design/01-execution-model.md)). Results never depend on it.
+
+On the U200 `cfg_dual_en` is the inverse of `ADAPTER_CTRL.DUAL_DIS` ([platform-u200.md](platform-u200.md) §2). The core CSR map
+has no field for it.
+
+### 15.2 Two streams in lockstep
+
+A cluster's `rows_c` rows are one contiguous range of rows of `row_beats` beats each. Stream A is the rows `[first, first + rA)`
+from beat `w_off`, with `rA = ceil(rows_c / 2)`. Stream B is the rows `[first + rA, first + rows_c)` from beat
+`w_off + rA * row_beats`, with `rB = rows_c - rA` (`rA` or `rA - 1`). B is active when `rB >= 1`, that is when `rows_c >= 2`.
+
+Each stream has a `tsr_mvm_front` (`u_front` on the read port `rd_*`, `u_front_b` on the read-only port `rdb_*`) and an own
+command (`tsr_mvm_fcmd_t`, B's with its rows, beats and `w_off`). The rows of A and B have the same structure, so the k-th QUANT
+beat of A and the k-th of B carry the same tags (`blk`, `two`, `half`, `row_last`) and the back end takes the tags from A's beat.
+The streams are paired at the beat outputs of the fronts (`use_b_q` is 1 from the start of the MVM until B's last beat):
+
+- while `use_b_q` is 1, the back end takes a beat only when both fronts offer one: `ready_A = R & (~use_b | valid_B)` and
+  `ready_B = R & valid_A & use_b`, where `R` is the existing ready of the single stream and the valids are flops;
+- after B's last beat A runs alone. When `rB < rA` the last row of A has no partner (the unpaired row).
+
+A simulation assertion checks the tag equality of every pair taken.
+
+### 15.3 Token slots, back end and MAC lane
+
+Token slot `t < TH` works on A's data and the slot `TH + t` on B's. The slots share the control (tag pipeline, accumulate and tree
+control, flow control, result FIFO).
+
+- Activations. In a dual MVM the broadcast writes each line of token `t` also into the token `t + TH` of the activation buffer
+  (the write token mask `wr_tmask` of `tsr_mvm_actbuf`). One read address serves all tokens, and A and B are at the same
+  position of their rows. Every MVM broadcasts its own activations (`act_ready_q`), so the copies of one MVM are never read by
+  the next.
+- Weights. `tsr_mvm_back` has a second weight placement register `wmb_q` behind a mux in front of it, so that the MAC operands
+  still come from flops. `tsr_mac_lane` has the parameter `TH` and the operand `wb[k]`: the product of slot `t >= TH` uses `wb`
+  instead of `w`. The Xilinx lane forms its DSP pairs inside each half, so a pair never mixes A's and B's weights.
+- Scale data. The per-beat `d_a`, `d_b`, `sc` and `m` have a second set of delay lines for B, and the slots `>= TH` take B's.
+- Single beats. A beat taken without a partner (an unpaired row of A, a single-stream MVM, `T > TH`, attention) has `pr = 0`
+  in its control word: the B-side placement register and the B-side scale values then take A's data. The upper slots compute A's
+  row again, hold finite values and never reach a control signal, and the result item flags them invalid (`res_bv = 0`).
+- Results. `res_y[t]` for `t < TH` is A's row for token `t`, and `res_y[TH + t]` is B's row for token `t`.
+
+### 15.4 Results and gather
+
+Row results leave the cluster as one item per row pair: A's `res_row`, `res_last` (`r == rA - 1`) and B's `res_row_b`
+(`first + rA + r`), `res_bv` (`r < rB`) and `res_last_b` (`r == rB - 1`). The result pipe is wider by these fields.
+
+`tsr_mvm_gather` has, per cluster, a second row assembler (`u_asm_b`) next to the existing one. It gets the same start fields,
+an `expect_b` flag (stream B of this cluster has rows in this MVM) and the rows of B's half: `y_b[tk] = res_y[TH + tk]`. An item
+is taken when every assembler it feeds can take it. `res_ready` comes from flops only (`bgot_q`, `bact_q`). The jobs of the two
+assemblers are merged 2:1 in front of the cluster's job path, with a registered output. The merged job's `last` is set only on
+the final job of the cluster: the `last` job of one assembler when the other one has sent its last job already or is not
+active. The job format, the job pipes, the pair links and the central part are the same as without the feature. The last group
+of A and the first group of B may share one SPM line with disjoint lanes. This is the case of two clusters sharing a line, and
+ACC writes back only its own lanes.
+
+`tsr_mvm` is quiescent only when front B and the B assembler are idle (`done` includes `wsb_rd_req_valid` in its simulation
+checks).
+
+### 15.5 Memory port B and PERF
+
+Stream A keeps the channel's main port (`TSR_SRC_WS` of `tsr_mem_arb`). Stream B has a read-only port of its own, which does
+not go through `tsr_mem_arb`:
+
+- `tsr_mvm`: `wsb_rd_req_*` and `wsb_rd_rsp_*` per channel, with the shape of `ws_rd_*` and request and response pipes like A's.
+- `tsr_core` and `tsr_core_dp`: `mb_rd_req_*` and `mb_rd_rsp_*` per channel, with the format of `m_rd_*`
+  ([rtl-core.md](rtl-core.md) §4). A register slice drives the request outputs, an outstanding limit (`RD_OUTSTANDING`, rule M2)
+  stands in front of it, and one register stage carries the response. B reserves FIFO space before it requests, so
+  `mb_rd_rsp_ready` is constant 1. The ids are `{TSR_SRC_WS, local}`.
+- `PERF_CH_RD_BEATS[c]` counts the beats of both ports of channel c (up to two per cycle). The no-over-fetch rule holds for the
+  sum: exactly `rows_c * row_beats` beats per MVM and channel, rows split between the ports at `rA`. `PERF_CH_WAIT[c]` counts
+  the cycles in which channel c has a read outstanding on either port and no beat arrived on either port. With two beats per
+  cycle `CYCLES - CH_RD_BEATS - CH_WAIT` is not the idle time of the channel ([prof-dbg.md](prof-dbg.md) §3).
+
+### 15.6 Timing structures
+
+The pairing adds one flop input to the ready of each front. All other new signals between modules are registered: the result
+item fields, the job merge, the B request and response stages, and the reset copy of front B (`RST_PIPE`, one more copy per
+cluster). The B placement register, the B delay lines and the extra MAC operand are inside the cluster. Control stays shared
+and is not duplicated, apart from the per-token copies of §14.9 item 3, which exist for every slot.
+
+### 15.7 Cycles
+
+With memory that delivers one beat per cycle on each port, a dual MVM takes two weight beats per cycle per cluster, so its weight
+phase is `max_c ceil(rows_c / 2) * row_beats` instead of `max_c rows_c * row_beats`. The fixed overhead is a few cycles longer
+(the second front and the merge). With a slower memory the channel's DDR bank, not the cluster, sets the time. The simulator's
+cycle model is in [sw/sim/README.md](../sw/sim/README.md).
+
+### 15.8 Verification
+
+The infrastructure of §10.1 has a read-only port model that shares the DRAM image of the main model and has its own random
+latency and back-pressure (`read_only=True`, `share_image`). The dual configurations run in `tb/mvmback` (the back end with
+the second operand set), `tb/tech` (both MAC lanes with `TH`), `tb/mvm` (the unit with T_MAX 2, 4 and 8: random N, K, T, ACC
+and formats, chains that alternate dual and single mode, the enable on and off, independent latency on ports A and B, exact
+beat counts per channel and port, no SPM byte outside the result range), `tb/core` (a K4-like core against `sw/sim`) and
+`tb/platform` (the read-only bridge, the kernel). With `MVM_DUAL = 0` every bench, result and cycle digest is the one of a
+design without the feature.

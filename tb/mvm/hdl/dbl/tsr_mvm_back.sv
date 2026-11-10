@@ -35,6 +35,8 @@ module tsr_mvm_back
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
   parameter  bit          FAST_CLK   = 1'b0,          // the real back end's PV mode copies (ignored: the double has no PV)
+  parameter  bit          DUAL       = 1'b0,          // dual weight stream: with b_use the tokens >= T_MAX / 2 take beat_b's weights and scale data
+  localparam int unsigned TH         = T_MAX / 2,
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
@@ -61,6 +63,8 @@ module tsr_mvm_back
   input  logic                          beat_valid,
   output logic                          beat_ready,
   input  tsr_mvm_beat_t                 beat,
+  input  tsr_mvm_beat_t                 beat_b,
+  input  logic                          b_use,
   output logic                          qs_re,
   output logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,
   input  logic [T_MAX-1:0][1023:0]      qs_data,
@@ -86,9 +90,12 @@ module tsr_mvm_back
   // ---- input register and activation read ----
   logic          rdy_q;
   logic          s0_v;
-  tsr_mvm_beat_t s0_b;
+  tsr_mvm_beat_t s0_b, s0_bb;
+  logic          s0_pr;
   logic          dv [ACT_RD_LAT];
   tsr_mvm_beat_t db [ACT_RD_LAT];
+  tsr_mvm_beat_t dbb [ACT_RD_LAT];
+  logic          dpr [ACT_RD_LAT];
 
   wire acc = beat_valid & rdy_q;
 
@@ -210,19 +217,35 @@ module tsr_mvm_back
       // input
       s0_v <= acc;
       if (acc) s0_b <= beat;
+      if (acc) s0_bb <= beat_b;
+      if (acc) s0_pr <= DUAL & b_use;
       if (acc) in_row_q <= ~beat.row_last;
       if (acc && beat.row_last) infl_n++;
       // read pipe
       dv[0] <= s0_v;
       db[0] <= s0_b;
+      dbb[0] <= s0_bb;
+      dpr[0] <= s0_pr;
       for (int i = 1; i < ACT_RD_LAT; i++) begin
         dv[i] <= dv[i-1];
         db[i] <= db[i-1];
+        dbb[i] <= dbb[i-1];
+        dpr[i] <= dpr[i-1];
       end
       // arithmetic on the beat whose activations arrive now
       if (dv[ACT_RD_LAT-1]) begin
         automatic tsr_mvm_beat_t b = db[ACT_RD_LAT-1];
-        for (int t = 0; t < T_MAX; t++) do_beat(t, b, qs_data[t], dbs_data[t]);
+        for (int t = 0; t < T_MAX; t++) begin
+          automatic tsr_mvm_beat_t bt = b;
+          if (DUAL && t >= int'(TH) && dpr[ACT_RD_LAT-1]) begin      // stream B's weights and scale data
+            bt.w = dbb[ACT_RD_LAT-1].w;
+            bt.d_a = dbb[ACT_RD_LAT-1].d_a;
+            bt.d_b = dbb[ACT_RD_LAT-1].d_b;
+            bt.sc = dbb[ACT_RD_LAT-1].sc;
+            bt.m = dbb[ACT_RD_LAT-1].m;
+          end
+          do_beat(t, bt, qs_data[t], dbs_data[t]);
+        end
         if (b.row_last) begin
           automatic res_t r;
           for (int t = 0; t < T_MAX; t++) begin

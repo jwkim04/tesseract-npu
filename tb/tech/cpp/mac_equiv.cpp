@@ -1,11 +1,12 @@
 // mac_equiv.cpp — Verilator C++ harness: tsr_mac_lane of rtl/tech/xilinx against rtl/tech/generic,
 // cycle by cycle, on every configuration of tb/tech/hdl/tsr_tb_tech_mac.sv (N 32 x T 1..8 x
-// LAT 1..11, N 5 / 1 / 2 / 3 edge cases). Both models (Vgen = generic, Vxil = xilinx; same
+// LAT 1..11, N 5 / 1 / 2 / 3 edge cases, and the dual weight stream configurations: TH = T / 2, tokens >= TH take the
+// second weight vector wb). Both models (Vgen = generic, Vxil = xilinx; same
 // toplevel, different --prefix) get identical inputs; in every cycle after the flush:
 //   - ov and yy of the two models are compared bit for bit (every configuration, valid or not);
 //   - both are checked against a reference: y[t] = sum_i w[i] x[t][i] of the operands sampled
 //     LAT advancing (ce = 1) edges earlier (in every cycle, the datapath has no reset), and
-//     out_valid against a model of the reset / ce valid pipeline.
+//     out_valid against a model of the reset / ce valid pipeline (tokens >= TH of a dual configuration: against wb).
 // Stimulus (ce = 1, in_valid = 1 during the sweeps):
 //   pairs    216 beats: lane k / slot p sees the triple (w, x_high, x_low) = combination
 //            (b + 5k) mod 216 of the corner set {-128, -127, -1, 0, 1, 127}^3 with per-slot
@@ -32,31 +33,33 @@
 #include "Vgen.h"
 #include "Vxil.h"
 
-static const int NC = 136;
+static const int NC = 160;
 static const int YW = 8 * 21;
 
 struct Cfg {
-    int n, t, lat, sw;
+    int n, t, lat, sw, th;
 };
 
 static std::vector<Cfg> configs() {   // the order of tsr_tb_tech_mac.sv
     std::vector<Cfg> v;
     auto sw = [](int n) { int l = 0; while ((1 << l) < n) ++l; return 16 + l; };
     for (int t = 1; t <= 8; ++t)
-        for (int l = 1; l <= 11; ++l) v.push_back({32, t, l, sw(32)});
+        for (int l = 1; l <= 11; ++l) v.push_back({32, t, l, sw(32), 0});
     for (int t = 1; t <= 3; ++t)
-        for (int l = 1; l <= 6; ++l) v.push_back({5, t, l, sw(5)});
+        for (int l = 1; l <= 6; ++l) v.push_back({5, t, l, sw(5), 0});
     for (int t = 1; t <= 3; ++t)
-        for (int l = 1; l <= 4; ++l) v.push_back({1, t, l, sw(1)});
+        for (int l = 1; l <= 4; ++l) v.push_back({1, t, l, sw(1), 0});
     for (int t = 1; t <= 3; ++t)
-        for (int l = 1; l <= 4; ++l) v.push_back({2, t, l, sw(2)});
-    for (int l = 1; l <= 6; ++l) v.push_back({3, 3, l, sw(3)});
+        for (int l = 1; l <= 4; ++l) v.push_back({2, t, l, sw(2), 0});
+    for (int l = 1; l <= 6; ++l) v.push_back({3, 3, l, sw(3), 0});
+    for (int t : {2, 4, 6, 8})
+        for (int l : {1, 2, 3, 5, 6, 9}) v.push_back({32, t, l, sw(32), t / 2});
     return v;
 }
 
 struct In {
     int rst_n = 0, ce = 1, in_valid = 0;
-    std::array<int8_t, 32> w{};
+    std::array<int8_t, 32> w{}, wb{};
     std::array<std::array<int8_t, 32>, 8> x{};
 };
 
@@ -84,6 +87,7 @@ static void drive(M& m, const In& in) {
     m.ce = in.ce;
     m.in_valid = in.in_valid;
     for (int k = 0; k < 32; ++k) set_bits(m.w, 8 * k, 8, (uint8_t)in.w[k]);
+    for (int k = 0; k < 32; ++k) set_bits(m.wb, 8 * k, 8, (uint8_t)in.wb[k]);
     for (int t = 0; t < 8; ++t)
         for (int k = 0; k < 32; ++k) set_bits(m.x, 256 * t + 8 * k, 8, (uint8_t)in.x[t][k]);
 }
@@ -165,7 +169,8 @@ int main(int argc, char** argv) {
                 const uint32_t yg = get_bits(g->yy, lsb, f.sw), yx = get_bits(x->yy, lsb, f.sw);
                 if (yg != yx) fail("y gen/xil", c, cycles, yg, yx);
                 long ref = 0;
-                for (int k = 0; k < f.n; ++k) ref += (long)op.w[k] * (long)op.x[t][k];
+                for (int k = 0; k < f.n; ++k)
+                    ref += (long)((f.th != 0 && t >= f.th) ? op.wb[k] : op.w[k]) * (long)op.x[t][k];
                 const uint32_t refb = (uint32_t)ref & ((1u << f.sw) - 1u);
                 if (yg != refb) fail("y gen/ref", c, cycles, yg, refb);
                 if (yx != refb) fail("y xil/ref", c, cycles, yx, refb);
@@ -185,6 +190,7 @@ int main(int argc, char** argv) {
         in.in_valid = rnd(2);
         for (int k = 0; k < 32; ++k) {
             in.w[k] = (int8_t)rnd(256);
+            in.wb[k] = (int8_t)rnd(256);
             for (int t = 0; t < 8; ++t) in.x[t][k] = (int8_t)rnd(256);
         }
         if (i == 0) edges_since_flush = 0;
@@ -200,6 +206,7 @@ int main(int argc, char** argv) {
         for (int k = 0; k < 32; ++k) {
             const int i = (b + 5 * k) % 216;
             in.w[k] = CORNER[i / 36];
+            in.wb[k] = CORNER[((i + 7 * k + b / 3) % 216) / 36];
             for (int p = 0; p < 4; ++p) {
                 in.x[2 * p][k] = CORNER[((i / 6) % 6 + p) % 6];
                 in.x[2 * p + 1][k] = CORNER[(i % 6 + 2 * p) % 6];
@@ -210,6 +217,7 @@ int main(int argc, char** argv) {
     for (int b = 0; b < 216; ++b, ++n_uniform) {
         for (int k = 0; k < 32; ++k) {
             in.w[k] = CORNER[b / 36];
+            in.wb[k] = CORNER[(b / 6) % 6];
             for (int p = 0; p < 4; ++p) {
                 in.x[2 * p][k] = CORNER[(b / 6) % 6];
                 in.x[2 * p + 1][k] = CORNER[b % 6];
@@ -236,22 +244,27 @@ int main(int argc, char** argv) {
             switch (mode) {
             case 0:   // uniform bytes
                 in.w[k] = (int8_t)rnd(256);
+                in.wb[k] = (int8_t)rnd(256);
                 for (int t = 0; t < 8; ++t) in.x[t][k] = (int8_t)rnd(256);
                 break;
             case 1:   // corners
                 in.w[k] = CORNER[rnd(6)];
+                in.wb[k] = CORNER[rnd(6)];
                 for (int t = 0; t < 8; ++t) in.x[t][k] = CORNER[rnd(6)];
                 break;
             case 2:   // Q4_K weights (0..15), any activation
                 in.w[k] = (int8_t)rnd(16);
+                in.wb[k] = (int8_t)rnd(16);
                 for (int t = 0; t < 8; ++t) in.x[t][k] = (int8_t)rnd(256);
                 break;
             case 3:   // extremes only
                 in.w[k] = rnd(2) ? -128 : 127;
+                in.wb[k] = rnd(2) ? -128 : 127;
                 for (int t = 0; t < 8; ++t) in.x[t][k] = rnd(3) == 0 ? 127 : -128;
                 break;
             default:  // sparse
                 in.w[k] = rnd(4) ? 0 : (int8_t)rnd(256);
+                in.wb[k] = rnd(4) ? 0 : (int8_t)rnd(256);
                 for (int t = 0; t < 8; ++t) in.x[t][k] = rnd(4) ? 0 : (int8_t)rnd(256);
                 break;
             }

@@ -74,6 +74,13 @@
 //   Steady state (two-point, overhead removed): 1.000 cycles per weight beat for rows >= RB_MIN;
 //   tb/mvm mvm_perf asserts the rate and the fixed overhead in every test configuration.
 //
+// Dual weight stream (parameter DUAL, docs/rtl-mvm.md §15): with cfg_dual_en = 1 sampled at the accept, an MVM with T <=
+//   T_MAX / 2 runs as two weight streams per cluster (ccmd.dual = 1): each cluster splits its rows into the halves A (the
+//   channel's main read port ws_rd_*, as without DUAL) and B (the read-only port wsb_rd_*, through its own request and response
+//   pipes like A's, bypassing the arbiter). The gather gets expect_b (cluster c has rows for stream B: c R + 1 < N and
+//   R >= 2) next to expect_ch, and every result item carries A's and B's row. T > T_MAX / 2, attention and cfg_dual_en = 0
+//   run as without DUAL (wsb_rd_req_valid stays 0). DUAL = 0: wsb_rd_* are tied off, cfg_dual_en is ignored.
+//
 // Attention (AT §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT): a command with cmd_xc = 1 carries
 //   the ATTQK / ATTPV payload (tsr_att_pkg::tsr_att_cmd_t) in xcmd. tsr_mvm derives the shape (E/D,
 //   n_head, R, T_q GS, pass rows, ceil(R/16), u0 / C, (u0 + n) / C by tsr_att_divc) over 5 registered
@@ -117,6 +124,7 @@ module tsr_mvm
   parameter  int unsigned BC_PIPE       = TSR_DEF_MVM_BC_PIPE,
   parameter  bit          GATHER_PAIR   = 1'b0,
   parameter  int unsigned GATHER_FLITS  = 1,
+  parameter  bit          DUAL          = 1'b0,   // dual weight stream (header): T_MAX even and >= 2, ADDR_BEAT_W <= 32
   parameter  int unsigned RES_PIPE      = TSR_DEF_MVM_RES_PIPE,
   parameter  int unsigned ACT_RD_LAT    = TSR_DEF_ACT_RD_LAT,
   parameter  int unsigned MAC_LAT       = TSR_DEF_MAC_LAT,
@@ -126,6 +134,7 @@ module tsr_mvm
   parameter  int unsigned RST_LOCAL     = 0,      // reset register stages per cluster / top / gather (0..2)
   parameter  bit          XSLR_REG      = 1'b0,
   parameter  bit          FAST_CLK      = 1'b0,   // the cycle-changing stages of the 250 MHz clock (tsr_core FAST_CLK)   // cross-SLR stages: att_stall (2 per cluster), pair links of the gather (1)
+  localparam int unsigned TH            = T_MAX / 2,
   localparam int unsigned SPM_LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW        = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -138,6 +147,7 @@ module tsr_mvm
   input  tsr_mvm_cmd_t                           cmd,
   input  logic                                   cmd_xc,       // ATTQK / ATTPV (HAS_ATT): payload in xcmd
   input  logic [XC_CMD_W-1:0]                    xcmd,
+  input  logic                                   cfg_dual_en,  // DUAL: run the MVMs with T <= T_MAX / 2 as two weight streams (sampled at the accept)
   output logic                                   done,
 
   // ---- SPM client TSR_SPM_CL_MVM ----
@@ -164,6 +174,18 @@ module tsr_mvm
   input  logic [NUM_CH-1:0]                      ws_rd_rsp_last,
   input  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0]    ws_rd_rsp_id,
 
+  // ---- stream B read ports, one per channel (DUAL; tied off otherwise): read-only, the format of ws_rd_* ----
+  output logic [NUM_CH-1:0]                      wsb_rd_req_valid,
+  input  logic [NUM_CH-1:0]                      wsb_rd_req_ready,
+  output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]     wsb_rd_req_addr,
+  output logic [NUM_CH-1:0][TSR_LEN_W-1:0]       wsb_rd_req_len,
+  output logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0]    wsb_rd_req_id,
+  input  logic [NUM_CH-1:0]                      wsb_rd_rsp_valid,
+  output logic [NUM_CH-1:0]                      wsb_rd_rsp_ready,
+  input  logic [NUM_CH-1:0][BEAT_BITS-1:0]       wsb_rd_rsp_data,
+  input  logic [NUM_CH-1:0]                      wsb_rd_rsp_last,
+  input  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0]    wsb_rd_rsp_id,
+
   // ---- perf ----
   output logic                                   perf_mvm_busy,
   output logic                                   perf_att_qk,
@@ -183,6 +205,9 @@ module tsr_mvm
   end
   if (BEAT_BITS != 512) begin : g_chk_beat
     $fatal(1, "tsr_mvm: BEAT_BITS must be 512");
+  end
+  if (DUAL && (T_MAX < 2 || (T_MAX % 2) != 0 || ADDR_BEAT_W > 32)) begin : g_chk_dual
+    $fatal(1, "tsr_mvm: DUAL needs an even T_MAX >= 2 and ADDR_BEAT_W <= 32");
   end
 
   // Reset distribution (RST_LOCAL, header): rst_t_n top logic, rst_g_n gather, rst_c_n[c]
@@ -228,7 +253,8 @@ module tsr_mvm
   localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);   // 527: broadcast payload
   localparam int unsigned CCW = $bits(tsr_mvm_ccmd_t);     // 137: overlaid on its low bits
   localparam int unsigned ACW = $bits(tsr_att_ccmd_t);     // 347: the attention command, overlaid
-  localparam int unsigned RW  = 33 + 32 * T_MAX;           // {row, last, y}
+  localparam int unsigned RWB = DUAL ? 34 : 0;             // DUAL: {row_b, bv, last_b} in the result item
+  localparam int unsigned RW  = 33 + 32 * T_MAX + RWB;     // {[row_b, bv, last_b,] row, last, y}
   localparam int unsigned CW  = (NUM_CH > 1) ? $clog2(NUM_CH) : 1;
   localparam int unsigned AJW = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS;
   localparam int unsigned TW  = (T_MAX > 1) ? $clog2(T_MAX) : 1;
@@ -279,10 +305,11 @@ module tsr_mvm
 
   // gather
   logic                                 g_start_q, g_done;
-  logic [NUM_CH-1:0]                    ex_q;
+  logic [NUM_CH-1:0]                    ex_q, exb_q;      // channels with rows; DUAL: with rows for stream B
   logic [CW-1:0]                        ex_c_q;
   logic                                 ex_run_q;
-  logic [35:0]                          ex_acc_q;
+  logic [35:0]                          ex_acc_q, ex_acc1_q;   // c R and c R + 1 (DUAL: B has rows when c R + 1 < N)
+  logic                                 dual_q;           // DUAL: this MVM runs as two weight streams
   logic                                 g_rd_v;
   logic [SPM_AW-1:0]                    g_rd_line;
 
@@ -336,6 +363,7 @@ module tsr_mvm
     ccmd.row_beats   = c_q.row_beats[15:0];
     ccmd.w_off   = c_q.w_off;
     ccmd.d_lines = 8'((nblk + 16'd15) >> 4);             // tsr_qa_d_lines(fmt, k) <= 128
+    ccmd.dual    = dual_q;
   end
 
   wire run_end = (st_q == S_RUN) & bc_done_q & (gd_q | g_done);
@@ -356,7 +384,10 @@ module tsr_mvm
       ex_run_q    <= 1'b0;
       ex_c_q      <= '0;
       ex_acc_q    <= '0;
+      ex_acc1_q   <= '0;
       ex_q        <= '0;
+      exb_q       <= '0;
+      dual_q      <= 1'b0;
       bc_ph_q     <= 1'b0;
       bc_done_q   <= 1'b0;
       rq_v_q      <= 1'b0;
@@ -387,6 +418,7 @@ module tsr_mvm
           gd_q        <= 1'b0;
           at_q        <= is_att;
           apv_q       <= is_att & dispatch_att.pv;
+          dual_q      <= DUAL & cfg_dual_en & ~is_att & (cmd.t <= 4'(TH));
           if (n_zero) begin
             done_q <= 1'b1;
             st_q   <= S_DONE;
@@ -397,6 +429,7 @@ module tsr_mvm
             ex_run_q  <= ~is_att;
             ex_c_q    <= '0;
             ex_acc_q  <= '0;
+            ex_acc1_q <= 36'd1;
           end
         end
         S_RUN: if (run_end) begin
@@ -415,7 +448,9 @@ module tsr_mvm
       if (as_q[3]) ex_run_q <= 1'b1;
       if (ex_run_q) begin
         ex_q[ex_c_q] <= at_q ? (apv_q | (ex_le > ex_lf)) : (ex_acc_q < 36'(c_q.n));
+        exb_q[ex_c_q] <= dual_q & (c_q.rows_per_ch >= 32'd2) & (ex_acc1_q < 36'(c_q.n));   // rows_c >= 2
         ex_acc_q     <= ex_acc_q + 36'(c_q.rows_per_ch);
+        ex_acc1_q    <= ex_acc1_q + 36'(c_q.rows_per_ch);
         ex_c_q       <= ex_c_q + 1'b1;
         if (ex_c_q == CW'(NUM_CH - 1)) begin
           ex_run_q  <= 1'b0;
@@ -596,7 +631,8 @@ module tsr_mvm
   // Clusters with their broadcast and result pipes
   // -------------------------------------------------------------------------------------------
   logic [NUM_CH-1:0]                g_res_v, g_res_r, g_res_last, cl_idle;
-  logic [NUM_CH-1:0][31:0]          g_res_row;
+  logic [NUM_CH-1:0][31:0]          g_res_row, g_res_row_b;
+  logic [NUM_CH-1:0]                g_res_bv, g_res_last_b;
   logic [NUM_CH-1:0][T_MAX-1:0][31:0] g_res_y;
   logic [NUM_CH-1:0]                g_aj_v, g_aj_r, cl_stall;
   logic [NUM_CH-1:0][AJW-1:0]       g_aj;
@@ -622,13 +658,19 @@ module tsr_mvm
     tsr_att_ccmd_t       p_acmd;
     tsr_mvm_bcline_t     p_line;
     logic                cr_v, cr_r, cr_last;
-    logic [31:0]         cr_row;
+    logic [31:0]         cr_row, cr_row_b;
+    logic                cr_bv, cr_last_b;
     logic [T_MAX-1:0][31:0] cr_y;
     logic                wq_v, wq_r, wr_v, wr_last, wr_rdy;
     logic [ADDR_BEAT_W-1:0]  wq_addr;
     logic [TSR_LEN_W-1:0]    wq_len;
     logic [TSR_SRC_ID_W-1:0] wq_id, wr_id;
     logic [BEAT_BITS-1:0]    wr_data;
+    logic                wqb_v, wqb_r, wrb_v, wrb_last, wrb_rdy;       // stream B (DUAL)
+    logic [ADDR_BEAT_W-1:0]  wqb_addr;
+    logic [TSR_LEN_W-1:0]    wqb_len;
+    logic [TSR_SRC_ID_W-1:0] wqb_id, wrb_id;
+    logic [BEAT_BITS-1:0]    wrb_data;
     logic                ca_v, ca_r;
     logic [AJW-1:0]      ca_j;
 
@@ -642,7 +684,8 @@ module tsr_mvm
     tsr_mvm_cluster #(
       .CH(c), .NUM_CH(NUM_CH), .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .K_MAX(K_MAX), .T_MAX(T_MAX), .ADDR_BEAT_W(ADDR_BEAT_W),
       .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(WS_FIFO_BEATS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
-      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .FAST_CLK(FAST_CLK), .RST_COPY(RST_LOCAL > 0), .SPM_AW(SPM_AW)
+      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .FAST_CLK(FAST_CLK), .RST_COPY(RST_LOCAL > 0), .SPM_AW(SPM_AW),
+      .DUAL(DUAL)
     ) u_cl (
       .clk, .rst_n(rst_ce_n[c]),
       .bc_cmd_valid(pv[1]), .bc_cmd(p_cmd), .bc_acmd_valid(pv[2]), .bc_acmd(p_acmd),
@@ -651,7 +694,12 @@ module tsr_mvm
       .rd_req_id(wq_id),
       .rd_rsp_valid(wr_v), .rd_rsp_ready(wr_rdy), .rd_rsp_data(wr_data), .rd_rsp_last(wr_last),
       .rd_rsp_id(wr_id),
+      .rdb_req_valid(wqb_v), .rdb_req_ready(wqb_r), .rdb_req_addr(wqb_addr), .rdb_req_len(wqb_len),
+      .rdb_req_id(wqb_id),
+      .rdb_rsp_valid(wrb_v), .rdb_rsp_ready(wrb_rdy), .rdb_rsp_data(wrb_data), .rdb_rsp_last(wrb_last),
+      .rdb_rsp_id(wrb_id),
       .res_valid(cr_v), .res_ready(cr_r), .res_row(cr_row), .res_last(cr_last), .res_y(cr_y),
+      .res_row_b(cr_row_b), .res_bv(cr_bv), .res_last_b(cr_last_b),
       .aj_valid(ca_v), .aj_ready(ca_r), .aj(ca_j), .att_stall(cl_stall[c]),
       .local_score_req(local_score_req[c]), .local_score_data(local_score_data[c]),
       .idle(cl_idle[c])
@@ -674,20 +722,62 @@ module tsr_mvm
       .out_valid(wr_v), .out_data({wr_data, wr_last, wr_id})
     );
     assign ws_rd_rsp_ready[c] = wr_rdy;
+    // Stream B (DUAL): the same pipes on its own read-only port, no arbiter (the port leaves the core as it is)
+    if (DUAL) begin : g_wsb
+      tsr_rpipe #(.W(ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W), .DEPTH(RES_PIPE)) u_wqpb (
+        .clk, .rst_n(rst_c_n[c]),
+        .s_valid(wqb_v), .s_ready(wqb_r), .s_data({wqb_addr, wqb_len, wqb_id}),
+        .m_valid(wsb_rd_req_valid[c]), .m_ready(wsb_rd_req_ready[c]),
+        .m_data({wsb_rd_req_addr[c], wsb_rd_req_len[c], wsb_rd_req_id[c]})
+      );
+      tsr_vpipe #(.VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(BC_PIPE), .KEEP_REGS(1'b1)) u_wrpb (
+        .clk, .rst_n(rst_c_n[c]), .in_valid(wsb_rd_rsp_valid[c]),
+        .in_data({wsb_rd_rsp_data[c], wsb_rd_rsp_last[c], wsb_rd_rsp_id[c]}),
+        .out_valid(wrb_v), .out_data({wrb_data, wrb_last, wrb_id})
+      );
+      assign wsb_rd_rsp_ready[c] = wrb_rdy;
+    end else begin : g_nowsb
+      assign wsb_rd_req_valid[c] = 1'b0;
+      assign wsb_rd_req_addr[c]  = '0;
+      assign wsb_rd_req_len[c]   = '0;
+      assign wsb_rd_req_id[c]    = '0;
+      assign wsb_rd_rsp_ready[c] = 1'b1;
+      assign wqb_r               = 1'b0;
+      assign wrb_v               = 1'b0;
+      assign wrb_data            = '0;
+      assign wrb_last            = 1'b0;
+      assign wrb_id              = '0;
+      wire unused_wsb = &{1'b0, wqb_v, wqb_addr, wqb_len, wqb_id, wrb_rdy, wsb_rd_req_ready[c], wsb_rd_rsp_valid[c],
+                          wsb_rd_rsp_data[c], wsb_rd_rsp_last[c], wsb_rd_rsp_id[c]};
+    end
 `ifndef SYNTHESIS
     always_ff @(posedge clk) begin
       if (rst_c_n[c]) assert (wr_rdy) else $error("%m: weight-stream rd_rsp_ready low (the response pipe has no backpressure)");
+      if (DUAL) assert (!rst_c_n[c] || wrb_rdy) else $error("%m: stream B rd_rsp_ready low (the response pipe has no backpressure)");
       // the cluster's own reset copies (RST_COPY) equal the last stage rst_c_n in every cycle
-      assert (u_cl.rst_c_n == rst_c_n[c] && u_cl.rst_f_n == rst_c_n[c] && u_cl.rst_t_n == {T_MAX{rst_c_n[c]}})
+      assert (u_cl.rst_c_n == rst_c_n[c] && u_cl.rst_f_n == rst_c_n[c] && u_cl.rst_fb_n == rst_c_n[c] && u_cl.rst_t_n == {T_MAX{rst_c_n[c]}})
         else $error("%m: the cluster's reset copies differ from rst_c_n");
     end
 `endif
 
-    tsr_rpipe #(.W(RW), .DEPTH(RES_PIPE)) u_rp (
-      .clk, .rst_n(rst_c_n[c]),
-      .s_valid(cr_v), .s_ready(cr_r), .s_data({cr_row, cr_last, cr_y}),
-      .m_valid(g_res_v[c]), .m_ready(g_res_r[c]), .m_data({g_res_row[c], g_res_last[c], g_res_y[c]})
-    );
+    if (DUAL) begin : g_rpb
+      tsr_rpipe #(.W(RW), .DEPTH(RES_PIPE)) u_rp (
+        .clk, .rst_n(rst_c_n[c]),
+        .s_valid(cr_v), .s_ready(cr_r), .s_data({cr_row_b, cr_bv, cr_last_b, cr_row, cr_last, cr_y}),
+        .m_valid(g_res_v[c]), .m_ready(g_res_r[c]),
+        .m_data({g_res_row_b[c], g_res_bv[c], g_res_last_b[c], g_res_row[c], g_res_last[c], g_res_y[c]})
+      );
+    end else begin : g_rp
+      tsr_rpipe #(.W(RW), .DEPTH(RES_PIPE)) u_rp (
+        .clk, .rst_n(rst_c_n[c]),
+        .s_valid(cr_v), .s_ready(cr_r), .s_data({cr_row, cr_last, cr_y}),
+        .m_valid(g_res_v[c]), .m_ready(g_res_r[c]), .m_data({g_res_row[c], g_res_last[c], g_res_y[c]})
+      );
+      assign g_res_row_b[c]  = '0;
+      assign g_res_bv[c]     = 1'b0;
+      assign g_res_last_b[c] = 1'b0;
+      wire unused_rb = &{1'b0, cr_row_b, cr_bv, cr_last_b};
+    end
     // attention jobs of cluster c -> its job pipe in the gather (HAS_ATT)
     if (HAS_ATT) begin : g_ajp
       tsr_rpipe #(.W(AJW), .DEPTH(RES_PIPE)) u_ajp (
@@ -729,11 +819,11 @@ module tsr_mvm
   tsr_mvm_gather #(
     .HAS_ATT(HAS_ATT), .LOCAL_SCALE(LOCAL_SCALE), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS),
-    .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK)
+    .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK), .DUAL(DUAL)
   ) u_gather (
     .clk, .rst_n(rst_g_n),
     .start(g_start_q), .acc(c_q.acc & ~at_q), .t(c_q.t), .n(at_q ? 32'd1 : c_q.n),
-    .dst_line(c_q.dst_line[SPM_AW-1:0]), .dst_stride(at_q ? 32'd1 : c_q.dst_stride), .expect_ch(ex_q),
+    .dst_line(c_q.dst_line[SPM_AW-1:0]), .dst_stride(at_q ? 32'd1 : c_q.dst_stride), .expect_ch(ex_q), .expect_b(exb_q),
     .done(g_done),
     .scale_en((c_q.local_scale || c_q.local_softcap) && !at_q), .scale(c_q.scale),
     .post_scale(c_q.post_scale), .softcap(c_q.local_softcap), .scale_req, .scale_rsp,
@@ -742,7 +832,7 @@ module tsr_mvm
     .att_mdst(a_q.w7[SPM_AW-1:0]),
     .aj_valid(g_aj_v), .aj_ready(g_aj_r), .aj(g_aj),
     .res_valid(g_res_v), .res_ready(g_res_r), .res_row(g_res_row), .res_last(g_res_last),
-    .res_y(g_res_y),
+    .res_y(g_res_y), .res_row_b(g_res_row_b), .res_bv(g_res_bv), .res_last_b(g_res_last_b),
     .spm_rd_req_valid(g_rd_v), .spm_rd_req_ready(g_rd_ready), .spm_rd_req_line(g_rd_line),
     .spm_rd_rsp_valid(g_rsp_valid), .spm_rd_rsp_data,
     .spm_wr_valid, .spm_wr_ready, .spm_wr_line, .spm_wr_data, .spm_wr_be
@@ -750,7 +840,7 @@ module tsr_mvm
 
   wire unused_ok = &{1'b0, c_q.y_lines, c_q.dst_line[31:SPM_AW], c_q.x_line[31:SPM_AW],
                      c_q.row_beats[31:16], xcmd, a_q.base, a_q.dst, a_q.aux0, a_q.aux1, a_q.x, a_q.w7,
-                     a_x0[20:17], a_x1[20:17], as_q[5], a_q.e64};
+                     a_x0[20:17], a_x1[20:17], as_q[5], a_q.e64, cfg_dual_en};
 
   // -------------------------------------------------------------------------------------------
   // Simulation-only checks
@@ -780,13 +870,13 @@ module tsr_mvm
       assert (!(rq_v_q && !bc_ph_q)) else $error("%m: broadcast read outside the broadcast phase");
       assert ($onehot0(bc_v_q)) else $error("%m: bc_cmd / bc_acmd / bc_line in one cycle");
       if (st_q == S_IDLE) begin
-        assert (!spm_rd_req_valid && !spm_wr_valid && ws_rd_req_valid == '0)
+        assert (!spm_rd_req_valid && !spm_wr_valid && ws_rd_req_valid == '0 && wsb_rd_req_valid == '0)
           else $error("%m: SPM / weight traffic while idle");
       end
       if (done_q) begin
-        assert (!spm_wr_valid && !spm_rd_req_valid && ws_rd_req_valid == '0 && &cl_idle)
-          else $error("%m: done while not quiescent (spm wr %0b rd %0b ws %b idle %b)",
-                      spm_wr_valid, spm_rd_req_valid, ws_rd_req_valid, cl_idle);
+        assert (!spm_wr_valid && !spm_rd_req_valid && ws_rd_req_valid == '0 && wsb_rd_req_valid == '0 && &cl_idle)
+          else $error("%m: done while not quiescent (spm wr %0b rd %0b ws %b wsb %b idle %b)",
+                      spm_wr_valid, spm_rd_req_valid, ws_rd_req_valid, wsb_rd_req_valid, cl_idle);
       end
     end
   end

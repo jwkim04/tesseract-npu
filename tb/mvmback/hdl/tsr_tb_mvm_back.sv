@@ -8,6 +8,9 @@
 //     used only while the back end is idle, to compare the buffer contents with
 //     mvm_model.actbuf_image and to check the read latency.
 //   - qs_data / dbs_data and the back end's read requests are observation copies.
+//   - DUAL = 1 (dual weight stream, docs/rtl-mvm.md §15): the second beat stream beat_b with b_use (the partner of the
+//     accepted beat), and `dual`: every broadcast line is written into the activation buffer of token tok and of token
+//     tok + T_MAX / 2, as the cluster does for a dual MVM (stable while the MVM's lines are written).
 
 module tsr_tb_mvm_back
   import tsr_pkg::*;
@@ -18,6 +21,7 @@ module tsr_tb_mvm_back
   parameter  int unsigned MAC_LAT    = TSR_DEF_MAC_LAT,
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          DUAL       = 1'b0,
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
@@ -36,6 +40,9 @@ module tsr_tb_mvm_back
   input  logic                          beat_valid,
   output logic                          beat_ready,
   input  tsr_mvm_beat_t                 beat,
+  input  tsr_mvm_beat_t                 beat_b,
+  input  logic                          b_use,
+  input  logic                          dual,
   output logic                          res_valid,
   input  logic                          res_ready,
   output logic [T_MAX-1:0][31:0]        res_y,
@@ -71,9 +78,18 @@ module tsr_tb_mvm_back
   assign dbs_re   = tb_rd ? tb_dbs_re   : be_dbs_re;
   assign dbs_addr = tb_rd ? tb_dbs_addr : be_dbs_addr;
 
+  logic [T_MAX-1:0] wr_tm;
+  if (DUAL) begin : g_tm
+    assign wr_tm = dual ? (T_MAX'(1) << wr_line.tok) | (T_MAX'(1) << (wr_line.tok + 3'(T_MAX / 2)))
+                        : (T_MAX'(1) << wr_line.tok);
+  end else begin : g_tm0
+    assign wr_tm = T_MAX'(1) << wr_line.tok;
+    wire unused_dual = &{1'b0, dual, beat_b, b_use};
+  end
+
   tsr_mvm_actbuf #(.K_MAX(K_MAX), .T_MAX(T_MAX), .RD_LAT(ACT_RD_LAT)) u_act (
     .clk, .rst_n,
-    .wr_valid, .wr_tmask(T_MAX'(1) << wr_line.tok), .wr_line,
+    .wr_valid, .wr_tmask(wr_tm), .wr_line,
     .qs_re, .qs_addr({T_MAX{qs_addr}}), .qs_data,
     .dbs_re, .dbs_addr({T_MAX{dbs_addr}}), .dbs_data
   );
@@ -85,13 +101,13 @@ module tsr_tb_mvm_back
 
   tsr_mvm_back #(
     .K_MAX(K_MAX), .T_MAX(T_MAX), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
-    .ADD_LAT(ADD_LAT)
+    .ADD_LAT(ADD_LAT), .DUAL(DUAL)
   ) u_back (
     .clk, .rst_n, .rst_tok_n({T_MAX{rst_n}}),
     .cfg_fmt, .cfg_d_lines,
     .att_cfg('0), .att_tbase('0), .att_start(1'b0), .seg_valid(seg_valid_u), .seg_y(seg_y_u),
     .pv_rd('0), .pv_mac_v(1'b0), .pv_mac_first(1'b0), .pv_mac_q('0), .pv_mac_a('0), .pv_acc(pv_acc_u),
-    .beat_valid, .beat_ready, .beat,
+    .beat_valid, .beat_ready, .beat, .beat_b, .b_use,
     .qs_re(be_qs_re), .qs_addr(be_qs_addr_t), .qs_data,
     .dbs_re(be_dbs_re), .dbs_addr(be_dbs_addr_t), .dbs_data,
     .res_valid, .res_ready, .res_y,

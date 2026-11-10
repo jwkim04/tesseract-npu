@@ -24,6 +24,11 @@ cocotb tests:
                     the write port is oversubscribed (clusters finish together: round robin)
   gather_comb       no combinational path from any input to any output (clock stopped, inputs
                     wiggled one at a time)
+  dual builds (DUAL = 1, docs/rtl-mvm.md §15; gather_random only): the cluster streams are row pairs (res_row_b, res_bv,
+                    res_last_b, y of the tokens T_MAX / 2 + t for stream B's row, expect_b), the reference is unchanged
+                    (the SPM image), the write count is mvm_model.gather_jobs(dual), A's last and B's first group
+                    share SPM lines (R % 16 != 0), clusters with one row (no B), unpaired last rows, random garbage in the
+                    unused token slots
 Configurations: NUM_CH 1 / 3 / 4 / 16, T_MAX 1 / 2 / 3 / 8, SPM_RD_LAT 1..4, ADD_LAT 1 / 3 / 5 / 8.
 """
 from __future__ import annotations
@@ -57,12 +62,18 @@ CFGS = {
     "g1t3":  dict(NUM_CH=1, T_MAX=3, SPM_BYTES=65536, SPM_RD_LAT=1, ADD_LAT=1),
     "g3t2":  dict(NUM_CH=3, T_MAX=2, SPM_BYTES=131072, SPM_RD_LAT=3, ADD_LAT=3),
     "g16t8": dict(NUM_CH=16, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8),
+    # dual weight stream builds: the job merge in every transport (no job pipe, the old pipe, the paired two-flit link)
+    "g3t2_dual": dict(NUM_CH=3, T_MAX=2, SPM_BYTES=131072, SPM_RD_LAT=3, ADD_LAT=3, DUAL=1),
+    "g4t4_dual": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, DUAL=1),
+    "g4t4_dual_narrow": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1,
+                             GATHER_PAIR=1, GATHER_FLITS=2, XSLR_REG=1, DUAL=1),
+    "g16t8_dual": dict(NUM_CH=16, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, DUAL=1),
 }
 TESTS = ["gather_random", "gather_special", "gather_perf", "gather_comb", "gather_pair_jobs"]
 
-INPUTS = ["start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "res_valid", "res_row",
-          "res_last", "res_y", "spm_rd_req_ready", "spm_rd_rsp_valid", "spm_rd_rsp_data",
-          "spm_wr_ready"]
+INPUTS = ["start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "expect_b", "res_valid", "res_row",
+          "res_last", "res_y", "res_row_b", "res_bv", "res_last_b", "spm_rd_req_ready", "spm_rd_rsp_valid",
+          "spm_rd_rsp_data", "spm_wr_ready"]
 OUTPUTS = ["done", "res_ready", "spm_rd_req_valid", "spm_rd_req_line", "spm_wr_valid", "spm_wr_line",
            "spm_wr_data", "spm_wr_be"]
 
@@ -123,8 +134,8 @@ class Gtb:
     async def start(self):
         d = self.dut
         d.rst_n.value = 0
-        for n in ("start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "res_valid",
-                  "res_row", "res_last", "res_y", "spm_rd_req_ready", "spm_rd_rsp_valid",
+        for n in ("start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "expect_b", "res_valid",
+                  "res_row", "res_last", "res_y", "res_row_b", "res_bv", "res_last_b", "spm_rd_req_ready", "spm_rd_rsp_valid",
                   "spm_rd_rsp_data", "spm_wr_ready", "att", "att_maxout", "att_tq", "att_gs", "att_tact", "att_nseg",
                   "att_g", "att_hg0", "att_nhead", "att_mdst", "aj_valid", "aj",
                   "scale_en", "scale", "scale_rsp"):
@@ -209,15 +220,23 @@ class Gtb:
             d.spm_wr_ready.value = wr_ready
 
     async def run_mvm(self, *, N: int, T: int, acc: bool, dst: int, stride: int, ys, p_gap: float = 0.3,
-                      timeout: int = 200000, order: str = "rand") -> dict:
-        """One gather run: ys[t][n] f32 bits. Returns stats."""
+                      timeout: int = 200000, order: str = "rand", dual: bool = False) -> dict:
+        """One gather run: ys[t][n] f32 bits. Returns stats. dual: every cluster's rows are two streams (A = the first
+        ceil(rows_c / 2) rows, B = the others) and its items row pairs: A's row r in the token slots < TH and B's row r
+        (if r < rB) in the slots TH + t; the other slots carry random bits."""
         d, nch = self.dut, self.nch
+        th = self.tmax // 2
         R = -(-N // nch)
         expect = sum(1 << c for c in range(nch) if c * R < N)
+        expect_b = 0
         queues = []
         for c in range(nch):
             rc = mm.rows_c(N, nch, c)
-            queues.append([(c * R + r, r == rc - 1) for r in range(rc)])
+            ra, rbn = mm.rows_ab(rc, dual)
+            if rbn:
+                expect_b |= 1 << c
+            # (row, last, row_b, bv, last_b)
+            queues.append([(c * R + r, r == ra - 1, c * R + ra + r, r < rbn, r == rbn - 1) for r in range(ra)])
         await RisingEdge(d.clk)
         d.acc.value = int(acc)
         d.t.value = T
@@ -225,6 +244,7 @@ class Gtb:
         d.dst_line.value = dst
         d.dst_stride.value = stride
         d.expect_ch.value = expect
+        d.expect_b.value = expect_b
         d.start.value = 1
         e0 = self.edge
         await RisingEdge(d.clk)
@@ -240,22 +260,35 @@ class Gtb:
         while len(self.done_edges) == n_done0:
             # drive (after the rising edge)
             vmask, rows, lasts, yv = 0, 0, 0, 0
+            rowsb, bvs, lastsb = 0, 0, 0
             for c in range(nch):
                 if cur[c] is None and head[c] < len(queues[c]) and rnd.random() >= p_gap:
                     if order == "rand" or c == min((k for k in range(nch) if head[k] < len(queues[k])), default=c):
                         cur[c] = queues[c][head[c]]
                 if cur[c] is not None:
-                    row, last = cur[c]
+                    row, last, rowb, bv, lastb = cur[c]
                     vmask |= 1 << c
                     rows |= row << (32 * c)
                     lasts |= int(last) << c
+                    rowsb |= (rowb if bv else rnd.getrandbits(32)) << (32 * c)
+                    bvs |= int(bv) << c
+                    lastsb |= int(lastb if bv else rnd.getrandbits(1)) << c
                     for t in range(self.tmax):
-                        v = ys[t][row] if t < T else rnd.getrandbits(32)
+                        if dual:
+                            if t < th:                       # stream A's token t
+                                v = ys[t][row] if t < T else rnd.getrandbits(32)
+                            else:                            # stream B's token t - TH
+                                v = ys[t - th][rowb] if (bv and t - th < T) else rnd.getrandbits(32)
+                        else:
+                            v = ys[t][row] if t < T else rnd.getrandbits(32)
                         yv |= v << (32 * (c * self.tmax + t))
             d.res_valid.value = vmask
             d.res_row.value = rows
             d.res_last.value = lasts
             d.res_y.value = yv
+            d.res_row_b.value = rowsb
+            d.res_bv.value = bvs
+            d.res_last_b.value = lastsb
             await FallingEdge(d.clk)
             rr = int(d.res_ready.value)
             for c in range(nch):
@@ -283,7 +316,7 @@ class Gtb:
         assert int(d.res_ready.value) == 0, "res_ready while idle"
         return dict(wr=wr, rd=rd, done=de, first_res=first_res, last_res=last_res, start=e0, last_c=last_c)
 
-    def check(self, *, N, T, acc, dst, stride, ys, before: bytes, st: dict):
+    def check(self, *, N, T, acc, dst, stride, ys, before: bytes, st: dict, dual: bool = False):
         nch = self.nch
         ds = stride
         yl = (N + 15) // 16
@@ -306,7 +339,7 @@ class Gtb:
                         cnt[64 * ln + b] = cnt.get(64 * ln + b, 0) + 1
             ybytes = {64 * ln + b for ln in ylines for b in range(64)}
             assert set(cnt) == ybytes and all(v == 1 for v in cnt.values()), "byte coverage wrong"
-            assert len(st["wr"]) == len(mm.gather_jobs(N, nch, T, dst, ds)), "write count != gather_jobs"
+            assert len(st["wr"]) == len(mm.gather_jobs(N, nch, T, dst, ds, dual)), "write count != gather_jobs"
         if acc:
             assert all(ln in ylines for _, ln in st["rd"]), "ACC read outside y"
             assert {ln for _, ln in st["rd"]} == ylines
@@ -334,7 +367,8 @@ async def gather_random(dut):
     for it in range(n_mvm):
         N = rnd.choice([1, 2, nch - 1 or 1, nch, nch + 1, 15, 16, 17, 31, 33, 16 * nch, 17 * nch + 3,
                         rnd.randint(1, 300), rnd.randint(1, 2000)])
-        T = rnd.randint(1, TM)
+        dual = bool(g.p.get("DUAL")) and rnd.random() < 0.8
+        T = rnd.randint(1, TM // 2 if dual else TM)
         yl = (N + 15) // 16
         overlap = T > 1 and rnd.random() < 0.08
         if T > 1:
@@ -355,10 +389,10 @@ async def gather_random(dut):
         before = bytes(g.spm)
         ys = rand_ys(rnd, T, N, special=rnd.choice([0.0, 0.1, 0.5]))
         st = await g.run_mvm(N=N, T=T, acc=acc, dst=dst, stride=stride, ys=ys,
-                             p_gap=rnd.choice([0.0, 0.3, 0.8]), order=rnd.choice(["rand", "rand", "seq"]))
+                             p_gap=rnd.choice([0.0, 0.3, 0.8]), order=rnd.choice(["rand", "rand", "seq"]), dual=dual)
         if overlap:
             continue                        # undefined result; finishing normally is the check
-        g.check(N=N, T=T, acc=acc, dst=dst, stride=stride if T > 1 else yl, ys=ys, before=before, st=st)
+        g.check(N=N, T=T, acc=acc, dst=dst, stride=stride if T > 1 else yl, ys=ys, before=before, st=st, dual=dual)
     dut._log.info("gather_random: %d MVMs", n_mvm)
 
 

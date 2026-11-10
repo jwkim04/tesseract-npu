@@ -30,7 +30,7 @@
 #include "Vgen.h"
 #include "Vxil.h"
 
-static const int NC = 30;
+static const int NC = 33;
 static const int YW = 8 * 21;
 static const int PW = 4 * 32 * 38;
 
@@ -55,6 +55,9 @@ static std::vector<Cfg> configs() {
         for (int b = 0; b < 7; ++b) v.push_back({32, ts[a], ls[b], (ts[a] + 1) / 2, pv_lat(ls[b], 32), sw(32)});
     v.push_back({5, 3, 3, 2, pv_lat(3, 5), sw(5)});
     v.push_back({5, 3, 6, 2, pv_lat(6, 5), sw(5)});
+    v.push_back({32, 4, 9, 2, pv_lat(9, 32), sw(32)});     // dual weight stream configurations (TH = T / 2)
+    v.push_back({32, 2, 5, 1, pv_lat(5, 32), sw(32)});
+    v.push_back({32, 6, 6, 3, pv_lat(6, 32), sw(32)});
     return v;
 }
 

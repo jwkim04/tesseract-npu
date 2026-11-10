@@ -8,6 +8,9 @@
 //   for every token t < T. w and x are signed 8-bit (the full range -128..127; Q4_K weights are
 //   0..15 in a signed lane). SUM_W = 16 + clog2(N) holds the extreme N * (-128) * (-128)
 //   (N = 32: 21 bits, spec Numeric rules, integer widths: "Q8_0 isum signed 21 bits").
+// Dual weight stream (parameter TH >= 1, docs/rtl-mvm.md §15): the tokens t < TH use the weights `w`, the tokens t >= TH
+//   the weights `wb` (a second weight vector read in lockstep, tsr_mvm_back DUAL). TH = 0: every token uses `w` and `wb`
+//   is ignored. Everything else is as above.
 // Timing: fixed latency LAT >= 1 with ce, exactly like tsr_fp_mul: every register (valid and data)
 //   updates only at edges with ce = 1; in_valid/w/x are sampled only at such edges; out_valid/y
 //   are registers available LAT advancing edges after the operands were taken (operands present
@@ -59,6 +62,7 @@ module tsr_mac_lane #(
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
   parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
   parameter  bit          PVR   = 1'b0, // pv_en through one register (the Xilinx variant keeps a copy per eight lanes; tsr_mac_lane there)
+  parameter  int unsigned TH    = 0,    // dual weight stream: tokens >= TH take `wb` (0: all tokens take `w`)
   localparam int unsigned SUM_W = 16 + $clog2(N),
   localparam int unsigned NS    = (T + 1) / 2
 ) (
@@ -67,6 +71,7 @@ module tsr_mac_lane #(
   input  logic                          ce,
   input  logic                          in_valid,
   input  logic [N-1:0][7:0]             w,      // signed 8-bit weights
+  input  logic [N-1:0][7:0]             wb,     // weights of the tokens >= TH (TH >= 1)
   input  logic [T-1:0][N-1:0][7:0]      x,      // signed 8-bit activations, per token
   output logic                          out_valid,
   output logic [T-1:0][SUM_W-1:0]       y,      // signed sums, per token
@@ -81,6 +86,9 @@ module tsr_mac_lane #(
 
   if (N < 1 || T < 1 || LAT < 1) begin : g_chk
     $fatal(1, "tsr_mac_lane: N >= 1, T >= 1 and LAT >= 1 required");
+  end
+  if (TH > T) begin : g_chk_th
+    $fatal(1, "tsr_mac_lane: TH <= T required");
   end
 
   localparam int unsigned LV     = (N > 1) ? $clog2(N) : 0;      // adder levels
@@ -111,7 +119,8 @@ module tsr_mac_lane #(
         for (genvar k = 0; k < NI; k++) begin : g_k
           if (k < N) begin : g_p
             // 16 x 16-bit signed product of the sign-extended bytes (exact: |w x| <= 2^14)
-            assign d[t][k] = $signed({{8{w[k][7]}}, w[k]}) * $signed({{8{x[t][k][7]}}, x[t][k]});
+            wire [7:0] wt = (TH != 0 && t >= TH) ? wb[k] : w[k];     // the token's weight stream
+            assign d[t][k] = $signed({{8{wt[7]}}, wt}) * $signed({{8{x[t][k][7]}}, x[t][k]});
           end else begin : g_z
             assign d[t][k] = '0;
           end
@@ -272,6 +281,9 @@ module tsr_mac_lane #(
   end else begin : g_nopv
     assign pv_acc = '0;
     wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a};
+  end
+  if (TH == 0) begin : g_nowb
+    wire unused_wb = &{1'b0, wb};
   end
 
 endmodule

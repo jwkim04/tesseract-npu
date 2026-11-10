@@ -34,6 +34,15 @@
 // Datapath per token replicated T_MAX times (docs/rtl-mvm.md §9.3). Q8_0 delivers 2 terms per quant
 // beat: two accumulate lanes (even / odd partials); Q4_K 1 term per 2 quant beats (lane s % 2).
 //
+// Dual weight stream (parameter DUAL, docs/rtl-mvm.md §15): a second tagged beat stream `beat_b` (the cluster's stream B,
+//   read in lockstep with `beat`) rides the token slots TH = T_MAX / 2 and above. With b_use = 1 at the accepted beat, the
+//   tokens t < TH multiply A's weights (`beat`) and the tokens t >= TH multiply B's weights (`beat_b`), and the per-beat scale
+//   data (d_a, d_b, sc, m) of the tokens >= TH are B's. The tags, the tag pipeline, the accumulate and tree control, the flow
+//   control and the result FIFO stay shared and come from `beat` alone (the tags of the two beats are equal, asserted). With
+//   b_use = 0 the tokens >= TH take A's weights and scale data exactly as without DUAL (single mode, attention, the unpaired
+//   last row of stream A: the upper tokens then compute a row that the cluster does not use). res_y[TH + t] is stream B's
+//   row r for token t whenever res_y[t] is stream A's row r. DUAL = 0: beat_b and b_use are ignored, the back end below.
+//
 // Attention modes (AT §8.1, §8.2; parameter HAS_ATT, configuration att_cfg, stable while
 // an op's beats flow, att_start pulses before them):
 //   ATTQK (att_cfg.att): the beats are K plane chunks (front end "rows" of K = 1024). Every beat holds
@@ -287,6 +296,8 @@ module tsr_mvm_back
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
   parameter  bit          FAST_CLK   = 1'b0,    // the mode of the PV accumulate in registered copies (tsr_mac_lane PVR; the 250 MHz work)
+  parameter  bit          DUAL       = 1'b0,    // dual weight stream (header): T_MAX even and >= 2
+  localparam int unsigned TH         = T_MAX / 2,
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
@@ -318,6 +329,8 @@ module tsr_mvm_back
   input  logic                          beat_valid,
   output logic                          beat_ready,
   input  tsr_mvm_beat_t                 beat,
+  input  tsr_mvm_beat_t                 beat_b,         // DUAL: the partner beat of stream B (valid while beat is, when b_use)
+  input  logic                          b_use,          // DUAL: beat_b goes with the beat accepted in this cycle (a flop)
 
   // ---- activation buffer reads ----
   output logic                          qs_re,
@@ -343,6 +356,9 @@ module tsr_mvm_back
   end
   if (HAS_ATT && MAC_LAT < 3) begin : g_chk_att
     $fatal(1, "tsr_mvm_back: the attention modes need MAC_LAT >= 3 (the PV accumulators)");
+  end
+  if (DUAL && (T_MAX < 2 || (T_MAX % 2) != 0)) begin : g_chk_dual
+    $fatal(1, "tsr_mvm_back: DUAL needs an even T_MAX >= 2");
   end
 
   // attention mode bits (constant 0 without HAS_ATT)
@@ -506,6 +522,7 @@ module tsr_mvm_back
     logic       two;     // Q8_0: block b+1 present
     logic       half;    // Q4_K half
     logic [3:0] b4;      // blk[3:0]
+    logic       pr;      // DUAL: the beat's partner of stream B is taken with it (b_use)
   } ctl_t;
 
   logic [NCTL:1] cv;     // cv[c]: a beat is in cycle c of its pipeline
@@ -517,7 +534,7 @@ module tsr_mvm_back
   end
   always_ff @(posedge clk) begin
     cd[1] <= '{se: c_att & a_seg_e, rl: beat.row_last, set: rset_q, first: (beat.blk[TSR_MVM_BLK_W-1:4] == '0),
-               two: beat.two, half: beat.half, b4: beat.blk[3:0]};
+               two: beat.two, half: beat.half, b4: beat.blk[3:0], pr: DUAL & b_use};
     for (int ctl_c = 2; ctl_c <= int'(NCTL); ctl_c++) cd[ctl_c] <= cd[ctl_c-1];
   end
 
@@ -534,14 +551,63 @@ module tsr_mvm_back
   // cycle M0 - 1 = ACT_RD_LAT >= 1; the placement register below takes them into cycle M0
   tsr_mvm_dly #(.W(768), .N(C_M0 - 1)) u_dly_w (.clk, .rst_n, .d({whi_in, wlo_in}), .q({whi_p, wlo_p}));
 
-  logic [31:0] da_m0, db_m0;
-  tsr_mvm_dly #(.W(64), .N(C_M0)) u_dly_d (.clk, .rst_n, .d({beat.d_b, beat.d_a}), .q({db_m0, da_m0}));
+  // The scale data (d_a / d_b at M0, sc at G, m at M0 + 1) and the weights of the tokens >= TH. Without DUAL (or in
+  // single mode) these are the beat's own: da_m0 etc. are the lower tokens', and the upper tokens' copies da_u etc. (the
+  // tokens >= TH, selected by the tag pr in the last stage in front of the register) are B's when the beat has a partner.
+  logic [31:0] da_m0, db_m0, da_u, db_u;
+  logic [TSR_MVM_GROUPS-1:0][5:0] sc_g, sc_u;
+  logic [7:0][5:0] m_m1, m_u;
+  logic [63:0][7:0]  wlo_pb;          // DUAL: stream B's weights as wlo_p / whi_p
+  logic [63:0][3:0]  whi_pb;
+  if (DUAL) begin : g_dual_dly
+    logic [127:0][7:0] wb_in;
+    logic [63:0][7:0]  wlo_bin;
+    logic [63:0][3:0]  whi_bin;
+    assign wb_in = beat_b.w;
+    for (genvar l = 0; l < 64; l++) begin : g_wpack
+      assign wlo_bin[l] = wb_in[l];
+      assign whi_bin[l] = wb_in[64 + l][3:0];
+    end
+    tsr_mvm_dly #(.W(768), .N(C_M0 - 1)) u_dly_wb (.clk, .rst_n, .d({whi_bin, wlo_bin}), .q({whi_pb, wlo_pb}));
 
-  logic [TSR_MVM_GROUPS-1:0][5:0] sc_g;
-  tsr_mvm_dly #(.W(24), .N(C_G)) u_dly_sc (.clk, .rst_n, .d(beat.sc), .q(sc_g));
+    // the last stage of each line in front of its register, with the upper tokens' select
+    logic [31:0] da_m1, db_m1, dba_m1, dbb_m1;
+    tsr_mvm_dly #(.W(64), .N(C_M0 - 1)) u_dly_d  (.clk, .rst_n, .d({beat.d_b, beat.d_a}), .q({db_m1, da_m1}));
+    tsr_mvm_dly #(.W(64), .N(C_M0 - 1)) u_dly_db (.clk, .rst_n, .d({beat_b.d_b, beat_b.d_a}), .q({dbb_m1, dba_m1}));
+    always_ff @(posedge clk) begin
+      da_m0 <= da_m1;
+      db_m0 <= db_m1;
+      da_u  <= cd[C_M0 - 1].pr ? dba_m1 : da_m1;
+      db_u  <= cd[C_M0 - 1].pr ? dbb_m1 : db_m1;
+    end
 
-  logic [7:0][5:0] m_m1;
-  tsr_mvm_dly #(.W(48), .N(C_M0 + 1)) u_dly_m (.clk, .rst_n, .d(beat.m), .q(m_m1));
+    logic [TSR_MVM_GROUPS-1:0][5:0] sca_m1, scb_m1;
+    tsr_mvm_dly #(.W(24), .N(C_G - 1)) u_dly_sc  (.clk, .rst_n, .d(beat.sc), .q(sca_m1));
+    tsr_mvm_dly #(.W(24), .N(C_G - 1)) u_dly_scb (.clk, .rst_n, .d(beat_b.sc), .q(scb_m1));
+    always_ff @(posedge clk) begin
+      sc_g <= sca_m1;
+      sc_u <= cd[C_G - 1].pr ? scb_m1 : sca_m1;
+    end
+
+    logic [7:0][5:0] ma_m1, mb_m1;
+    tsr_mvm_dly #(.W(48), .N(C_M0)) u_dly_m  (.clk, .rst_n, .d(beat.m), .q(ma_m1));
+    tsr_mvm_dly #(.W(48), .N(C_M0)) u_dly_mb (.clk, .rst_n, .d(beat_b.m), .q(mb_m1));
+    always_ff @(posedge clk) begin
+      m_m1 <= ma_m1;
+      m_u  <= cd[C_M0].pr ? mb_m1 : ma_m1;
+    end
+  end else begin : g_single_dly
+    tsr_mvm_dly #(.W(64), .N(C_M0)) u_dly_d (.clk, .rst_n, .d({beat.d_b, beat.d_a}), .q({db_m0, da_m0}));
+    tsr_mvm_dly #(.W(24), .N(C_G)) u_dly_sc (.clk, .rst_n, .d(beat.sc), .q(sc_g));
+    tsr_mvm_dly #(.W(48), .N(C_M0 + 1)) u_dly_m (.clk, .rst_n, .d(beat.m), .q(m_m1));
+    assign da_u   = da_m0;
+    assign db_u   = db_m0;
+    assign sc_u   = sc_g;
+    assign m_u    = m_m1;
+    assign wlo_pb = wlo_p;
+    assign whi_pb = whi_p;
+    wire unused_b = &{1'b0, beat_b, b_use};
+  end
 
   // ---------------------------------------------------------------------------------------------
   // MAC lanes (cycle M0 -> G)
@@ -555,13 +621,31 @@ module tsr_mvm_back
   // ATTPV: the PV unit's V bytes on both halves (lanes 64..127 serve the slots NS..2NS-1).
   wire hs_p = ~cfg_fmt & cd[C_M0 - 1].b4[1];
   logic [127:0][7:0] wm_q;    // MAC weights in cycle M0 (no reset: datapath)
-  always_ff @(posedge clk) begin
+  logic [127:0][7:0] wm_n;    // its next value
+  always_comb begin
     for (int wp_l = 0; wp_l < 64; wp_l++) begin
-      wm_q[wp_l]      <= c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
-                       : hs_p ? 8'd0 : {wlo_p[wp_l][7:4] & {4{~cfg_fmt}}, wlo_p[wp_l][3:0]};
-      wm_q[64 + wp_l] <= c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
-                       : hs_p ? wlo_p[wp_l] : (cfg_fmt ? {4'd0, whi_p[wp_l]} : 8'd0);
+      wm_n[wp_l]      = c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
+                      : hs_p ? 8'd0 : {wlo_p[wp_l][7:4] & {4{~cfg_fmt}}, wlo_p[wp_l][3:0]};
+      wm_n[64 + wp_l] = c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
+                      : hs_p ? wlo_p[wp_l] : (cfg_fmt ? {4'd0, whi_p[wp_l]} : 8'd0);
     end
+  end
+  always_ff @(posedge clk) wm_q <= wm_n;
+
+  // DUAL: the placement register of the tokens >= TH (the second MAC weight operand): the same placement of stream B's
+  // weights when the beat has a partner (tag pr, which is 0 in the attention modes), else the placement above
+  logic [127:0][7:0] wmb_q;
+  if (DUAL) begin : g_wmb
+    wire pr_p = cd[C_M0 - 1].pr;
+    always_ff @(posedge clk) begin
+      for (int wp_l = 0; wp_l < 64; wp_l++) begin
+        wmb_q[wp_l]      <= pr_p ? (hs_p ? 8'd0 : {wlo_pb[wp_l][7:4] & {4{~cfg_fmt}}, wlo_pb[wp_l][3:0]}) : wm_n[wp_l];
+        wmb_q[64 + wp_l] <= pr_p ? (hs_p ? wlo_pb[wp_l] : (cfg_fmt ? {4'd0, whi_pb[wp_l]} : 8'd0)) : wm_n[64 + wp_l];
+      end
+    end
+  end else begin : g_nowmb
+    assign wmb_q = wm_q;
+    wire unused_pb = &{1'b0, wlo_pb, whi_pb};
   end
   // ATTPV MAC operands (with wm_q: from flops into the lanes)
   logic                                    pv_v_q, pv_f_q;
@@ -582,9 +666,10 @@ module tsr_mvm_back
       assign xg[t] = qs_data[t][256*g +: 256];
     end
     logic mac_ov;
-    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT), .PV(HAS_ATT), .PVR(FAST_CLK && HAS_ATT)) u_mac (
+    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT), .PV(HAS_ATT), .PVR(FAST_CLK && HAS_ATT),
+                   .TH(DUAL ? TH : 0)) u_mac (
       .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_M0]),
-      .w(wm_q[32*g +: 32]), .x(xg), .out_valid(mac_ov), .y(gs[g]),
+      .w(wm_q[32*g +: 32]), .wb(wmb_q[32*g +: 32]), .x(xg), .out_valid(mac_ov), .y(gs[g]),
       .pv_en(c_pv), .pv_valid(pv_v_q), .pv_first(pv_f_q), .pv_a(pv_a_q[g]), .pv_acc(pv_acc[g])
     );
     wire unused_mac = &{1'b0, mac_ov};
@@ -751,6 +836,12 @@ module tsr_mvm_back
   logic [T_MAX-1:0][31:0] y4;      // level-4 results (valid with t4v)
 
   for (genvar t = 0; t < T_MAX; t++) begin : g_tok
+    // the per-beat scale data of this token: the tokens >= TH take stream B's with DUAL (header)
+    localparam bit UP = DUAL && (t >= TH);
+    wire [31:0]                      t_da = UP ? da_u : da_m0;
+    wire [31:0]                      t_db = UP ? db_u : db_m0;
+    wire [TSR_MVM_GROUPS-1:0][5:0]   t_sc = UP ? sc_u : sc_g;
+    wire [7:0][5:0]                  t_m  = UP ? m_u  : m_m1;
     // ---------------- integer scale (G .. G+2) ----------------
     logic signed [20:0] s0, s1, s2, s3;
     assign s0 = gs[0][t];
@@ -768,10 +859,10 @@ module tsr_mvm_back
     wire hs_g = c_att ? a_par_g : (~cfg_fmt & cd[C_G].b4[1]);
     always_ff @(posedge clk) begin
       if (cfg_fmt) begin
-        is1_q[0] <= 23'($signed({1'b0, sc_g[0]}) * $signed(s0[16:0]));
-        is1_q[1] <= 23'($signed({1'b0, sc_g[1]}) * $signed(s1[16:0]));
-        is1_q[2] <= 23'($signed({1'b0, sc_g[2]}) * $signed(s2[16:0]));
-        is1_q[3] <= 23'($signed({1'b0, sc_g[3]}) * $signed(s3[16:0]));
+        is1_q[0] <= 23'($signed({1'b0, t_sc[0]}) * $signed(s0[16:0]));
+        is1_q[1] <= 23'($signed({1'b0, t_sc[1]}) * $signed(s1[16:0]));
+        is1_q[2] <= 23'($signed({1'b0, t_sc[2]}) * $signed(s2[16:0]));
+        is1_q[3] <= 23'($signed({1'b0, t_sc[3]}) * $signed(s3[16:0]));
       end else begin
         is1_q[0] <= 23'(hs_g ? s2 : s0);       // block b
         is1_q[1] <= 23'(hs_g ? s3 : s1);       // block b + 1
@@ -812,7 +903,7 @@ module tsr_mvm_back
         pair_q[ms_k] <= 17'($signed(dbs_data[t][256*bsel + 32*ms_k +: 16]))
                       + 17'($signed(dbs_data[t][256*bsel + 32*ms_k + 16 +: 16]));
       end
-      for (int mp_k = 0; mp_k < 8; mp_k++) mp_q[mp_k] <= 23'($signed({1'b0, m_m1[mp_k]}) * pair_q[mp_k]);
+      for (int mp_k = 0; mp_k < 8; mp_k++) mp_q[mp_k] <= 23'($signed({1'b0, t_m[mp_k]}) * pair_q[mp_k]);
       for (int m4_j = 0; m4_j < 4; m4_j++) m4_q[m4_j] <= 24'(mp_q[2*m4_j]) + 24'(mp_q[2*m4_j+1]);
       msum_q <= (26'(m4_q[0]) + 26'(m4_q[1])) + (26'(m4_q[2]) + 26'(m4_q[3]));
     end
@@ -840,11 +931,11 @@ module tsr_mvm_back
     logic        dd0_v, dd1_v;
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_a0 (
       .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_M0]),
-      .a(da_m0), .b(cfg_fmt ? dxh_q : dx_even), .out_valid(dd0_v), .y(dd0)
+      .a(t_da), .b(cfg_fmt ? dxh_q : dx_even), .out_valid(dd0_v), .y(dd0)
     );
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_a1 (
       .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_M0]),
-      .a(db_m0), .b(cfg_fmt ? dxh_q : dx_odd), .out_valid(dd1_v), .y(dd1)
+      .a(t_db), .b(cfg_fmt ? dxh_q : dx_odd), .out_valid(dd1_v), .y(dd1)
     );
     tsr_mvm_dly #(.W(64), .N(C_F - C_FD)) u_dly_dd (.clk, .rst_n(rst_tok_n[t]), .d({dd1, dd0}), .q({dd1_f, dd0_f}));
 
@@ -1031,6 +1122,14 @@ module tsr_mvm_back
     assign w_hi_top[l] = w_in[64 + l][7:4];
   end
   wire unused_ok = &{1'b0, beat.last, w_hi_top, cd[NCTL].se, pv_rd.dbs};   // dbs: the PV unit's data select
+  if (DUAL) begin : g_unused_b
+    logic [63:0][3:0] wb_hi_top;
+    for (genvar l = 0; l < 64; l++) begin : g_w
+      assign wb_hi_top[l] = beat_b.w[64 + l][7:4];
+    end
+    // stream B's tags are stream A's (asserted below); only its weights and scale data are used
+    wire unused_b = &{1'b0, beat_b.last, beat_b.row_last, beat_b.blk, beat_b.two, beat_b.half, wb_hi_top, cd[NCTL].pr};
+  end
 
   // ---------------------------------------------------------------------------------------------
   // Simulation checks (armed by the first reset edge)
@@ -1068,6 +1167,13 @@ module tsr_mvm_back
       // a row start is accepted >= ROW_GAP cycles after the previous one (flow-control rule (b))
       if (acc && at_start_q && !c_att) assert (since_q >= 4'(ROW_GAP)) else $error("%m: row start spacing violated");
       if (c_pv) assert (!acc) else $error("%m: a beat in ATTPV mode");
+      if (DUAL && acc && b_use) begin
+        assert (!c_att && !c_pv) else $error("%m: a stream B partner in an attention mode");
+        assert (beat_b.row_last == beat.row_last && beat_b.blk == beat.blk && beat_b.two == beat.two
+                && beat_b.half == beat.half)
+          else $error("%m: stream A / B tags differ: row_last %0b/%0b blk %0d/%0d two %0b/%0b half %0b/%0b",
+                      beat.row_last, beat_b.row_last, beat.blk, beat_b.blk, beat.two, beat_b.two, beat.half, beat_b.half);
+      end
       if (seg_v_q) assert (seg_cnt_q != '0) else $error("%m: SEG without a segment in flight");
       // no clear and accumulate write of the same slot in one cycle (proof in the header)
       if (l1_act_q && (ov != 2'b00)) begin

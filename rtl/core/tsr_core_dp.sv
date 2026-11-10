@@ -9,7 +9,10 @@
 //
 // Boundary:
 //   - host CSR port and one memory port per channel (spec Core boundary interface; tsr_core passes
-//     them through unchanged; every memory-port output is a tsr_mem_arb register).
+//     them through unchanged; every memory-port output is a tsr_mem_arb register). With MVM_DUAL one more
+//     read-only port per channel, mb_rd_* (docs/rtl-core.md §4: stream B of the MVM unit, no arbiter; its requests
+//     leave through a register slice and an outstanding-request limit, its responses enter through a register stage),
+//     and the input cfg_dual_en (docs/rtl-mvm.md §15).
 //   - the core-domain side of tsr_ctrl (tsr_ctrl.sv header, CC §11.2), with tsr_ctrl's port names
 //     minus the _i / _o suffix: issue FIFO (ifq_valid / ifq_ready / ifq_entry, ifq_count),
 //     ISSUED_SEQ, S[u] / D[u], the per-unit error-record handshake (err_valid / err_rec / err_ack,
@@ -57,6 +60,7 @@ module tsr_core_dp
   parameter longint unsigned CH_BYTES       = TSR_DEF_CH_BYTES,
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
+  parameter bit              MVM_DUAL       = 1'b0,      // dual weight stream per MVM cluster (docs/rtl-mvm.md §15): T_MAX even and >= 2
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
@@ -131,6 +135,18 @@ module tsr_core_dp
   input  logic [NUM_CH-1:0][BEAT_BITS-1:0]       m_rd_rsp_data,
   input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    m_rd_rsp_id,
   input  logic [NUM_CH-1:0]                      m_rd_rsp_last,
+  // ---- read-only port B of every channel (MVM_DUAL; tied off otherwise: valid 0, ready 0), the format of m_rd_* ----
+  output logic [NUM_CH-1:0]                      mb_rd_req_valid,
+  input  logic [NUM_CH-1:0]                      mb_rd_req_ready,
+  output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]     mb_rd_req_addr,
+  output logic [NUM_CH-1:0][TSR_LEN_W-1:0]       mb_rd_req_len,
+  output logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    mb_rd_req_id,
+  input  logic [NUM_CH-1:0]                      mb_rd_rsp_valid,
+  output logic [NUM_CH-1:0]                      mb_rd_rsp_ready,
+  input  logic [NUM_CH-1:0][BEAT_BITS-1:0]       mb_rd_rsp_data,
+  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    mb_rd_rsp_id,
+  input  logic [NUM_CH-1:0]                      mb_rd_rsp_last,
+  input  logic                                   cfg_dual_en,    // run MVMs with T <= T_MAX / 2 as two weight streams (MVM_DUAL; sampled per MVM at its accept)
   output logic [NUM_CH-1:0]                      m_wr_req_valid,
   input  logic [NUM_CH-1:0]                      m_wr_req_ready,
   output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]     m_wr_req_addr,
@@ -295,6 +311,9 @@ module tsr_core_dp
   if (HAS_MVM && LANES != TSR_MVM_LANES) begin : g_chk_lanes
     $fatal(1, "tsr_core_dp: HAS_MVM = 1 needs LANES == 128 (= BEAT_BITS / 4, one Q4_K beat; docs/rtl-mvm.md §1)");
   end
+  if (MVM_DUAL && (!HAS_MVM || T_MAX < 2 || (T_MAX % 2) != 0 || ADDR_BEAT_W > 32)) begin : g_chk_dual
+    $fatal(1, "tsr_core_dp: MVM_DUAL needs HAS_MVM, an even T_MAX >= 2 and ADDR_BEAT_W <= 32 (docs/rtl-mvm.md §15)");
+  end
   if (HAS_MVM && (MVM_WS_FIFO < 64 || (MVM_WS_FIFO & (MVM_WS_FIFO - 1)) != 0)) begin : g_chk_wsfifo
     $fatal(1, "tsr_core_dp: MVM_WS_FIFO must be a power of two >= 64 (docs/rtl-mvm.md §4)");
   end
@@ -341,7 +360,8 @@ module tsr_core_dp
                                       (HAS_GDN   ? tsr_tables_pkg::TSR_CAPS_GDN   : 32'd0) |
                                       (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                       (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
-                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
+                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0) |
+                                      (MVM_DUAL  ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0);
   // CFG3 (EX §7.5, VU §5.10, AT §5.10): the VU's lane counts (information), PCAP / 16 with attention
   localparam logic [31:0] CFG3      = (HAS_VU  ? ((32'(VU_EXP_LANES) & 32'h1F) | ((32'(VU_BACK_LANES) & 32'h1F) << 5)) : 32'd0) |
                                       (HAS_ATT ? (tsr_qa_lines(1'b1, 32'(K_MAX)) << 16) : 32'd0);
@@ -405,7 +425,8 @@ module tsr_core_dp
   logic                 mvm_cmd_valid, mvm_cmd_ready, mvm_done;
   tsr_mvm_cmd_t         mvm_cmd;
   logic                 perf_mvm_busy;
-  logic [NUM_CH-1:0]    perf_ch_rd_beat, perf_ch_wait;
+  logic [NUM_CH-1:0]    perf_ch_rd_beat, perf_ch_wait;       // main port: the arbiter's events; wait: both ports (below)
+  logic [NUM_CH-1:0]    perf_ch_wait_a, perf_ch_rd_beat_b;   // the arbiter's wait; the beats of the B ports (MVM_DUAL)
   // unit 3 (HAS_VU = 0: no command ever): vi_* on the issue path's side, vu_* on the unit's side (the same signals
   // unless XSLR_REG puts register stages between them, g_vux below)
   logic                 vi_cmd_valid, vi_cmd_ready, vi_done;
@@ -499,11 +520,11 @@ module tsr_core_dp
   // progress) see them two cycles late: the counts and the first no-progress stretch shift by a few cycles (perf_busy of
   // the VU by 6 per op: the three command and three done stages count), the HUNG decision does not change at the default limit of 2^24 cycles.
   logic [5:0]        unit_progress_c;
-  logic [NUM_CH-1:0] perf_ch_rd_beat_c, perf_ch_wait_c;
+  logic [NUM_CH-1:0] perf_ch_rd_beat_c, perf_ch_wait_c, perf_ch_rd_beat_b_c;
   logic [63:0][3:0]  perf_ext_un_c;
   if (XSLR_REG) begin : g_csrx
     (* shreg_extract = "no" *) logic [1:0][5:0]        prog_q;
-    (* shreg_extract = "no" *) logic [1:0][2*NUM_CH-1:0] chev_q;
+    (* shreg_extract = "no" *) logic [1:0][3*NUM_CH-1:0] chev_q;
     (* shreg_extract = "no" *) logic [1:0][63:0][3:0]  pext_q;
     initial begin
       prog_q = '0;
@@ -512,18 +533,19 @@ module tsr_core_dp
     end
     always @(posedge clk) begin           // not always_ff: the initial block writes them too
       prog_q[0] <= unit_progress;
-      chev_q[0] <= {perf_ch_wait, perf_ch_rd_beat};
+      chev_q[0] <= {perf_ch_wait, perf_ch_rd_beat_b, perf_ch_rd_beat};
       pext_q[0] <= perf_ext_un;
       prog_q[1] <= prog_q[0];
       chev_q[1] <= chev_q[0];
       pext_q[1] <= pext_q[0];
     end
     assign unit_progress_c = prog_q[1];
-    assign {perf_ch_wait_c, perf_ch_rd_beat_c} = chev_q[1];
+    assign {perf_ch_wait_c, perf_ch_rd_beat_b_c, perf_ch_rd_beat_c} = chev_q[1];
     assign perf_ext_un_c   = pext_q[1];
   end else begin : g_csrd
     assign unit_progress_c   = unit_progress;
     assign perf_ch_rd_beat_c = perf_ch_rd_beat;
+    assign perf_ch_rd_beat_b_c = perf_ch_rd_beat_b;
     assign perf_ch_wait_c    = perf_ch_wait;
     assign perf_ext_un_c     = perf_ext_un;
   end
@@ -557,7 +579,7 @@ module tsr_core_dp
     .qidle(qidle && ifq_drained), .qquiescent(qquiescent && ifq_drained),
     .err_any, .hold_src, .q_state, .seq_d(d_seq), .err_rec(q_err_rec), .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
-    .perf_ch_rd_beat(perf_ch_rd_beat_c), .perf_ch_wait(perf_ch_wait_c), .perf_ext, .unit_progress(unit_progress_c),
+    .perf_ch_rd_beat(perf_ch_rd_beat_c), .perf_ch_rd_beat_b(perf_ch_rd_beat_b_c), .perf_ch_wait(perf_ch_wait_c), .perf_ext, .unit_progress(unit_progress_c),
     .plat_err_i, .host_irq_o, .unit_hung
   );
   // PERF increments of the DB block (slots 61, 62, X + 10) and of the units (VU X + 13 .. 15, AT X + 16
@@ -686,10 +708,12 @@ module tsr_core_dp
   logic [ADDR_BEAT_W-1:0]  t_wr_req_addr;
   logic [TSR_LEN_W-1:0]    t_wr_req_len;
   logic [BEAT_BITS-1:0]    t_wr_dat_data;
-  logic [NUM_CH-1:0]       mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp;
-  logic [NUM_CH-1:0]       mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i;
+  logic [NUM_CH-1:0]       mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp, mt_rd_req_b, mt_rd_last_b;
+  logic [NUM_CH-1:0]       mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i, mt_rd_req_b_i, mt_rd_last_b_i;
   assign mt_rd_req_i  = m_rd_req_valid & m_rd_req_ready;
   assign mt_rd_last_i = m_rd_rsp_valid & m_rd_rsp_ready & m_rd_rsp_last;
+  assign mt_rd_req_b_i  = mb_rd_req_valid & mb_rd_req_ready;                       // the B ports (0 without MVM_DUAL)
+  assign mt_rd_last_b_i = mb_rd_rsp_valid & mb_rd_rsp_ready & mb_rd_rsp_last;
   assign mt_wr_req_i  = m_wr_req_valid & m_wr_req_ready;
   assign mt_wr_rsp_i  = m_wr_rsp_valid & m_wr_rsp_ready;
   // The taps count handshakes at the memory ports, which sit in other SLRs than the DB block when the
@@ -703,17 +727,19 @@ module tsr_core_dp
     assign mt_rd_last = mt_rd_last_i;
     assign mt_wr_req  = mt_wr_req_i;
     assign mt_wr_rsp  = mt_wr_rsp_i;
+    assign mt_rd_req_b  = mt_rd_req_b_i;
+    assign mt_rd_last_b = mt_rd_last_b_i;
   end else begin : g_mt
-    logic [MT_PIPE-1:0][4*NUM_CH-1:0] mt_q;
+    logic [MT_PIPE-1:0][6*NUM_CH-1:0] mt_q;
     always_ff @(posedge clk) begin
       if (!rst_b_n[RB_DBG]) begin
         mt_q <= '0;
       end else begin
-        mt_q[0] <= {mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i};
+        mt_q[0] <= {mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i, mt_rd_req_b_i, mt_rd_last_b_i};
         for (int unsigned k = 1; k < MT_PIPE; k++) mt_q[k] <= mt_q[k-1];
       end
     end
-    assign {mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp} = mt_q[MT_PIPE-1];
+    assign {mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp, mt_rd_req_b, mt_rd_last_b} = mt_q[MT_PIPE-1];
   end
 
   if (HAS_DB) begin : g_db
@@ -738,7 +764,7 @@ module tsr_core_dp
       .rec_wr, .rec_wdata, .rec_room, .rec_all, .smp_ready, .smp_req, .smp_local, .smp_done, .smp_timeout,
       .smp_data, .wpa_ready, .wpa_req, .wpa_local, .wpa_data, .wpa_done, .wpa_timeout,
       .wph_v, .wph_mask, .wph_addr, .wph_halt, .dfault, .flags,
-      .mt_rd_req, .mt_rd_last, .mt_wr_req, .mt_wr_rsp,
+      .mt_rd_req, .mt_rd_last, .mt_wr_req, .mt_wr_rsp, .mt_rd_req_b, .mt_rd_last_b,
       .trw_wr_req_valid(t_wr_req_valid), .trw_wr_req_ready(t_wr_req_ready), .trw_wr_req_addr(t_wr_req_addr),
       .trw_wr_req_len(t_wr_req_len), .trw_wr_dat_valid(t_wr_dat_valid), .trw_wr_dat_ready(t_wr_dat_ready),
       .trw_wr_dat_data(t_wr_dat_data), .trw_wr_dat_last(t_wr_dat_last), .trw_wr_rsp_valid(t_wr_rsp_valid)
@@ -772,7 +798,7 @@ module tsr_core_dp
     wire unused_nodb = &{1'b0, dbg_req, dbg_we, dbg_addr, dbg_wdata, dbg_host, sr_db_clear, unit_hung,
                          rv_halt_pend, rv_dmactive, rec_room, rec_all, smp_ready, smp_done, smp_timeout, smp_data,
                          wpa_ready, wpa_done, wpa_timeout, wph_v, wph_mask, wph_addr, wph_halt, dfault,
-                         mt_rd_req, mt_rd_last, mt_wr_req,
+                         mt_rd_req, mt_rd_last, mt_wr_req, mt_rd_req_b, mt_rd_last_b,
                          mt_wr_rsp, tap_enq, tap_enq_rec, tap_mark, tap_enq_unit, tap_enq_code, tap_enq_seq,
                          tap_enq_pidx, tap_enq_info, tap_enq_dep0, tap_enq_dep1, tap_enq_pc, tap_enq_kind,
                          tap_enq_w, tap_enq_ext, tap_start, tap_done, tap_done_ran, head_valid,
@@ -847,6 +873,12 @@ module tsr_core_dp
   logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  w_rd_req_addr;
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    w_rd_req_len;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] w_rd_req_id;
+  // stream B of the MVM unit (MVM_DUAL): the unit's side of the B ports
+  logic [NUM_CH-1:0]                   wb_rd_req_valid, wb_rd_req_ready, wb_rd_rsp_valid, wb_rd_rsp_ready, wb_rd_rsp_last;
+  logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  wb_rd_req_addr;
+  logic [NUM_CH-1:0][TSR_LEN_W-1:0]    wb_rd_req_len;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] wb_rd_req_id, wb_rd_rsp_id;
+  logic [NUM_CH-1:0][BEAT_BITS-1:0]    wb_rd_rsp_data;
 
   logic scale_request, scale_grant;
   tsr_vu_pkg::tsr_vu_local_req_t [1:0] scale_req;
@@ -866,11 +898,11 @@ module tsr_core_dp
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
       .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
       .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
-      .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK)
+      .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK), .DUAL(MVM_DUAL)
     ) u_mvm (
       .clk, .rst_n(rst_pre_n),
       .cmd_valid(mvm_cmd_valid && (!needs_scale || scale_grant)), .cmd_ready(inner_ready), .cmd(mvm_cmd), .cmd_xc(mvm_cmd_xc),
-      .xcmd(mvm_xcmd), .done(mvm_done),
+      .xcmd(mvm_xcmd), .cfg_dual_en, .done(mvm_done),
       .local_score_req, .local_score_data, .scale_req, .scale_rsp,
       .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_MVM]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_MVM]),
       .spm_rd_req_line(spm_rd_req_line[TSR_SPM_CL_MVM]), .spm_rd_rsp_valid(spm_rd_rsp_valid[TSR_SPM_CL_MVM]),
@@ -882,6 +914,10 @@ module tsr_core_dp
       .ws_rd_req_len(w_rd_req_len), .ws_rd_req_id(w_rd_req_id),
       .ws_rd_rsp_valid(w_rd_rsp_valid), .ws_rd_rsp_ready(w_rd_rsp_ready), .ws_rd_rsp_data(s_rd_rsp_data),
       .ws_rd_rsp_last(s_rd_rsp_last), .ws_rd_rsp_id(s_rd_rsp_id),
+      .wsb_rd_req_valid(wb_rd_req_valid), .wsb_rd_req_ready(wb_rd_req_ready), .wsb_rd_req_addr(wb_rd_req_addr),
+      .wsb_rd_req_len(wb_rd_req_len), .wsb_rd_req_id(wb_rd_req_id),
+      .wsb_rd_rsp_valid(wb_rd_rsp_valid), .wsb_rd_rsp_ready(wb_rd_rsp_ready), .wsb_rd_rsp_data(wb_rd_rsp_data),
+      .wsb_rd_rsp_last(wb_rd_rsp_last), .wsb_rd_rsp_id(wb_rd_rsp_id),
       .perf_mvm_busy, .perf_att_qk, .perf_att_pv, .perf_att_stall   // PERF ATT_QK / PV / PATH_STALL
     );
   end else begin : g_nomvm
@@ -902,6 +938,12 @@ module tsr_core_dp
     assign w_rd_req_len   = '0;
     assign w_rd_req_id    = '0;
     assign w_rd_rsp_ready = '1;
+    assign wb_rd_req_valid = '0;
+    assign wb_rd_req_addr  = '0;
+    assign wb_rd_req_len   = '0;
+    assign wb_rd_req_id    = '0;
+    assign wb_rd_rsp_ready = '1;
+    wire unused_wb = &{1'b0, wb_rd_req_ready, wb_rd_rsp_valid, wb_rd_rsp_data, wb_rd_rsp_last, wb_rd_rsp_id, cfg_dual_en};
     assign spm_rd_req_valid[TSR_SPM_CL_MVM] = 1'b0;
     assign spm_rd_req_line[TSR_SPM_CL_MVM]  = '0;
     assign spm_wr_valid[TSR_SPM_CL_MVM]     = 1'b0;
@@ -913,6 +955,82 @@ module tsr_core_dp
                         spm_wr_ready[TSR_SPM_CL_MVM], mvm_cmd_valid, mvm_cmd,
                         mvm_cmd_xc, mvm_xcmd};
   end
+
+  // -------------------------------------------------------------------------------------------
+  // Read-only port B of every channel (MVM_DUAL, docs/rtl-core.md §4): stream B of the MVM unit, no arbiter.
+  //   - requests: a register slice (registered valid and payload at the boundary, M8) behind an outstanding-request
+  //     limit (RD_OUTSTANDING per port, M2): a request passes only while fewer than RD_OUTSTANDING of its channel are
+  //     between the slice and the transfer of their last beat, counted from the transfer into the slice (a flop gates
+  //     valid and ready alike, so the stream's valid still never depends on a ready). Id = {TSR_SRC_WS, 0}.
+  //   - responses: one register stage into the unit (the stream never withdraws its ready: it reserves FIFO space
+  //     before it requests, so mb_rd_rsp_ready is constant 1).
+  //   - events: the beats (PERF CH_RD_BEATS counts them with the main port's) and a busy flag (a request is outstanding
+  //     or offered), registered like the arbiter's, form CH_WAIT together with the main port's (docs/prof-dbg.md).
+  // -------------------------------------------------------------------------------------------
+  logic [NUM_CH-1:0] pb_beat_q, pb_busy_q;       // registered: a B beat was delivered / a B read is outstanding
+  logic [NUM_CH-1:0] pb_beat_i, pb_busy_i;
+  if (MVM_DUAL) begin : g_pb
+    localparam int unsigned OW = $clog2(RD_OUTSTANDING + 1);
+    for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
+      logic                   rs_v, rs_r, space_q;
+      logic [OW-1:0]          out_q;
+      logic [TSR_SRC_ID_W-1:0] bq_id;
+      logic                   rq_fire, rsp_last;
+      assign rs_v = wb_rd_req_valid[c] & space_q;
+      assign wb_rd_req_ready[c] = rs_r & space_q;
+      tsr_rslice #(.W(ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W)) u_bq (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(rs_v), .s_ready(rs_r), .s_data({wb_rd_req_addr[c], wb_rd_req_len[c], wb_rd_req_id[c]}),
+        .m_valid(mb_rd_req_valid[c]), .m_ready(mb_rd_req_ready[c]),
+        .m_data({mb_rd_req_addr[c], mb_rd_req_len[c], bq_id})
+      );
+      assign mb_rd_req_id[c]    = {TSR_SRC_ID_W'(TSR_SRC_WS), bq_id};
+      assign mb_rd_rsp_ready[c] = 1'b1;
+      assign rq_fire  = rs_v & rs_r;
+      assign rsp_last = mb_rd_rsp_valid[c] & mb_rd_rsp_last[c];
+      wire [OW-1:0] out_n = out_q + OW'(rq_fire) - OW'(rsp_last);
+      always_ff @(posedge clk) begin
+        if (!rst_b_n[RB_ARB + c]) begin
+          out_q     <= '0;
+          space_q   <= 1'b1;
+          pb_beat_i[c] <= 1'b0;
+          pb_busy_i[c] <= 1'b0;
+        end else begin
+          out_q     <= out_n;
+          space_q   <= (out_n < OW'(RD_OUTSTANDING));
+          pb_beat_i[c] <= mb_rd_rsp_valid[c];
+          pb_busy_i[c] <= (out_n != '0) | rq_fire;
+        end
+      end
+      tsr_vpipe #(.VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(1), .KEEP_REGS(1'b1)) u_br (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]), .in_valid(mb_rd_rsp_valid[c]),
+        .in_data({mb_rd_rsp_data[c], mb_rd_rsp_last[c], mb_rd_rsp_id[c][TSR_SRC_ID_W-1:0]}),
+        .out_valid(wb_rd_rsp_valid[c]), .out_data({wb_rd_rsp_data[c], wb_rd_rsp_last[c], wb_rd_rsp_id[c]})
+      );
+      wire unused_bid = &{1'b0, mb_rd_rsp_id[c][TSR_MEM_ID_W-1:TSR_SRC_ID_W], wb_rd_rsp_ready[c]};
+    end
+  end else begin : g_nopb
+    assign mb_rd_req_valid = '0;
+    assign mb_rd_req_addr  = '0;
+    assign mb_rd_req_len   = '0;
+    assign mb_rd_req_id    = '0;
+    assign mb_rd_rsp_ready = '0;
+    assign pb_beat_i       = '0;
+    assign pb_busy_i       = '0;
+    assign wb_rd_req_ready = '0;
+    assign wb_rd_rsp_valid = '0;
+    assign wb_rd_rsp_data  = '0;
+    assign wb_rd_rsp_last  = '0;
+    assign wb_rd_rsp_id    = '0;
+    wire unused_pb = &{1'b0, mb_rd_req_ready, mb_rd_rsp_valid, mb_rd_rsp_data, mb_rd_rsp_id, mb_rd_rsp_last, wb_rd_req_valid,
+                       wb_rd_req_addr, wb_rd_req_len, wb_rd_req_id, wb_rd_rsp_ready};
+  end
+  // the B events as registered stages aligned with the arbiter's registered perf events (g_pb: pb_*_i are flops already)
+  assign pb_beat_q = pb_beat_i;
+  assign pb_busy_q = pb_busy_i;
+  assign perf_ch_rd_beat_b = pb_beat_q;
+  // CH_WAIT: a read is outstanding on either port and no beat arrived on either
+  assign perf_ch_wait = (perf_ch_wait_a & ~pb_beat_q) | (pb_busy_q & ~perf_ch_rd_beat & ~pb_beat_q);
 
   // -------------------------------------------------------------------------------------------
   // RISC-V SPM bridge (client 3, CC §10.5). The direct path holds its
@@ -1289,7 +1407,7 @@ module tsr_core_dp
       .m_wr_dat_valid(m_wr_dat_valid[c]), .m_wr_dat_ready(m_wr_dat_ready[c]),
       .m_wr_dat_data(m_wr_dat_data[c]), .m_wr_dat_mask(m_wr_dat_mask[c]), .m_wr_dat_last(m_wr_dat_last[c]),
       .m_wr_rsp_valid(m_wr_rsp_valid[c]), .m_wr_rsp_ready(m_wr_rsp_ready[c]), .m_wr_rsp_id(m_wr_rsp_id[c]),
-      .perf_rd_beat(perf_ch_rd_beat[c]), .perf_rd_wait(perf_ch_wait[c])
+      .perf_rd_beat(perf_ch_rd_beat[c]), .perf_rd_wait(perf_ch_wait_a[c])
     );
   end
 
@@ -1316,7 +1434,7 @@ module tsr_core_dp
     for (int c = 0; c < NUM_CH; c++) begin
       dma_mem_beat |= (d_rd_rsp_valid[c] && d_rd_rsp_ready[c]) || (d_wr_dat_valid[c] && d_wr_dat_ready[c]) ||
                       (d_wr_rsp_valid[c] && d_wr_rsp_ready[c]);
-      ws_mem_beat  |= w_rd_rsp_valid[c] && w_rd_rsp_ready[c];
+      ws_mem_beat  |= (w_rd_rsp_valid[c] && w_rd_rsp_ready[c]) || (wb_rd_rsp_valid[c] && wb_rd_rsp_ready[c]);
     end
     for (int c = 0; c < TSR_SPM_NSP; c++) begin
       spm_hs[c] = (spm_rd_req_valid[c] && spm_rd_req_ready[c]) || (spm_wr_valid[c] && spm_wr_ready[c]) ||
@@ -1381,16 +1499,25 @@ module tsr_core_dp
   // next expected request address; MVM SPM reads outstanding.
   logic [NUM_CH-1:0][47:0] ws_exp_q, ws_req_q, ws_rsp_q;
   logic [NUM_CH-1:0][63:0] ws_addr_q;
+  // the same for stream B (MVM_DUAL): the rows [first + rA, first + rows_c) of a dual MVM, from beat w_off + rA ROW_BEATS
+  logic [NUM_CH-1:0][47:0] wsb_exp_q, wsb_req_q, wsb_rsp_q;
+  logic [NUM_CH-1:0][63:0] wsb_addr_q;
   logic [7:0]              mvm_rd_out_q;
   logic                    att_q;                // the MVM unit holds an attention command (cmd_xc)
   wire                     mvm_rd_take = spm_rd_req_valid[TSR_SPM_CL_MVM] && spm_rd_req_ready[TSR_SPM_CL_MVM];
 
+  // beats of stream A (b = 0) or B (b = 1) of channel ch: rows_c rows split into rA = ceil(rows_c / 2) and rB = rows_c - rA when
+  // the MVM runs as two weight streams (dual), else all rows_c in stream A
   function automatic logic [47:0] ws_beats_exp(logic [31:0] n, logic [31:0] r, logic [31:0] row_beats,
-                                               int unsigned ch);
-    logic [31:0] rows;
+                                               int unsigned ch, bit dual, bit b);
+    logic [31:0] rows, ra, rb;
     rows = tsr_mvm_rows_c(n, r, 64'(ch) * 64'(r));
-    return 48'(rows) * 48'(row_beats);
+    ra   = dual ? ((rows + 32'd1) >> 1) : rows;
+    rb   = rows - ra;
+    return 48'(b ? rb : ra) * 48'(row_beats);
   endfunction
+  // the MVM runs as two weight streams: MVM_DUAL, the run-time enable, not an attention op, T <= T_MAX / 2
+  wire mvm_dual_x = MVM_DUAL && cfg_dual_en && !mvm_cmd_xc && (mvm_cmd.t <= 4'(T_MAX / 2));
 
   always_ff @(posedge clk) begin
     if (!rst_b_n[RB_CHK]) begin
@@ -1404,6 +1531,10 @@ module tsr_core_dp
       ws_req_q     <= '0;
       ws_rsp_q     <= '0;
       ws_addr_q    <= '0;
+      wsb_exp_q    <= '0;
+      wsb_req_q    <= '0;
+      wsb_rsp_q    <= '0;
+      wsb_addr_q   <= '0;
     end else if (chk_on_q) begin
       if (dma_take)   dma_busy_q  <= 1'b1;
       if (dma_done)   dma_busy_q  <= 1'b0;
@@ -1463,10 +1594,15 @@ module tsr_core_dp
         if (mvm_take) begin
           // an attention command (cmd_xc: ATTQK / ATTPV) streams its KV planes through the same source with
           // its own request pattern (AT §8); only the unit-local rules are checked for it (att_q)
-          ws_exp_q[c]  <= mvm_cmd_xc ? 48'd0 : ws_beats_exp(mvm_cmd.n, mvm_cmd.rows_per_ch, mvm_cmd.row_beats, c);
+          ws_exp_q[c]  <= mvm_cmd_xc ? 48'd0 : ws_beats_exp(mvm_cmd.n, mvm_cmd.rows_per_ch, mvm_cmd.row_beats, c, mvm_dual_x, 1'b0);
           ws_req_q[c]  <= '0;
           ws_rsp_q[c]  <= '0;
           ws_addr_q[c] <= mvm_cmd_xc ? 64'd0 : 64'(mvm_cmd.w_off);
+          wsb_exp_q[c]  <= mvm_cmd_xc ? 48'd0 : ws_beats_exp(mvm_cmd.n, mvm_cmd.rows_per_ch, mvm_cmd.row_beats, c, mvm_dual_x, 1'b1);
+          wsb_req_q[c]  <= '0;
+          wsb_rsp_q[c]  <= '0;
+          wsb_addr_q[c] <= mvm_cmd_xc ? 64'd0 : 64'(mvm_cmd.w_off) +
+                           64'(ws_beats_exp(mvm_cmd.n, mvm_cmd.rows_per_ch, mvm_cmd.row_beats, c, mvm_dual_x, 1'b0));
         end else begin
           if (req) begin
             ws_req_q[c]  <= ws_req_q[c] + 48'(s_rd_req_len[c][TSR_SRC_WS]);
@@ -1483,6 +1619,35 @@ module tsr_core_dp
         end
         assert (!(rsp && ws_rsp_q[c] >= ws_req_q[c]))
           else $error("tsr_core_dp: WS response beat on channel %0d without a request", c);
+        // stream B: the same rules (docs/rtl-mvm.md §4, §15), at the unit's side of the B port
+        begin
+          automatic logic reqb = wb_rd_req_valid[c] && wb_rd_req_ready[c];
+          automatic logic rspb = wb_rd_rsp_valid[c] && wb_rd_rsp_ready[c];
+          automatic logic [47:0] leftb = wsb_exp_q[c] - wsb_req_q[c];
+          automatic logic [47:0] want_lenb = (leftb < 48'(64 - wsb_addr_q[c][5:0])) ? leftb : 48'(64 - wsb_addr_q[c][5:0]);
+          assert (!((wb_rd_req_valid[c] || wb_rd_rsp_valid[c]) && !mvm_busy_q))
+            else $error("tsr_core_dp: stream B traffic on channel %0d while no MVM is in flight", c);
+          assert (!((wb_rd_req_valid[c] || wb_rd_rsp_valid[c]) && !MVM_DUAL))
+            else $error("tsr_core_dp: stream B traffic on channel %0d without MVM_DUAL", c);
+          if (!mvm_take) begin
+            if (reqb) begin
+              wsb_req_q[c]  <= wsb_req_q[c] + 48'(wb_rd_req_len[c]);
+              wsb_addr_q[c] <= wsb_addr_q[c] + 64'(wb_rd_req_len[c]);
+              assert (att_q ||
+                      (64'(wb_rd_req_addr[c]) == wsb_addr_q[c] && 48'(wb_rd_req_len[c]) == want_lenb && want_lenb != '0))
+                else $error("tsr_core_dp: stream B request ch%0d addr %0d len %0d, expected addr %0d len %0d (rtl-mvm §4, §15)",
+                            c, wb_rd_req_addr[c], wb_rd_req_len[c], wsb_addr_q[c], want_lenb);
+            end
+            if (rspb) wsb_rsp_q[c] <= wsb_rsp_q[c] + 48'd1;
+          end
+          assert (!(rspb && wsb_rsp_q[c] >= wsb_req_q[c]))
+            else $error("tsr_core_dp: stream B response beat on channel %0d without a request", c);
+          if (mvm_done) begin
+            assert (!wb_rd_req_valid[c] && wsb_req_q[c] == wsb_exp_q[c] && wsb_rsp_q[c] == wsb_req_q[c])
+              else $error("tsr_core_dp: MVM done on channel %0d with stream B request %0b, %0d beats requested, %0d received, %0d expected",
+                          c, wb_rd_req_valid[c], wsb_req_q[c], wsb_rsp_q[c], wsb_exp_q[c]);
+          end
+        end
         if (mvm_done) begin
           assert (!s_rd_req_valid[c][TSR_SRC_WS] && (att_q || ws_req_q[c] == ws_exp_q[c]) && ws_rsp_q[c] == ws_req_q[c])
             else $error("tsr_core_dp: MVM done on channel %0d with WS request %0b, %0d beats requested, %0d received, %0d expected (rows_c x ROW_BEATS)",

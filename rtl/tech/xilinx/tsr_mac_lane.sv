@@ -25,6 +25,11 @@
 //   2^17 offset in the post-adder (a constant on the C port) folds that correction into the DSP,
 //   so no fabric logic is spent on it. An odd T leaves token T - 1 alone in its slot: M = x w,
 //   P = M. DSPs per instance: N x ceil(T / 2) (N = 32: T 1 / 2 / 3 / 8 -> 32 / 32 / 64 / 128).
+//   Dual weight stream (TH >= 1, docs/rtl-mvm.md §15): the tokens t < TH take the weight w as the shared B operand, the tokens
+//   t >= TH the weight wb. A DSP slot never mixes the two, so the pairs (2s, 2s + 1) are formed inside each half: slot s
+//   of half h = s / ceil(TH / 2) holds tokens h TH + 2 j (high) and h TH + 2 j + 1 (low) with j = s mod ceil(TH / 2). An odd TH
+//   leaves the last token of each half alone in its slot. DSPs per instance: N x 2 ceil(TH / 2) (T = 2 TH; T 4 / 8 with
+//   TH 2 / 4: as without TH; T 2: 2 N). TH = 0: the slots above.
 //   Vivado 2024.2 (tb/tech/viv/tech_ooc.tcl, xcu200): exactly that many DSP48E2, the packed ones
 //   as (C + ((D + A)' * B')')' with AMULTSEL = AD; the synthesized netlists match the generic
 //   lane in post-synthesis simulation (tb/tech/viv/net_sim.sh).
@@ -69,14 +74,16 @@ module tsr_mac_lane #(
   // slot and eight lanes, one cycle later (docs/platform-u200.md §8.10). pv_en changes only while the lane is empty; the
   // bench assertion below checks that no operand is offered within a cycle of a change. PVR = 0: the signal itself.
   parameter  bit          PVR   = 1'b0,
+  parameter  int unsigned TH    = 0,    // dual weight stream: tokens >= TH take `wb` (0: all tokens take `w`)
   localparam int unsigned SUM_W = 16 + $clog2(N),
-  localparam int unsigned NSP   = (T + 1) / 2
+  localparam int unsigned NSP   = (T + 1) / 2        // PV slots (the interface); the DSP slots NS below are NSP or more
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
   input  logic                          ce,
   input  logic                          in_valid,
   input  logic [N-1:0][7:0]             w,      // signed 8-bit weights
+  input  logic [N-1:0][7:0]             wb,     // weights of the tokens >= TH (TH >= 1)
   input  logic [T-1:0][N-1:0][7:0]      x,      // signed 8-bit activations, per token
   output logic                          out_valid,
   output logic [T-1:0][SUM_W-1:0]       y,      // signed sums, per token
@@ -92,10 +99,17 @@ module tsr_mac_lane #(
   if (N < 1 || T < 1 || LAT < 1) begin : g_chk
     $fatal(1, "tsr_mac_lane: N >= 1, T >= 1 and LAT >= 1 required");
   end
+  if (TH > T) begin : g_chk_th
+    $fatal(1, "tsr_mac_lane: TH <= T required");
+  end
 
   localparam int unsigned LV   = (N > 1) ? $clog2(N) : 0;     // adder levels
   localparam int unsigned NP   = 1 << LV;                     // padded lane count
-  localparam int unsigned NS   = (T + 1) / 2;                 // DSP slots per lane
+  // DSP slots per lane: tokens are paired inside a weight stream (TH = 0: one stream of T tokens, else two of TH tokens)
+  localparam int unsigned NHALF = (TH != 0) ? 2 : 1;
+  localparam int unsigned TN   = (TH != 0) ? TH : T;          // tokens per weight stream
+  localparam int unsigned NSH  = (TN + 1) / 2;                // slots per stream
+  localparam int unsigned NS   = NHALF * NSH;                 // DSP slots per lane
   localparam int unsigned TCMX = (LV > 1) ? LV - 1 : 0;       // possible cuts inside the tree
 
   // ---- register allocation (header): M, P, first tree cut, AD, IN, more tree cuts, extras ----
@@ -174,7 +188,11 @@ module tsr_mac_lane #(
   logic [T-1:0][NP-1:0][15:0] prod;
 
   for (genvar s = 0; s < NS; s++) begin : g_s
-    localparam bit PAIR = (2 * s + 1 < T);    // tokens 2s (high) and 2s + 1 (low) share the DSP
+    localparam int unsigned SH   = s / NSH;                 // weight stream of the slot (0: w, 1: wb)
+    localparam int unsigned SJ   = s % NSH;
+    localparam int unsigned TK   = SH * TN + 2 * SJ;        // the slot's first token (high)
+    localparam bit          PAIR = (2 * SJ + 1 < TN);       // tokens TK (high) and TK + 1 (low) share the DSP
+    localparam bit          PVS  = (s < NSP);               // the slot has a PV operand
     for (genvar k = 0; k < N; k++) begin : g_k
       // operands: the A / D input mux (MVM: A = x[2s] 2^18 for a pair, else x[2s]; D = x[2s+1];
       // PV: A = pv_a[s], D = 0), B = the weight / V byte in both modes
@@ -186,14 +204,20 @@ module tsr_mac_lane #(
       (* use_dsp = "yes" *) logic signed [34:0] m_d, m_q;
       logic signed [47:0] p_d, p_q;
 
+      logic signed [24:0] pva;                  // the slot's PV operand (0 for a slot beyond the PV slots)
+      if (PVS) begin : g_pva
+        assign pva = pv_a[s];
+      end else begin : g_nopva
+        assign pva = '0;
+      end
       if (PAIR) begin : g_pair
-        assign a_d = pvo ? 27'($signed(pv_a[s])) : $signed({x[2*s][k][7], x[2*s][k], 18'd0});
-        assign d_d = pvo ? 8'sd0 : $signed(x[2*s+1][k]);
+        assign a_d = pvo ? 27'(pva) : $signed({x[TK][k][7], x[TK][k], 18'd0});
+        assign d_d = pvo ? 8'sd0 : $signed(x[TK+1][k]);
       end else begin : g_one
-        assign a_d = pvo ? 27'($signed(pv_a[s])) : 27'($signed(x[2*s][k]));
+        assign a_d = pvo ? 27'(pva) : 27'($signed(x[TK][k]));
         assign d_d = '0;
       end
-      assign b_d = w[k];
+      assign b_d = (SH == 1) ? wb[k] : w[k];
 
       // IN: A1 / D / B1 registers
       if (R_IN) begin : g_in
@@ -245,17 +269,17 @@ module tsr_mac_lane #(
       end else begin : g_no_p
         assign p_q = p_d;
       end
-      if (PV) begin : g_pv_out
+      if (PV && PVS) begin : g_pv_out
         assign pv_acc[s][k] = p_q[37:0];
       end
 
       // extraction (wiring only)
       if (PAIR) begin : g_x_pair
-        assign prod[2*s][k]   = p_q[33:18];
-        assign prod[2*s+1][k] = p_q[15:0];
+        assign prod[TK][k]   = p_q[33:18];
+        assign prod[TK+1][k] = p_q[15:0];
         wire unused_p = &{1'b0, p_q[47:34], p_q[17:16]};
       end else begin : g_x_one
-        assign prod[2*s][k] = p_q[15:0];
+        assign prod[TK][k] = p_q[15:0];
         wire unused_p = &{1'b0, p_q[47:16], d_i};
       end
     end
@@ -335,6 +359,9 @@ module tsr_mac_lane #(
   if (!PV) begin : g_nopv
     assign pv_acc = '0;
     wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a, pv_fp, pv_vp};
+  end
+  if (TH == 0) begin : g_nowb
+    wire unused_wb = &{1'b0, wb};
   end
 
 endmodule

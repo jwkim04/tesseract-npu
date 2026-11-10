@@ -94,7 +94,9 @@ level 3 `SOFT_RESET` and a warm restart, level 4 a card reset (`xrt-smi reset`).
 How to measure and what to report with a result: [`performance.md`](performance.md). The PERF space (EX §6) is gated by `ACTIVE` (a launch is in progress) and `QHALT` (the hart is halted and the
 datapath quiescent), so PERF does not move between launches and the difference of two reads is one launch. DB adds
 three slots at the top of the range: 61 `TRW_RECORDS`, 62 `TRW_DROPS`, 63 `DBG_STOP_CYCLES` (a measurement is valid
-only if it is 0). DDR idle of channel c is `CYCLES - CH_RD_BEATS[c] - CH_WAIT[c]`, issue-bound MVM time is
+only if it is 0). DDR idle of channel c is `CYCLES - CH_RD_BEATS[c] - CH_WAIT[c]` (with `CAPS` bit 16 an MVM can deliver two
+beats in one cycle, one on each read port of the channel, so the difference can be too small by the cycles with two beats: use
+`TSR_MVM_DUAL=0` for this measurement), issue-bound MVM time is
 `MVM_EMPTY` and dependency-bound `MVM_WAIT`.
 
 The utilization split (`docs/spec.md` §14). The DDR utilization `U` is the bytes read per token times tokens per

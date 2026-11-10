@@ -115,6 +115,12 @@ module tsr_tb_at_mvm
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] ws_req_id, s_rd_rsp_id;
   logic [NUM_CH-1:0][BB-1:0]           s_rd_rsp_data;
   logic [NUM_CH-1:0]                   s_rd_rsp_last;
+  // the dual weight stream is absent from this bench (MVM DUAL 0): stream B's port is left open
+  logic [NUM_CH-1:0]                   wsb_req_valid, wsb_rsp_ready;
+  logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  wsb_req_addr;
+  logic [NUM_CH-1:0][TSR_LEN_W-1:0]    wsb_req_len;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] wsb_req_id;
+  wire unused_wsb = &{1'b0, wsb_req_valid, wsb_rsp_ready, wsb_req_addr, wsb_req_len, wsb_req_id};
 
   tsr_mvm #(
     .HAS_ATT(1'b1), .XC_CMD_W(256), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
@@ -127,7 +133,10 @@ module tsr_tb_at_mvm
     .local_score_req('0), .local_score_data(), .scale_req(), .scale_rsp('0),
     /* verilator lint_on PINCONNECTEMPTY */
     .clk, .rst_n,
-    .cmd_valid, .cmd_ready, .cmd, .cmd_xc, .xcmd, .done,
+    .cmd_valid, .cmd_ready, .cmd, .cmd_xc, .xcmd, .cfg_dual_en(1'b0), .done,
+    .wsb_rd_req_valid(wsb_req_valid), .wsb_rd_req_ready('0), .wsb_rd_req_addr(wsb_req_addr), .wsb_rd_req_len(wsb_req_len),
+    .wsb_rd_req_id(wsb_req_id), .wsb_rd_rsp_valid('0), .wsb_rd_rsp_ready(wsb_rsp_ready), .wsb_rd_rsp_data('0),
+    .wsb_rd_rsp_last('0), .wsb_rd_rsp_id('0),
     .spm_rd_req_valid, .spm_rd_req_ready, .spm_rd_req_line, .spm_rd_rsp_valid, .spm_rd_rsp_data,
     .spm_wr_valid, .spm_wr_ready, .spm_wr_line, .spm_wr_data, .spm_wr_be,
     .ws_rd_req_valid(ws_req_valid), .ws_rd_req_ready(ws_req_ready), .ws_rd_req_addr(ws_req_addr),

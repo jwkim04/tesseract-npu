@@ -693,7 +693,8 @@ capability 1.0 = 0x0000_0100, `CFG0`–`CFG3`, `CAPS`, `CTL_ID`, `CTRL`, `STATUS
 `SREG0`–`15` at 0x9C0–0x9FC, [DB](design/05-debug.md) §10.1); the DMI window of the debug module
 (0xC00–0xDFC); the queue status `Q_*` (0xE00–0xF1C, readable even if the control core is dead). `CTRL` has
 the level bits `RV_RUN`, `HOST_HOLD`, `HOLD_ON_HALT` and `IRQ_EN` and the pulse bits `QABORT`, `QCLEAR` and
-`SOFT_RESET`. `CAPS` has bit 0 VU, bit 3 TOPK, bit 5 ATT, bit 6 DQROW, bit 7 VMASK and bit 8 GDN; the retired
+`SOFT_RESET`. `CAPS` has bit 0 VU, bit 3 TOPK, bit 5 ATT, bit 6 DQROW, bit 7 VMASK, bit 8 GDN and bit 16 MVM_DUAL (two weight streams per
+channel for an MVM with T ≤ T_MAX / 2; timing only); the retired
 bits 2 and 4 are never set or reused (EX §7.5). The backend reads `CAPS` to choose its path.
 
 PERF counters (EX §6). Time counters count while the device is ACTIVE and not stopped by the debugger
@@ -1479,7 +1480,9 @@ are defined in [EX](design/01-execution-model.md) §5 (CSR), §6 (PERF) and §8 
   exception is the `PERF_*` snapshot below. The host polls `STATUS` and `PERF_*` while a launch runs.
 - `PERF_*` hardware meaning: `PERF_CYCLES` is the number of cycles in which the device is active
   (ACTIVE and not QHALT, section 10); `PERF_CH_WAIT[c]` is the number of cycles in which channel c has
-  at least one unfinished read and no read beat arrives. `PERF_MVM_CYCLES` is the number of cycles in
+  at least one unfinished read and no read beat arrives (a core with the dual weight stream has two read ports per channel:
+  the beats of both count in `PERF_CH_RD_BEATS[c]`, and the wait is a cycle with an unfinished read on either port and no beat
+  on either). `PERF_MVM_CYCLES` is the number of cycles in
   which the MVM unit holds an instruction (from the cycle after acceptance up to the done cycle); an
   MVM with N = 0 adds 1, and an MVM that ended in the check with an error adds 0. A read of the LO word
   of a 64-bit counter takes a sample of the whole 64 bits at that moment, and the next read of the HI

@@ -390,19 +390,32 @@ def bc_lines(kind: int, K: int, qas) -> list:
     return out
 
 
-def ccmd(fmt: int, K: int, N: int, num_ch: int, w_off: int) -> dict:
-    """tsr_mvm_ccmd_t fields of an MVM (docs/rtl-mvm.md §3.1)."""
+def ccmd(fmt: int, K: int, N: int, num_ch: int, w_off: int, dual: int = 0) -> dict:
+    """tsr_mvm_ccmd_t fields of an MVM (docs/rtl-mvm.md §3.1). dual: the MVM runs as two weight streams (§15)."""
     return dict(fmt=fmt, k=K, n=N, rows_per_ch=-(-N // num_ch), row_beats=row_beats(fmt, K),
-                w_off=w_off, d_lines=qa_d_lines(qa_kind(fmt), K))
+                w_off=w_off, d_lines=qa_d_lines(qa_kind(fmt), K), dual=int(dual))
 
 
-def fcmd(fmt: int, K: int, N: int, num_ch: int, c: int, w_off: int) -> dict | None:
-    """tsr_mvm_fcmd_t of cluster c (None when the channel has no rows; docs/rtl-mvm.md §3.2)."""
+def rows_ab(rc: int, dual: bool) -> tuple:
+    """The rows (A, B) of a cluster's stream split (docs/rtl-mvm.md §15): rA = ceil(rows_c / 2), rB = rows_c - rA;
+    without the dual stream (A, 0) = (rows_c, 0)."""
+    return ((rc + 1) // 2, rc // 2) if dual else (rc, 0)
+
+
+def fcmd(fmt: int, K: int, N: int, num_ch: int, c: int, w_off: int, dual: bool = False, stream: int = 0) -> dict | None:
+    """tsr_mvm_fcmd_t of cluster c (None when the channel has no rows, or, for stream 1 (B), no B rows;
+    docs/rtl-mvm.md §3.2, §15). Stream 0 (A) is rows [first, first + rA) from beat w_off, stream 1 (B) the rows
+    [first + rA, first + rows_c) from beat w_off + rA ROW_BEATS."""
     rc = rows_c(N, num_ch, c)
     if rc == 0:
         return None
     rb = row_beats(fmt, K)
-    return dict(fmt=fmt, k=K, row_beats=rb, w_off=w_off, rows=rc, beats=rc * rb)
+    ra, rbn = rows_ab(rc, dual)
+    if stream == 0:
+        return dict(fmt=fmt, k=K, row_beats=rb, w_off=w_off, rows=ra, beats=ra * rb)
+    if rbn == 0:
+        return None
+    return dict(fmt=fmt, k=K, row_beats=rb, w_off=w_off + ra * rb, rows=rbn, beats=rbn * rb)
 
 
 # =============================================================================================
@@ -427,21 +440,25 @@ class Job:
         return v
 
 
-def gather_jobs(N: int, num_ch: int, T: int, dst: int, stride: int) -> list:
-    """Every partial-line write of the gather, per cluster in row order, tokens inner."""
+def gather_jobs(N: int, num_ch: int, T: int, dst: int, stride: int, dual: bool = False) -> list:
+    """Every partial-line write of the gather, per cluster in row order, tokens inner. dual: each cluster's rows are
+    two streams (docs/rtl-mvm.md §15), A = the first ceil(rows_c / 2) rows and B = the others, and every stream's
+    consecutive rows inside one SPM line form a group of their own (A's last and B's first group may share a line)."""
     jobs = []
     if N == 0:
         return jobs
     R = -(-N // num_ch)
     for c in range(num_ch):
         n0, rc = c * R, rows_c(N, num_ch, c)
-        n = n0
-        while n < n0 + rc:
-            ln = n // 16
-            last = min(n0 + rc - 1, 16 * ln + 15)
-            for tk in range(T):
-                jobs.append(Job(c, tk, dst + tk * stride + ln, n % 16, last % 16, last == N - 1, (n, last)))
-            n = last + 1
+        ra, rb = rows_ab(rc, dual)
+        for s0, s1 in ((n0, n0 + ra), (n0 + ra, n0 + ra + rb)):
+            n = s0
+            while n < s1:
+                ln = n // 16
+                last = min(s1 - 1, 16 * ln + 15)
+                for tk in range(T):
+                    jobs.append(Job(c, tk, dst + tk * stride + ln, n % 16, last % 16, last == N - 1, (n, last)))
+                n = last + 1
     return jobs
 
 

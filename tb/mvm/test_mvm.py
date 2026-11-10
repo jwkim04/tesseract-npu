@@ -64,6 +64,14 @@ cocotb tests (each configuration runs all of them):
                   attention modes add no cycle to the weight path): test_mvm_real_att
 Configurations (CFGS): NUM_CH 1 / 3 / 4 / 16, T_MAX 1 / 2 / 3 / 8, BC_PIPE and RES_PIPE 0 / 1 / 3,
 SPM_RD_LAT 1 / 2 / 3 / 4, ADD_LAT 1 / 3 / 5 / 8, WS FIFO 64..512, RD_OUTSTANDING 2..16.
+Dual weight stream (DUAL = 1 configurations d4, d2n3, d8, d4u; docs/rtl-mvm.md §15): the testbench adds the read-only memory
+port B (a second MemModel, prefix mb_, over the same DRAM image, with its own latency regime) and the run-time enable
+cfg_dual_en. An MVM is dual when the enable is on and T <= T_MAX / 2: every cluster's front commands are then the two
+streams (mvm_model.fcmd), channel c reads rA x ROW_BEATS beats on port A and rB x ROW_BEATS on port B (their sum is
+rows_c x ROW_BEATS), the SPM writes are those of mvm_model.gather_jobs(dual). The tests above run in these configurations
+with the enable on, off and toggled between MVMs; mvm_dual adds the shapes of the split (rows_c 1, 2, 3, odd, rA not a
+multiple of 16, clusters without rows, N < NUM_CH), unequal memory regimes on the two ports (A much slower than B, B much
+slower than A, both ideal), chains of dual and single MVMs, ACC, K from the smallest to K_MAX and the dual speed-up.
 Environment: TSR_MVM_TESTS=a,b (subset), TSR_MVM_SCALE (random test size factor, default 1.0),
 TSR_MVM_BUILD_ARGS (extra Verilator arguments, e.g. -DSYNTHESIS to drop the RTL's simulation
 assertions and show that the testbench checks alone catch a fault), TSR_MVM_VERBOSE=1.
@@ -87,7 +95,7 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 from common import isa
 from common import mvm_model as mm
 from common.mem_model import MemModel
-from common.runner import REPO, build_root, rtl_sources, run
+from common.runner import REPO, build_root, mutated_sources, rtl_sources, run
 from common.tbutil import seed as tb_seed
 
 HDL = REPO / "tb" / "mvm" / "hdl"
@@ -113,10 +121,28 @@ CFGS = {
                   WS_FIFO_BEATS=256, BC_PIPE=0, RES_PIPE=3, ACT_RD_LAT=2, ADD_LAT=5, WS_RD_LAT=3,
                   RD_OUTSTANDING=8),
 }
-REAL_CFGS = tuple(CFGS)          # the same tests with the real tsr_mvm_back / tsr_mvm_actbuf
+# dual weight stream configurations (DUAL = 1: T_MAX even; TH = T_MAX / 2): d4 the release image's T_MAX, d2n3 TH 1 on three
+# channels with a small FIFO and RD_OUTSTANDING 2, d8 T_MAX 8, d4u the U200 pipes and latencies (with attention built in)
+CFGS.update({
+    "d4":   dict(NUM_CH=4, T_MAX=4, K_MAX=4096, SPM_BYTES=262144, SPM_RD_LAT=2, ADDR_BEAT_W=28,
+                 WS_FIFO_BEATS=256, BC_PIPE=1, RES_PIPE=1, ACT_RD_LAT=2, ADD_LAT=5, WS_RD_LAT=2,
+                 RD_OUTSTANDING=16, DUAL=1),
+    "d2n3": dict(NUM_CH=3, T_MAX=2, K_MAX=2048, SPM_BYTES=65536, SPM_RD_LAT=3, ADDR_BEAT_W=22,
+                 WS_FIFO_BEATS=128, BC_PIPE=3, RES_PIPE=0, ACT_RD_LAT=1, ADD_LAT=3, WS_RD_LAT=3,
+                 RD_OUTSTANDING=2, DUAL=1),
+    "d8":   dict(NUM_CH=2, T_MAX=8, K_MAX=2048, SPM_BYTES=65536, SPM_RD_LAT=1, ADDR_BEAT_W=22,
+                 WS_FIFO_BEATS=64, BC_PIPE=0, RES_PIPE=2, ACT_RD_LAT=1, ADD_LAT=1, WS_RD_LAT=1,
+                 RD_OUTSTANDING=16, DUAL=1),
+    "d4u":  dict(NUM_CH=4, T_MAX=4, K_MAX=4096, SPM_BYTES=262144, SPM_RD_LAT=4, ADDR_BEAT_W=28,
+                 WS_FIFO_BEATS=512, BC_PIPE=2, RES_PIPE=2, ACT_RD_LAT=2, MAC_LAT=9, ADD_LAT=5, WS_RD_LAT=2,
+                 RD_OUTSTANDING=16, RST_LOCAL=2, DUAL=1),
+})
+DOUBLE_CFGS = tuple(c for c in CFGS if c not in ("d8", "d4u"))     # the tests with the back-end double
+REAL_CFGS = tuple(c for c in CFGS if c != "d4u")                  # the same tests with the real tsr_mvm_back / tsr_mvm_actbuf
 ATT_CFGS = ("c4", "c3t3")        # ... and with HAS_ATT = 1 (non-power-of-two NUM_CH and T_MAX 3 among them)
 
-TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset", "mvm_cycles", "mvm_bc_flush"]
+TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset", "mvm_cycles", "mvm_bc_flush",
+         "mvm_dual"]
 ATT_TESTS = ["mvm_directed", "mvm_b2b", "mvm_perf", "mvm_cycles"]   # HAS_ATT = 1: the weight path unchanged
 
 W_LO = 1 << 21             # lowest weight beat (every channel, same W_OFF; was above the simulator's staging area)
@@ -142,14 +168,17 @@ def _ref_archive() -> Path:
     return dst
 
 
-def build_spec(real: bool):
+def build_spec(real: bool, mutant=None):
     """(sources, build_args): the rtl filelist with the back end / activation buffer replaced by
-    the doubles (real=False), plus the testbench toplevel."""
+    the doubles (real=False), plus the testbench toplevel. mutant: one entry of DUAL_MUTANTS (its text change is applied)."""
     srcs = []
     for s in rtl_sources():
         if not real and s.name in ("tsr_mvm_back.sv", "tsr_mvm_actbuf.sv"):
             s = DBL / s.name
         srcs.append(s)
+    if mutant is not None:
+        mid, fname, old, new = mutant[:4]
+        srcs = mutated_sources(srcs, fname, old, new, "mvm_" + mid)
     srcs += [HDL / "tsr_mvm_bc_observer.sv", TB_SV]
     if real:
         return srcs, []
@@ -161,13 +190,13 @@ def is_skeleton(path: Path) -> bool:
     return "SKELETON" in path.read_text()
 
 
-def _run(cfg: str, real: bool, att: bool = False, *, overrides=None, only=None, suffix=""):
+def _run(cfg: str, real: bool, att: bool = False, *, overrides=None, only=None, suffix="", mutant=None):
     p = dict(CFGS[cfg], **(overrides or {}))
     sel = os.environ.get("TSR_MVM_TESTS")
     tests = [t for t in (only or (ATT_TESTS if att else TESTS)) if not sel or t in sel.split(",")]
     if not real:
         tests = [t for t in tests if t != "mvm_cycles"]   # the double back end is not the weight path's timing
-    srcs, bargs = build_spec(real)
+    srcs, bargs = build_spec(real, mutant)
     extra = os.environ.get("TSR_MVM_BUILD_ARGS", "").split()   # e.g. -DSYNTHESIS (no RTL assertions)
     run("tsr_tb_mvm", __name__, parameters=dict(p, HAS_ATT=1) if att else p, sources=srcs,
         build_args=bargs + extra, testcase=tests,
@@ -175,7 +204,7 @@ def _run(cfg: str, real: bool, att: bool = False, *, overrides=None, only=None, 
         extra_env={"TSR_MVM_CFG": json.dumps(dict(p, name=cfg, real=real, att=att))})
 
 
-@pytest.mark.parametrize("cfg", list(CFGS))
+@pytest.mark.parametrize("cfg", list(DOUBLE_CFGS))
 def test_mvm(cfg):
     _run(cfg, real=False)
 
@@ -186,6 +215,44 @@ def test_mvm_real(cfg):
     if is_skeleton(core / "tsr_mvm_back.sv") or is_skeleton(core / "tsr_mvm_actbuf.sv"):
         pytest.skip("rtl/core tsr_mvm_back / tsr_mvm_actbuf are still skeletons")
     _run(cfg, real=True)
+
+
+# Mutants of the dual weight stream (opt-in: TSR_MVM_MUTANTS=1 or -k mutants): (id, file, old text, new text, what it breaks,
+# the test that has to fail). Each is applied to a scratch copy of the file (it must match exactly once) and the unit bench of
+# the d4 configuration (the real back end and activation buffer) runs `only`; the run must fail.
+DUAL_MUTANTS = [
+    ("b_row_off", "tsr_mvm_cluster.sv", "woffb_q <= woff_q + mula3_q[31:0];", "woffb_q <= woff_q + mula3_q[31:0] + 32'd1;",
+     "stream B starts one beat after its first row", "mvm_dual"),
+    ("b_scale_a", "tsr_mvm_back.sv", "sc_u <= cd[C_G - 1].pr ? scb_m1 : sca_m1;", "sc_u <= sca_m1;",
+     "the scale data of the slots at and above T_MAX / 2 come from A", "mvm_dual"),
+    ("unpaired_kept", "tsr_mvm_cluster.sv", "assign res_bv    = DUAL & bv_q;", "assign res_bv    = DUAL;",
+     "the unpaired last row of A is passed on as a row of B", "mvm_dual"),
+    ("no_token_copy", "tsr_mvm_cluster.sv", "| ((DUAL && dual_q) ? (T_MAX'(1) << bc_line.tok) << TH : '0);", "| '0;",
+     "the broadcast does not write the copy of the activations for the slots at and above T_MAX / 2", "mvm_dual"),
+    ("merged_last", "tsr_mvm_gather.sv", "{a_last & (bf_q | ~bact_q), a_jd[JW-2:0]}", "{a_last, a_jd[JW-2:0]}",
+     "the merged job carries `last` on A's last job although B's jobs are still to come", "mvm_dual"),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("m", DUAL_MUTANTS, ids=[m[0] for m in DUAL_MUTANTS])
+def test_mvm_dual_mutants(m):
+    """Each mutant of DUAL_MUTANTS must make the bench fail (opt-in: TSR_MVM_MUTANTS=1)."""
+    if os.environ.get("TSR_MVM_MUTANTS") != "1":
+        pytest.skip("opt-in: TSR_MVM_MUTANTS=1")
+    killed = False
+    try:
+        _run("d4", real=True, only=[m[5]], mutant=m, suffix="_mut_" + m[0])
+    except BaseException as e:                 # a failing cocotb run raises SystemExit under pytest
+        if isinstance(e, KeyboardInterrupt):
+            raise
+        killed = True
+    assert killed, "dual mutant %s (%s) survived" % (m[0], m[4])
+
+
+def test_mvm_dual_u200():
+    """The dual weight stream with the U200 pipes and latencies and the attention modes built in."""
+    _run("d4u", real=True, att=True, only=["mvm_directed", "mvm_dual", "mvm_b2b", "mvm_perf", "mvm_cycles"], suffix="_u200")
 
 
 @pytest.mark.parametrize("cfg", ATT_CFGS)
@@ -403,6 +470,7 @@ class Monitor:
         self.wr = []               # (cycle, line, be)
         self.rd = []               # (cycle, line)
         self.ws_req = [0] * self.nch
+        self.wsb_req = [0] * self.nch
         self.busy_cycles = 0
         self.first_wr = self.last_wr = None
 
@@ -433,8 +501,14 @@ class Monitor:
             rv = int(d.o_rd_req_valid.value) & int(d.o_rd_req_ready.value)
             wsv = int(d.o_ws_req_valid.value)
             wsr = int(d.o_ws_req_ready.value)
-            if (wv or rv or wsv or int(d.o_rd_req_valid.value) or int(d.o_wr_valid.value)) and not self.hold:
-                self.err("SPM / WS traffic while no instruction is held (wr %d rd %d ws %x)" % (wv, rv, wsv))
+            wbv = int(d.o_wsb_req_valid.value)
+            wbr = int(d.o_wsb_req_ready.value)
+            if (wv or rv or wsv or wbv or int(d.o_rd_req_valid.value) or int(d.o_wr_valid.value)) and not self.hold:
+                self.err("SPM / WS traffic while no instruction is held (wr %d rd %d ws %x wsb %x)" % (wv, rv, wsv, wbv))
+            if wbv & wbr:
+                for c in range(self.nch):
+                    if (wbv & wbr) >> c & 1:
+                        self.wsb_req[c] += 1
             if wv:
                 self.wr.append((self.cyc, int(d.o_wr_line.value), int(d.o_wr_be.value)))
                 if self.first_wr is None:
@@ -463,11 +537,17 @@ class Monitor:
                     self.err("done with an SPM request pending")
                 if wsv or int(d.o_ws_rsp_valid.value):
                     self.err("done with a WS request / beat pending (req %x rsp %x)" % (wsv, int(d.o_ws_rsp_valid.value)))
+                if int(d.o_wsb_req_valid.value) or int(d.o_wsb_rsp_valid.value):
+                    self.err("done with a stream B request / beat pending (req %x rsp %x)" % (
+                        int(d.o_wsb_req_valid.value), int(d.o_wsb_rsp_valid.value)))
                 if self.mem is not None and not self.mem.idle():
                     self.err("done with memory reads outstanding")
+                if self.memb is not None and not self.memb.idle():
+                    self.err("done with stream B memory reads outstanding")
                 self.hold = False
 
     mem = None
+    memb = None
 
 
 class BcMon:
@@ -475,8 +555,9 @@ class BcMon:
     (§3.2), observed inside the DUT: watched clusters (first and last) record every bc_cmd /
     bc_line item; every cluster records its tsr_mvm_fcmd_t handshakes."""
 
-    def __init__(self, dut, nch: int):
+    def __init__(self, dut, nch: int, dual: bool = False):
         self.dut = dut
+        self.dual = dual
         self.cl = [dut.u_mvm.g_cl[c].u_cl for c in range(nch)]
         self.watch = list(range(nch))
         self.clear()
@@ -484,6 +565,7 @@ class BcMon:
     def clear(self):
         self.items = {c: [] for c in self.watch}
         self.fcmds = {c: [] for c in range(len(self.cl))}
+        self.fcmdsb = {c: [] for c in range(len(self.cl))}      # stream B front commands (DUAL)
 
     async def run(self):
         d = self.dut
@@ -503,13 +585,15 @@ class BcMon:
             for c, cl in enumerate(self.cl):
                 if int(cl.fc_v_q.value) and int(cl.f_cmd_ready.value):
                     self.fcmds[c].append(int(cl.fc.value))
+                if self.dual and int(cl.fcb_v_q.value) and int(cl.fb_cmd_ready.value):
+                    self.fcmdsb[c].append(int(cl.g_front_b.fcb.value))
 
-    def check(self, m: dict, nch: int):
+    def check(self, m: dict, nch: int, dual: bool = False):
         N, K, fmt = m["N"], m["K"], m["fmt"]
         if N == 0:
             want = []
         else:
-            cc = mm.ccmd(fmt, K, N, nch, m["w_off"])
+            cc = mm.ccmd(fmt, K, N, nch, m["w_off"], dual)
             want = [("cmd", isa.MVM_CCMD_T.pack(**cc))]
             want += [("line", isa.MVM_BCLINE_T.pack(**b)) for b in mm.bc_lines(mm.qa_kind(fmt), K, m["qas"])]
         for c in self.watch:
@@ -529,11 +613,17 @@ class BcMon:
                 raise AssertionError("cluster %d broadcast item %d of %d/%d: got %s, want %s (%s)" % (
                     c, i, len(got), len(want), fields(g), fields(w), describe(m)))
         for c in range(nch):
-            fc = mm.fcmd(fmt, K, N, nch, c, m["w_off"]) if N else None
+            fc = mm.fcmd(fmt, K, N, nch, c, m["w_off"], dual) if N else None
             want_f = [isa.MVM_FCMD_T.pack(**fc)] if fc else []
             if self.fcmds[c] != want_f:
                 raise AssertionError("cluster %d front commands %s, want %s (%s)" % (
                     c, [isa.MVM_FCMD_T.unpack(x) for x in self.fcmds[c]], fc, describe(m)))
+            if self.dual:
+                fb = mm.fcmd(fmt, K, N, nch, c, m["w_off"], dual, stream=1) if N else None
+                want_b = [isa.MVM_FCMD_T.pack(**fb)] if fb else []
+                if self.fcmdsb[c] != want_b:
+                    raise AssertionError("cluster %d stream B front commands %s, want %s (%s)" % (
+                        c, [isa.MVM_FCMD_T.unpack(x) for x in self.fcmdsb[c]], fb, describe(m)))
 
 
 class Tb:
@@ -543,10 +633,29 @@ class Tb:
         self.L = p["SPM_BYTES"] // 64
         self.limit = 1 << p["ADDR_BEAT_W"]
         self.mem = None
+        self.memb = None                       # DUAL: the model of the read-only port B
+        self.dual_cfg = bool(p.get("DUAL"))
+        self.dual_en = self.dual_cfg           # the run-time enable cfg_dual_en
         self.mon = Monitor(dut, p)
         self.oracle = Oracle(p)
         self.real = bool(p.get("real"))
         self.stats = []
+
+    def set_dual(self, en: bool):
+        """cfg_dual_en for the MVMs accepted from now on (a DUAL build only)."""
+        self.dual_en = bool(en) and self.dual_cfg
+        self.dut.cfg_dual_en.value = int(self.dual_en)
+
+    def is_dual(self, m: dict) -> bool:
+        """The MVM runs as two weight streams: enabled and T <= T_MAX / 2 (N = 0 has no streams)."""
+        return self.dual_cfg and self.dual_en and m["N"] > 0 and m["T"] <= self.p["T_MAX"] // 2
+
+    def ws_beats(self, c: int) -> int:
+        """Weight beats read on channel c since clear_tracking: both ports."""
+        n = self.mem.src_beats[c][isa.SRC_WS]
+        if self.memb is not None:
+            n += self.memb.src_beats[c][isa.SRC_WS]
+        return n
 
     async def start(self):
         d = self.dut
@@ -559,6 +668,9 @@ class Tb:
         d.h_wr_line.value = 0
         d.h_wr_data.value = 0
         d.h_wr_be.value = 0
+        d.cfg_dual_en.value = int(self.dual_en)
+        for sig in ("mb_rd_req_ready", "mb_rd_rsp_valid", "mb_rd_rsp_data", "mb_rd_rsp_id", "mb_rd_rsp_last"):
+            getattr(d, sig).value = 0
         await Timer(1, "ns")
         self.clock = Clock(d.clk, 10, unit="ns")
         self.clock.start(start_high=True)
@@ -567,8 +679,17 @@ class Tb:
                             seed=tb_seed(), wr_order="any")
         self.mem.start()
         self.mon.mem = self.mem
+        if self.dual_cfg:
+            # port B: the same DRAM image, its own random streams; the unit has no outstanding limit on this port
+            # (tsr_core_dp's limiter is checked by tb/core), so the model allows as many as the FIFO can reserve
+            self.memb = MemModel(d, num_ch=self.nch, addr_w=self.p["ADDR_BEAT_W"], rst_n=d.o_mvm_rst_n, prefix="mb_",
+                                 rd_outstanding=1 << 12, limit_beats=self.limit, seed=tb_seed() + 101,
+                                 read_only=True, wr_order="any", name="memb")
+            self.memb.share_image(self.mem)
+            self.memb.start()
+            self.mon.memb = self.memb
         cocotb.start_soon(self.mon.run())
-        self.bc = BcMon(d, self.nch)
+        self.bc = BcMon(d, self.nch, self.dual_cfg)
         cocotb.start_soon(self.bc.run())
         await ClockCycles(d.clk, 5)
         await RisingEdge(d.clk)
@@ -588,9 +709,13 @@ class Tb:
         d.rst_n.value = 1
         await ClockCycles(d.clk, self.p.get("RST_LOCAL", 0) + 2)
 
-    def regime(self, name: str):
+    def regime(self, name: str, nameb: str | None = None):
+        """The memory regime of port A (and of port B: `nameb`, default the same one)."""
         for k, v in MEM_REGIMES[name].items():
             setattr(self.mem, k, v)
+        if self.memb is not None:
+            for k, v in MEM_REGIMES[nameb or name].items():
+                setattr(self.memb, k, v)
 
     def knobs(self, rnd: random.Random | None, stall=None, lat=None, cap=None):
         """Back-end double knobs per cluster (no-op with the real back end)."""
@@ -662,6 +787,9 @@ class Tb:
         self.mon.clear()
         self.bc.clear()
         self.mem.clear_tracking()
+        if self.memb is not None:
+            self.memb.clear_tracking()
+        dual = self.is_dual(m)
         await RisingEdge(d.clk)
         d.cmd.value = mvm_cmd(m, nch)
         d.cmd_valid.value = 1
@@ -687,8 +815,8 @@ class Tb:
                   accept=self.mon.accept_cycle, done=self.mon.done_cycle)
         await RisingEdge(d.clk)
         if check:
-            self.check_traffic(m, R, rb)
-            self.bc.check(m, nch)
+            self.check_traffic(m, R, rb, dual)
+            self.bc.check(m, nch, dual)
             got = await self.spm_read(m["dst"], len(m["y_old"]) // 64) if m["y_old"] else b""
             st["y"], st["want"] = got, want
             if compare and got != want:
@@ -724,20 +852,29 @@ class Tb:
                 if data:
                     self.mem.load(c, 64 * m["w_off"], data)
 
-    def check_traffic(self, m: dict, R: int, rb: int):
+    def check_traffic(self, m: dict, R: int, rb: int, dual: bool = False):
         N, T, nch = m["N"], m["T"], self.nch
         ql = isa.qa_lines(mm.qa_kind(m["fmt"]), m["K"])
         assert self.mon.busy_cycles == self.mon.done_cycle - self.mon.accept_cycle, \
             "perf_mvm_busy counted %d cycles, accept->done %d" % (
                 self.mon.busy_cycles, self.mon.done_cycle - self.mon.accept_cycle)
         src = self.mem.src_beats
+        srcb = self.memb.src_beats if self.memb is not None else [[0] * 4] * nch
         for c in range(nch):
-            want = mm.rows_c(N, nch, c) * rb if N else 0
-            assert src[c][isa.SRC_WS] == want, "ch%d: %d WS beats, expected rows_c * ROW_BEATS = %d (%s)" % (
-                c, src[c][isa.SRC_WS], want, describe(m))
+            rc = mm.rows_c(N, nch, c) if N else 0
+            ra, rbn = mm.rows_ab(rc, dual)
+            want = rc * rb
+            # port A reads stream A's rows, port B stream B's: exactly rows_c * ROW_BEATS between them, no over-fetch
+            assert src[c][isa.SRC_WS] == ra * rb and srcb[c][isa.SRC_WS] == rbn * rb, \
+                "ch%d: %d / %d WS beats on port A / B, expected rA x ROW_BEATS = %d and rB x ROW_BEATS = %d (%s)" % (
+                    c, src[c][isa.SRC_WS], srcb[c][isa.SRC_WS], ra * rb, rbn * rb, describe(m))
+            assert self.ws_beats(c) == want
             assert src[c][isa.SRC_DMA] == 0 and src[c][isa.SRC_AUX] == 0, src[c]
-            if want == 0:
+            assert srcb[c][isa.SRC_DMA] == 0 and srcb[c][isa.SRC_AUX] == 0, srcb[c]
+            if ra == 0:
                 assert self.mon.ws_req[c] == 0, "ch%d without rows requested weights" % c
+            if rbn == 0:
+                assert self.mon.wsb_req[c] == 0, "ch%d without B rows requested stream B weights" % c
         if N == 0:
             assert not self.mon.wr and not self.mon.rd, "N = 0 accessed the SPM (%d writes, %d reads)" % (
                 len(self.mon.wr), len(self.mon.rd))
@@ -771,7 +908,7 @@ class Tb:
                 len(extra), extra[0] // 64 if extra else None, len(missing), missing[0] // 64 if missing else None,
                 len(twice), describe(m))
         # the number of partial-line writes is that of the gather_jobs model
-        jobs = mm.gather_jobs(N, nch, T, m["dst"], ds)
+        jobs = mm.gather_jobs(N, nch, T, m["dst"], ds, dual)
         if ds >= yl or T == 1:
             assert len(self.mon.wr) == len(jobs), "%d SPM writes, gather_jobs has %d" % (len(self.mon.wr), len(jobs))
 
@@ -863,6 +1000,12 @@ async def mvm_directed(dut):
             y[i:i + 4] = rnd.choice(ACC_SPECIAL_OLD).to_bytes(4, "little")
         m["y_old"] = bytes(y)
         await tb.mvm(m)
+    if tb.dual_cfg:
+        # the same shapes with the run-time enable off (single stream on a DUAL build), then on again
+        tb.set_dual(False)
+        for c in cases[:14]:
+            await tb.mvm(make_mvm(rnd, p, **c))
+        tb.set_dual(True)
     dut._log.info("mvm_directed: %d MVMs checked", len(tb.stats))
 
 
@@ -874,14 +1017,117 @@ async def mvm_random(dut):
     n = max(4, int(60 * scale()))
     kmax_eff = 4096
     for i in range(n):
-        tb.regime(rnd.choice(("rand", "rand", "fast", "slow", "burst")))
+        tb.regime(rnd.choice(("rand", "rand", "fast", "slow", "burst")), rnd.choice(("rand", "fast", "slow", "burst")))
         tb.knobs(rnd)
+        if tb.dual_cfg:
+            tb.set_dual(rnd.random() < 0.75)
         m = make_mvm(rnd, p, kmax_eff=kmax_eff, y_special=rnd.choice((0.0, 0.1, 0.5)))
         # keep the weight stream moderate
         if m["N"] * mm.row_beats(m["fmt"], m["K"]) > 6000 * p["NUM_CH"]:
             m = make_mvm(rnd, p, kmax_eff=1024)
         await tb.mvm(m)
     dut._log.info("mvm_random: %d MVMs checked", n)
+
+
+@cocotb.test()
+async def mvm_dual(dut):
+    """Dual weight stream (DUAL builds only; docs/rtl-mvm.md §15). Every dual MVM is checked like any other (oracle, SPM writes,
+    broadcast, both front commands, beats per port and channel). Here:
+      (a) the shapes of the split: rows per cluster 1, 2, 3, 4, 5, odd and even counts around 16 and 32 (rA not a multiple
+          of 16, A's last and B's first group in one SPM line), clusters with one row (B inactive) or none, N < NUM_CH,
+          T = 1 and T = T_MAX / 2, both formats, K from the block size to K_MAX, plain and ACC;
+      (b) unequal memory regimes on the two ports: A much slower than B, B much slower than A, both ideal, both random;
+      (c) chains of MVMs alternating dual and single mode (T <= TH and T > TH, the run-time enable toggled);
+      (d) the speed-up (real back end, ideal memory, FIFO >= 256): the steady-state cycles per weight beat of a dual MVM
+          against the same MVM in single mode (two-point slope over the number of rows)."""
+    tb = await new_tb(dut)
+    p, nch, TM = tb.p, tb.nch, tb.p["T_MAX"]
+    if not tb.dual_cfg:
+        dut._log.info("mvm_dual: not a DUAL build, skipped")
+        return
+    TH = TM // 2
+    rnd = random.Random(tb_seed() * 7 + 9)
+    kmax = p["K_MAX"]
+    tb.knobs(None, stall=0, lat=0, cap=4)
+    pairs = [("fast", "fast"), ("slow", "fast"), ("fast", "slow"), ("rand", "rand"), ("burst", "slow"), ("slow", "burst"),
+             ("rand", "fast")]
+    n_dual = n_single = 0
+
+    def shapes():
+        out = set()
+        for R in (1, 2, 3, 4, 5, 7, 15, 16, 17, 18, 31, 33, 34):
+            for N in (R * nch, R * nch - 1, (R - 1) * nch + 1):
+                if N >= 1:
+                    out.add(N)
+        out |= {1, 2, 3, max(1, nch - 1), nch, nch + 1, 2 * nch + 1, 5, 17, 33}
+        return sorted(out)
+
+    # (a) + (b)
+    ks = {0: [32, 96, 416, 1056, 2048], 1: [256, 768, 1280, 2048]}
+    for i, N in enumerate(shapes()):
+        fmt = i % 2
+        K = rnd.choice([k for k in ks[fmt] if k <= kmax] + ([kmax - kmax % mm.block_size(fmt)] if i % 7 == 0 else []))
+        if N * mm.row_beats(fmt, K) > 5000 * nch:
+            K = mm.block_size(fmt) * (1 + i % 3)
+        T = 1 if i % 3 else TH
+        tb.regime(*pairs[i % len(pairs)])
+        tb.set_dual(True)
+        m = make_mvm(rnd, p, fmt=fmt, K=K, N=N, T=T, acc=(i % 4 == 1))
+        assert tb.is_dual(m)
+        await tb.mvm(m)
+        n_dual += 1
+        if i % 5 == 0:                                   # the same shape in single mode
+            tb.set_dual(False)
+            await tb.mvm(make_mvm(rnd, p, fmt=fmt, K=K, N=N, T=T, acc=bool(i % 2)))
+            n_single += 1
+            tb.set_dual(True)
+    # K to K_MAX with few rows, both formats
+    for fmt in (0, 1):
+        bs = mm.block_size(fmt)
+        tb.regime("rand", "burst")
+        await tb.mvm(make_mvm(rnd, p, fmt=fmt, K=kmax - kmax % bs, N=2 * nch + 1, T=1, acc=False))
+        await tb.mvm(make_mvm(rnd, p, fmt=fmt, K=kmax - kmax % bs, N=2 * nch, T=TH, acc=True))
+        n_dual += 2
+    # (c) chains: alternating dual and single mode, the enable toggled, random regimes
+    for i in range(max(10, int(24 * scale()))):
+        tb.regime(rnd.choice(("fast", "rand", "slow", "burst")), rnd.choice(("fast", "rand", "slow", "burst")))
+        tb.knobs(rnd)
+        tb.set_dual(rnd.random() < 0.7)
+        T = rnd.choice([1, TH, TH + 1 if TH + 1 <= TM else TM, TM])
+        N = rnd.choice([1, 2, 3, nch, nch + 1, 2 * nch + 1, 5, 17 * nch + 1, rnd.randint(1, 90)])
+        m = make_mvm(rnd, p, kmax_eff=2048, N=N, T=T, acc=bool(rnd.getrandbits(1)))
+        if m["N"] * mm.row_beats(m["fmt"], m["K"]) > 5000 * nch:
+            m = make_mvm(rnd, p, kmax_eff=512, N=N, T=T)
+        if tb.is_dual(m):
+            n_dual += 1
+        else:
+            n_single += 1
+        await tb.mvm(m)
+    # (d) the speed-up
+    lines = []
+    if tb.real and p["WS_FIFO_BEATS"] >= 256:
+        tb.set_dual(True)
+        tb.regime("fast", "fast")
+        tb.knobs(None, stall=0, lat=0, cap=16)
+        fmt, K = 0, min(896, kmax)
+        rb = mm.row_beats(fmt, K)
+        slope = {}
+        for mode in (True, False):
+            tb.set_dual(mode)
+            cyc = []
+            for r in (16, 48):
+                m = make_mvm(rnd, p, fmt=fmt, K=K, N=r * nch, T=1, acc=False, stride=0, w_off=W_LO)
+                st = await tb.mvm(m)
+                cyc.append((st["max_beats"], st["cycles"]))
+            slope[mode] = (cyc[1][1] - cyc[0][1]) / (cyc[1][0] - cyc[0][0])
+            lines.append("%s: %d / %d cycles for %d / %d beats per channel: %.4f cycles per weight beat" % (
+                "dual " if mode else "single", cyc[0][1], cyc[1][1], cyc[0][0], cyc[1][0], slope[mode]))
+        assert slope[True] <= 0.55 * slope[False], "dual %.4f vs single %.4f cycles per beat" % (slope[True], slope[False])
+        assert slope[False] <= 1.0 + CPB_EPS
+        tb.set_dual(True)
+    for ln in lines:
+        dut._log.info("mvm_dual speed-up: %s (%d-beat rows, ideal memory)", ln, mm.row_beats(0, min(896, kmax)))
+    dut._log.info("mvm_dual: %d dual and %d single MVMs checked", n_dual, n_single)
 
 
 def golden_list(rnd: random.Random) -> list:
@@ -963,12 +1209,17 @@ async def mvm_cycles(dut):
     tb = await new_tb(dut)
     p = tb.p
     rec = []
+    if os.environ.get("TSR_MVM_NODUAL") == "1":
+        tb.set_dual(False)
     for phase, knobs in (("fast", dict(stall=0, lat=0, cap=16)), ("rand", dict(stall=10, lat=2, cap=4))):
         rnd = random.Random(0xC7C1E5 + len(rec))
         tb.regime(phase)
         tb.knobs(None, **knobs)
         for c, ch in enumerate(tb.mem.ch):
             ch.rng = random.Random(0x5EED00 + 97 * c + (phase == "rand"))
+        if tb.memb is not None:
+            for c, ch in enumerate(tb.memb.ch):
+                ch.rng = random.Random(0x5EED80 + 97 * c + (phase == "rand"))
         for c in cycles_list(p):
             m = make_mvm(rnd, p, **c)
             st = await tb.mvm(m)
@@ -996,6 +1247,11 @@ CYCLE_DIGEST = {
     "c1t8":  "816d9a4a60303627",
     "c16t2": "de23fbf976a873df",
     "c4t8":  "129b3691537eca8a",
+    # the dual weight stream builds (docs/rtl-mvm.md §15), run with the dual enable on (equal for $TSR_SEED 1 and 7)
+    "d4":    "b7ae33e381c00908",
+    "d2n3":  "9f6cea4c7dd89b35",
+    "d8":    "f73e0ec5a5cb34fc",
+    "d4u":   "6d85477e67e0acf0",
 }
 
 
@@ -1020,11 +1276,12 @@ def perf_cpb_max(p: dict, rb: int):
 def perf_fixed_max(p: dict) -> int:
     """Bound of the fixed part of accept -> done: the cycles beyond the weight stream (beats x
     cycles per beat) and the T x QA_LINES broadcast reads."""
+    dual = 3 if p.get("DUAL") else 0        # DUAL: two more setup steps, the stream split, the job merge stage
     if p.get("real"):
         # §9.1: setup ~20 + back-end pipeline ~30 + tree <= 4 ADD_LAT + 8 + gather ~20, plus the
         # pipes and the SPM read latency. The real back end's latency is its own, so
         # this is the contract budget (measured 33-99 cycles in CFGS, bound 84-124).
-        return 78 + 4 * p["ADD_LAT"] + p["BC_PIPE"] + p["RES_PIPE"] + 2 * p["SPM_RD_LAT"]
+        return 78 + 4 * p["ADD_LAT"] + p["BC_PIPE"] + p["RES_PIPE"] + 2 * p["SPM_RD_LAT"] + dual
     # back-end double (a row's result 2 + ACT_RD_LAT cycles after its last beat): the top's own
     # latency (accept, cluster setup, pipes, gather, done; the weight round trip and WS_RD_LAT
     # hide behind the broadcast) plus the double's. Measured 15-18.5 + BC_PIPE + RES_PIPE +
@@ -1036,7 +1293,7 @@ def perf_fixed_max(p: dict) -> int:
     # + 2 for the even / odd SPM (CC §10.2): the broadcast's second QA line and the
     # gather's second y line are on the other bank, whose read / write grant another client
     # (the host port) may own: one grant hand-over cycle per bank port instead of one per port.
-    return DBL_FIXED + p["BC_PIPE"] + p["RES_PIPE"] + p["SPM_RD_LAT"] + p["ACT_RD_LAT"] + 8 * fifo_bound + 2
+    return DBL_FIXED + p["BC_PIPE"] + p["RES_PIPE"] + p["SPM_RD_LAT"] + p["ACT_RD_LAT"] + 8 * fifo_bound + 2 + dual
 
 
 @cocotb.test()
@@ -1267,6 +1524,8 @@ async def mvm_overlap(dut):
         base = min(m["x"], m["dst"])
         tb.mon.clear()
         tb.mem.clear_tracking()
+        if tb.memb is not None:
+            tb.memb.clear_tracking()
         n0 = tb.mon.done_count
         await tb.issue(m)
         await tb.wait_done(n0)
@@ -1274,9 +1533,8 @@ async def mvm_overlap(dut):
         allowed = {m["dst"] + t * ds + i for t in range(T) for i in range(yl)}
         bad = [ln for _, ln, _ in tb.mon.wr if ln not in allowed]
         assert not bad, "overlap MVM wrote outside the y ranges: %s" % bad[:4]
-        src = tb.mem.src_beats
         for c in range(nch):
-            assert src[c][isa.SRC_WS] == mm.rows_c(N, nch, c) * mm.row_beats(fmt, K)
+            assert tb.ws_beats(c) == mm.rows_c(N, nch, c) * mm.row_beats(fmt, K)
         await RisingEdge(dut.clk)
         got = await tb.spm_read(m["dst"], span)
         want = tb.oracle.run_seq([m], [(base, before)])[64 * m["dst"]:64 * (m["dst"] + span)]

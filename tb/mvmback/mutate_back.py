@@ -166,6 +166,11 @@ MUTANTS = [
      "if (cut_c * int'(LV) / int'(NCUT) + 1 == i) return 1'b1;",
      "MAC: adder cuts one level late (LAT 3: products | 3 | 2 levels; latency and sums unchanged up to LAT 5)",
      MAC_ITEMS, "kill"),
+    # dual weight stream (DUAL = 1: the slots at and above T_MAX / 2 take B's weights and scale data, docs/rtl-mvm.md §15)
+    ("dual_scale_a", BACK, "sc_u <= cd[C_G - 1].pr ? scb_m1 : sca_m1;", "sc_u <= sca_m1;",
+     "slots >= TH take A's scale data (sc) instead of B's", ["test_mvm_back[d4]"], "kill"),
+    ("dual_pair_sel", BACK, "sc_u <= cd[C_G - 1].pr ? scb_m1 : sca_m1;", "sc_u <= ~cd[C_G - 1].pr ? scb_m1 : sca_m1;",
+     "B's scale data used for an unpaired beat and A's for a pair", ["test_mvm_back[d4]"], "kill"),
 ]
 
 

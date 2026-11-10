@@ -279,7 +279,7 @@ module tsr_dbg_tb
     .host_hold, .halt_hold, .qabort, .rv_reset, .host_clear, .sr_busy,
     .qidle, .qquiescent, .err_any, .hold_src, .q_state, .seq_d, .err_rec, .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
-    .perf_ch_rd_beat, .perf_ch_wait, .perf_ext, .unit_progress,
+    .perf_ch_rd_beat, .perf_ch_rd_beat_b('0), .perf_ch_wait, .perf_ext, .unit_progress,
     .plat_err_i, .host_irq_o, .unit_hung(csr_unit_hung)
   );
 
@@ -327,7 +327,7 @@ module tsr_dbg_tb
     .rec_wr, .rec_wdata, .rec_room, .rec_all, .smp_ready, .smp_req, .smp_local, .smp_done, .smp_timeout, .smp_data,
     .wpa_ready, .wpa_req, .wpa_local, .wpa_data, .wpa_done, .wpa_timeout, .wph_v, .wph_mask, .wph_addr, .wph_halt,
     .dfault, .flags,
-    .mt_rd_req('0), .mt_rd_last('0), .mt_wr_req('0), .mt_wr_rsp('0),
+    .mt_rd_req('0), .mt_rd_last('0), .mt_wr_req('0), .mt_wr_rsp('0), .mt_rd_req_b('0), .mt_rd_last_b('0),
     .trw_wr_req_valid(tw_req_valid), .trw_wr_req_ready(tw_req_ready), .trw_wr_req_addr(tw_req_addr),
     .trw_wr_req_len(tw_req_len), .trw_wr_dat_valid(tw_dat_valid), .trw_wr_dat_ready(tw_dat_ready),
     .trw_wr_dat_data(tw_dat_data), .trw_wr_dat_last(tw_dat_last), .trw_wr_rsp_valid(tw_rsp_valid)

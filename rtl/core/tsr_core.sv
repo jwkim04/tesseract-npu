@@ -16,6 +16,10 @@
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data
 //     {data, word mask, last}, write response {id}; all valid/ready (docs/rtl-core.md §4). Every output is
 //     driven from a register inside tsr_mem_arb.
+//   - MVM_DUAL = 1: one more read-only memory port per channel, mb_rd_* (the read request and response channels of the
+//     port above, driven from registers; the dual weight stream of the MVM unit, docs/rtl-mvm.md §15), and the input
+//     cfg_dual_en (run the MVMs with T <= T_MAX / 2 as two weight streams; sampled per MVM at its accept; the platform
+//     sets it). MVM_DUAL = 0: mb_rd_* are tied off (valid 0, ready 0) and cfg_dual_en is ignored.
 //   - plat_err_i (the platform's error level, STATUS.PLAT_ERR) and host_irq_o = CTRL.IRQ_EN ∧
 //     (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200).
 // Units: DMA (LD / ST; KVST with HAS_ATT), QACT and, with HAS_MVM = 1 (default: the U200 configuration),
@@ -48,6 +52,7 @@ module tsr_core
   parameter longint unsigned CH_BYTES       = TSR_DEF_CH_BYTES,
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
+  parameter bit              MVM_DUAL       = 1'b0,      // dual weight stream per MVM cluster (docs/rtl-mvm.md §15); needs HAS_MVM, T_MAX even >= 2
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-mvm.md §1)
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
@@ -135,6 +140,18 @@ module tsr_core
   input  logic [NUM_CH-1:0][BEAT_BITS-1:0]       m_rd_rsp_data,
   input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    m_rd_rsp_id,
   input  logic [NUM_CH-1:0]                      m_rd_rsp_last,
+  // ---- read-only port B of every channel (MVM_DUAL; valid 0 and ready 0 otherwise), the format of m_rd_* ----
+  output logic [NUM_CH-1:0]                      mb_rd_req_valid,
+  input  logic [NUM_CH-1:0]                      mb_rd_req_ready,
+  output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]     mb_rd_req_addr,
+  output logic [NUM_CH-1:0][TSR_LEN_W-1:0]       mb_rd_req_len,
+  output logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    mb_rd_req_id,
+  input  logic [NUM_CH-1:0]                      mb_rd_rsp_valid,
+  output logic [NUM_CH-1:0]                      mb_rd_rsp_ready,
+  input  logic [NUM_CH-1:0][BEAT_BITS-1:0]       mb_rd_rsp_data,
+  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]    mb_rd_rsp_id,
+  input  logic [NUM_CH-1:0]                      mb_rd_rsp_last,
+  input  logic                                   cfg_dual_en,
   output logic [NUM_CH-1:0]                      m_wr_req_valid,
   input  logic [NUM_CH-1:0]                      m_wr_req_ready,
   output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]     m_wr_req_addr,
@@ -164,7 +181,8 @@ module tsr_core
                                      (HAS_GDN   ? tsr_tables_pkg::TSR_CAPS_GDN   : 32'd0) |
                                      (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                      (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
-                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
+                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0) |
+                                     (MVM_DUAL ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0);
   localparam int unsigned QD_MVM_E = HAS_MVM ? QD_MVM : 0;
   localparam int unsigned QD_VU_E  = HAS_VU ? QD_VU : 0;
   localparam logic [5:0][4:0] Q_DEPTH = {5'(QD_SYNC), 5'd0, 5'(QD_VU_E), 5'(QD_MVM_E), 5'(QD_QACT), 5'(QD_DMA)};
@@ -393,7 +411,7 @@ module tsr_core
   tsr_core_dp #(
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG), .RD_OUTSTANDING(RD_OUTSTANDING),
-    .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
+    .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .SPM_RD_LAT(SPM_RD_LAT),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
@@ -410,6 +428,8 @@ module tsr_core
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
     .m_rd_req_valid, .m_rd_req_ready, .m_rd_req_addr, .m_rd_req_len, .m_rd_req_id,
     .m_rd_rsp_valid, .m_rd_rsp_ready, .m_rd_rsp_data, .m_rd_rsp_id, .m_rd_rsp_last,
+    .mb_rd_req_valid, .mb_rd_req_ready, .mb_rd_req_addr, .mb_rd_req_len, .mb_rd_req_id,
+    .mb_rd_rsp_valid, .mb_rd_rsp_ready, .mb_rd_rsp_data, .mb_rd_rsp_id, .mb_rd_rsp_last, .cfg_dual_en,
     .m_wr_req_valid, .m_wr_req_ready, .m_wr_req_addr, .m_wr_req_len, .m_wr_req_id,
     .m_wr_dat_valid, .m_wr_dat_ready, .m_wr_dat_data, .m_wr_dat_mask, .m_wr_dat_last,
     .m_wr_rsp_valid, .m_wr_rsp_ready, .m_wr_rsp_id,

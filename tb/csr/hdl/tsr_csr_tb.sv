@@ -198,7 +198,7 @@ module tsr_csr_tb
     .host_hold, .halt_hold, .qabort, .rv_reset, .host_clear, .sr_busy,
     .qidle, .qquiescent, .err_any, .hold_src, .q_state, .seq_d, .err_rec, .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
-    .perf_ch_rd_beat, .perf_ch_wait, .perf_ext, .unit_progress,
+    .perf_ch_rd_beat, .perf_ch_rd_beat_b('0), .perf_ch_wait, .perf_ext, .unit_progress,
     .plat_err_i, .host_irq_o, .unit_hung
   );
 

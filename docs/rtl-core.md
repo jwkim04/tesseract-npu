@@ -176,6 +176,14 @@ The rules are asserted by `tb/common/mem_model.py`:
   in (§3.0). The runtime joins everything before it posts an answer (EX §4.7 R6).
 - M8 Every `m_*` output is driven by a flop.
 
+With `MVM_DUAL` = 1 ([rtl-mvm.md](rtl-mvm.md) §15) the boundary has a second, read-only port per channel, `mb_rd_req_*` and
+`mb_rd_rsp_*` with the signals and widths of the `m_rd_*` rows above (no write channels), and the input `cfg_dual_en`. It carries
+the second weight stream of the MVM unit, bypasses `tsr_mem_arb` and follows M1 to M3 and M8: the limit M2 is applied per port
+(at most `RD_OUTSTANDING` outstanding reads on `mb_`), the ids are `{TSR_SRC_WS, local}`, and the request outputs come from a
+register slice. `mb_rd_rsp_ready` is constant 1. Without `MVM_DUAL` the port is tied off (`mb_rd_req_valid` 0, `mb_rd_rsp_ready` 0,
+`cfg_dual_en` ignored). `PERF_CH_RD_BEATS[c]` counts the beats of both ports of channel c. A memory with a port per
+channel and the main port's DRAM image serves both: the platform connects both to the same bank ([platform-u200.md](platform-u200.md) §4).
+
 `tsr_mem_arb`, one per channel, has read sources `s_rd_req_*[TSR_NSRC]`, per-source `s_rd_rsp_valid` and `s_rd_rsp_ready`, and
 shared `s_rd_rsp_data`, `last` and `id` (local id). The write sources are the DMA and channel 0's trace writer (CC §13.2, DB
 §8.3). Arbitration is round robin per burst. Every channel has DMA and WS, and AUX is tied off in `tsr_core`.

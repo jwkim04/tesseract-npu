@@ -8,6 +8,9 @@
 //     and reads the y lines back); client TSR_SPM_CL_QACT is tied off.
 //   - arbiter sources AUX / DMA and the write source: tied off (the MVM unit runs alone).
 //   - o_*: observation copies of the MVM unit's SPM client port and WS source ports.
+//   - DUAL = 1 (dual weight stream, docs/rtl-mvm.md §15): the unit's read-only ports of stream B go to the ports mb_rd_*
+//     (the tsr_core naming, id {TSR_SRC_WS, local}; a second common.mem_model.MemModel, prefix mb_, reads the same DRAM
+//     image) and cfg_dual_en is an input. There is no register slice and no outstanding limit here (tsr_core_dp has them).
 // tb/mvm/test_mvm.py builds it with the real rtl/core files or with the test doubles of
 // tsr_mvm_back / tsr_mvm_actbuf (tb/mvm/hdl/dbl, same module names).
 
@@ -31,6 +34,7 @@ module tsr_tb_mvm
   parameter  int unsigned RD_OUTSTANDING = 16,
   parameter  int unsigned RST_LOCAL      = 0,
   parameter  bit          HAS_ATT        = 1'b0,   // attention modes built in (tb/mvm mvm_cycles: same cycles)
+  parameter  bit          DUAL           = 1'b0,   // dual weight stream
   localparam int unsigned BB             = 512,
   localparam int unsigned AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
 ) (
@@ -41,6 +45,7 @@ module tsr_tb_mvm
   input  logic                                cmd_valid,
   output logic                                cmd_ready,
   input  tsr_mvm_cmd_t                        cmd,
+  input  logic                                cfg_dual_en,
   output logic                                done,
   output logic                                perf_mvm_busy,
 
@@ -69,12 +74,26 @@ module tsr_tb_mvm
   output logic [NUM_CH-1:0]                   o_ws_req_ready,
   output logic [NUM_CH-1:0]                   o_ws_rsp_valid,
   output logic [NUM_CH-1:0]                   o_ws_rsp_ready,
+  output logic [NUM_CH-1:0]                   o_wsb_req_valid,
+  output logic [NUM_CH-1:0]                   o_wsb_req_ready,
+  output logic [NUM_CH-1:0]                   o_wsb_rsp_valid,
+  output logic [NUM_CH-1:0]                   o_wsb_rsp_ready,
   output logic                                o_mvm_rst_n,
   output logic [2:0]                          o_bc_source_valid,
   output logic [NUM_CH-1:0][2:0]              o_bc_cluster_valid,
   output logic [NUM_CH-1:0][2:0]              o_bc_reset_discarded,
 
-  // ---- memory ports ----
+  // ---- memory ports (mb_: the read-only ports of stream B) ----
+  output logic [NUM_CH-1:0]                   mb_rd_req_valid,
+  input  logic [NUM_CH-1:0]                   mb_rd_req_ready,
+  output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  mb_rd_req_addr,
+  output logic [NUM_CH-1:0][TSR_LEN_W-1:0]    mb_rd_req_len,
+  output logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0] mb_rd_req_id,
+  input  logic [NUM_CH-1:0]                   mb_rd_rsp_valid,
+  output logic [NUM_CH-1:0]                   mb_rd_rsp_ready,
+  input  logic [NUM_CH-1:0][BB-1:0]           mb_rd_rsp_data,
+  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0] mb_rd_rsp_id,
+  input  logic [NUM_CH-1:0]                   mb_rd_rsp_last,
   output logic [NUM_CH-1:0]                   m_rd_req_valid,
   input  logic [NUM_CH-1:0]                   m_rd_req_ready,
   output logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  m_rd_req_addr,
@@ -120,8 +139,15 @@ module tsr_tb_mvm
     assign no_score_req[c] = '0;
   end
 
+  logic [NUM_CH-1:0]                   wsb_req_valid, wsb_req_ready, wsb_rsp_valid, wsb_rsp_ready;
+  logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  wsb_req_addr;
+  logic [NUM_CH-1:0][TSR_LEN_W-1:0]    wsb_req_len;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] wsb_req_id, wsb_rsp_id;
+  logic [NUM_CH-1:0][BB-1:0]           wsb_rsp_data;
+  logic [NUM_CH-1:0]                   wsb_rsp_last;
+
   tsr_mvm #(
-    .HAS_ATT(HAS_ATT), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
+    .HAS_ATT(HAS_ATT), .DUAL(DUAL), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE),
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_LOCAL(RST_LOCAL)
@@ -131,7 +157,7 @@ module tsr_tb_mvm
     .local_score_req(no_score_req), .local_score_data(), .scale_req(), .scale_rsp('0),
     /* verilator lint_on PINCONNECTEMPTY */
     .clk, .rst_n,
-    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // no attention here (tb/at)
+    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .cfg_dual_en, .done,     // no attention here (tb/at)
     .spm_rd_req_valid(mv_rd_req_valid), .spm_rd_req_ready(mv_rd_req_ready),
     .spm_rd_req_line(mv_rd_req_line), .spm_rd_rsp_valid(mv_rd_rsp_valid),
     .spm_rd_rsp_data(spm_rd_data),
@@ -141,10 +167,33 @@ module tsr_tb_mvm
     .ws_rd_req_len(ws_req_len), .ws_rd_req_id(ws_req_id),
     .ws_rd_rsp_valid(ws_rsp_valid), .ws_rd_rsp_ready(ws_rsp_ready), .ws_rd_rsp_data(ws_rsp_data),
     .ws_rd_rsp_last(ws_rsp_last), .ws_rd_rsp_id(ws_rsp_id),
+    .wsb_rd_req_valid(wsb_req_valid), .wsb_rd_req_ready(wsb_req_ready), .wsb_rd_req_addr(wsb_req_addr),
+    .wsb_rd_req_len(wsb_req_len), .wsb_rd_req_id(wsb_req_id),
+    .wsb_rd_rsp_valid(wsb_rsp_valid), .wsb_rd_rsp_ready(wsb_rsp_ready), .wsb_rd_rsp_data(wsb_rsp_data),
+    .wsb_rd_rsp_last(wsb_rsp_last), .wsb_rd_rsp_id(wsb_rsp_id),
     .perf_mvm_busy, .perf_att_qk(p_att_qk), .perf_att_pv(p_att_pv), .perf_att_stall(p_att_st)
   );
   logic p_att_qk, p_att_pv, p_att_st;
   wire  unused_att = &{1'b0, p_att_qk, p_att_pv, p_att_st};
+
+  // ---- stream B: the unit's read-only ports as memory ports mb_rd_* (id {TSR_SRC_WS, local}) ----
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_mb
+    assign mb_rd_req_valid[c] = wsb_req_valid[c];
+    assign wsb_req_ready[c]   = mb_rd_req_ready[c];
+    assign mb_rd_req_addr[c]  = wsb_req_addr[c];
+    assign mb_rd_req_len[c]   = wsb_req_len[c];
+    assign mb_rd_req_id[c]    = {TSR_SRC_ID_W'(TSR_SRC_WS), wsb_req_id[c]};
+    assign wsb_rsp_valid[c]   = mb_rd_rsp_valid[c];
+    assign mb_rd_rsp_ready[c] = wsb_rsp_ready[c];
+    assign wsb_rsp_data[c]    = mb_rd_rsp_data[c];
+    assign wsb_rsp_last[c]    = mb_rd_rsp_last[c];
+    assign wsb_rsp_id[c]      = mb_rd_rsp_id[c][TSR_SRC_ID_W-1:0];
+    wire unused_mbid = &{1'b0, mb_rd_rsp_id[c][TSR_MEM_ID_W-1:TSR_SRC_ID_W]};
+  end
+  assign o_wsb_req_valid = wsb_req_valid;
+  assign o_wsb_req_ready = wsb_req_ready;
+  assign o_wsb_rsp_valid = wsb_rsp_valid;
+  assign o_wsb_rsp_ready = wsb_rsp_ready;
 
   // Observe the production source and cluster ports against independent old pipes.
   localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);

@@ -255,7 +255,7 @@ MVM_BEATS_W, MVM_BLK_W = 40, 11
 
 # tsr_mvm -> clusters (broadcast pipe), once per MVM with N >= 1.
 MVM_CCMD_T = StructDef("tsr_mvm_ccmd_t", (("fmt", 1), ("k", 16), ("n", 32), ("rows_per_ch", 32),
-                                          ("row_beats", 16), ("w_off", 32), ("d_lines", 8)))
+                                          ("row_beats", 16), ("w_off", 32), ("d_lines", 8), ("dual", 1)))
 # tsr_mvm -> clusters: one SPM line of the QA images.
 MVM_BCLINE_T = StructDef("tsr_mvm_bcline_t", (("last", 1), ("tok", 3), ("dbs", 1), ("addr", 10),
                                               ("data", 512)))

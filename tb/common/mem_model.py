@@ -31,6 +31,10 @@ Tracking: .written[c] (beats written), .read[c] (beats read), .read_unwritten[c]
 before any write by this run), .src_beats[c][s] (read beats per source id[3:2]: 0 AUX, 1 DMA,
 2 WS; the unit benches check DMA = LD beats and WS = MVM weight beats).
 
+read_only=True: a model of a read-only port (the core's port B, mb_rd_*: only the read request and response signals exist);
+the write channels are not sampled or driven. A second model shares the memory image of the first with
+`share_image(other)`.
+
 Timing discipline: the model samples DUT outputs at the falling clock edge and updates/drives its
 own outputs right after the rising edge. Drive DUT inputs the same way in other TB components.
 """
@@ -107,8 +111,9 @@ class MemModel:
                  p_rd_rsp_valid: float = 0.8, p_wr_req_ready: float = 0.7,
                  p_wr_dat_ready: float = 0.7, p_wr_rsp_valid: float = 0.8,
                  p_stall: float = 0.01, stall_len=(1, 30), interleave: bool = True,
-                 wr_order: str = "random", strict: bool = True, name: str = "mem"):
+                 wr_order: str = "random", strict: bool = True, name: str = "mem", read_only: bool = False):
         self.dut = dut
+        self.read_only = read_only
         self.clk = clk if clk is not None else dut.clk
         self.rst_n = rst_n if rst_n is not None else getattr(dut, "rst_n", None)
         self.num_ch = num_ch
@@ -138,13 +143,19 @@ class MemModel:
         self.s_rd_req_addr, self.s_rd_req_len, self.s_rd_req_id = g("rd_req_addr"), g("rd_req_len"), g("rd_req_id")
         self.s_rd_rsp_valid, self.s_rd_rsp_ready = g("rd_rsp_valid"), g("rd_rsp_ready")
         self.s_rd_rsp_data, self.s_rd_rsp_id, self.s_rd_rsp_last = g("rd_rsp_data"), g("rd_rsp_id"), g("rd_rsp_last")
-        self.s_wr_req_valid, self.s_wr_req_ready = g("wr_req_valid"), g("wr_req_ready")
-        self.s_wr_req_addr, self.s_wr_req_len, self.s_wr_req_id = g("wr_req_addr"), g("wr_req_len"), g("wr_req_id")
-        self.s_wr_dat_valid, self.s_wr_dat_ready = g("wr_dat_valid"), g("wr_dat_ready")
-        self.s_wr_dat_data, self.s_wr_dat_last = g("wr_dat_data"), g("wr_dat_last")
-        self.s_wr_dat_mask = getattr(dut, prefix + "wr_dat_mask", None)
-        self.s_wr_rsp_valid, self.s_wr_rsp_ready, self.s_wr_rsp_id = g("wr_rsp_valid"), g("wr_rsp_ready"), g("wr_rsp_id")
+        if not read_only:
+            self.s_wr_req_valid, self.s_wr_req_ready = g("wr_req_valid"), g("wr_req_ready")
+            self.s_wr_req_addr, self.s_wr_req_len, self.s_wr_req_id = g("wr_req_addr"), g("wr_req_len"), g("wr_req_id")
+            self.s_wr_dat_valid, self.s_wr_dat_ready = g("wr_dat_valid"), g("wr_dat_ready")
+            self.s_wr_dat_data, self.s_wr_dat_last = g("wr_dat_data"), g("wr_dat_last")
+            self.s_wr_dat_mask = getattr(dut, prefix + "wr_dat_mask", None)
+            self.s_wr_rsp_valid, self.s_wr_rsp_ready, self.s_wr_rsp_id = g("wr_rsp_valid"), g("wr_rsp_ready"), g("wr_rsp_id")
         self._drive_idle()
+
+    def share_image(self, other: "MemModel"):
+        """Use `other`'s DRAM image (the same beats per channel): a second port of the same memory."""
+        for mine, theirs in zip(self.ch, other.ch):
+            mine.mem = theirs.mem
 
     # -------------------------------------------------------------------------------------------
     # Host-side access
@@ -277,6 +288,9 @@ class MemModel:
             s["rql"] = int(self.s_rd_req_len.value)
             s["rqi"] = int(self.s_rd_req_id.value)
         s["rsr"] = int(self.s_rd_rsp_ready.value)
+        if self.read_only:
+            s.update(wqv=0, wdv=0, wsr=0)
+            return s
         s["wqv"] = int(self.s_wr_req_valid.value)
         if s["wqv"]:
             s["wqa"] = int(self.s_wr_req_addr.value)
@@ -492,6 +506,8 @@ class MemModel:
         self._put(self.s_rd_rsp_last, "rsl", rsl)
         self._put(self.s_rd_rsp_data, "rsd", rsd)
         self._put(self.s_rd_rsp_id, "rsi", rsi)
+        if self.read_only:
+            return
         self._put(self.s_wr_req_ready, "wqr", wqr)
         self._put(self.s_wr_dat_ready, "wdr", wdr)
         self._put(self.s_wr_rsp_valid, "wsv", wsv)
@@ -512,7 +528,8 @@ class MemModel:
             ch.wrsp_cur = None
             ch.pend_rd_req = ch.pend_wr_req = ch.pend_wr_dat = None
         self._last_out.clear()
-        for sig in (self.s_rd_req_ready, self.s_rd_rsp_valid, self.s_rd_rsp_last, self.s_rd_rsp_data,
-                    self.s_rd_rsp_id, self.s_wr_req_ready, self.s_wr_dat_ready, self.s_wr_rsp_valid,
-                    self.s_wr_rsp_id):
+        sigs = [self.s_rd_req_ready, self.s_rd_rsp_valid, self.s_rd_rsp_last, self.s_rd_rsp_data, self.s_rd_rsp_id]
+        if not self.read_only:
+            sigs += [self.s_wr_req_ready, self.s_wr_dat_ready, self.s_wr_rsp_valid, self.s_wr_rsp_id]
+        for sig in sigs:
             sig.value = 0

@@ -81,6 +81,15 @@
 //     rows at one per cycle + 3); ACC 23 / 27 / 28 / 33 cycles at (SPM_RD_LAT, ADD_LAT) = (1,1) /
 //     (3,3) / (2,5) / (4,8). Fixed-priority arbitration instead of the round robin halves the
 //     rate (0.50).
+// Dual weight stream (parameter DUAL, docs/rtl-mvm.md §15): a cluster's result item is one row pair, A's row r (res_row,
+//   res_last, res_y[t] for t < T_MAX / 2) and B's row r (res_row_b, res_last_b, res_y[T_MAX / 2 + t]) when res_bv. Every
+//   cluster has a second assembler (tsr_mvm_gasm with T_MAX / 2 tokens) for stream B next to its first, with the same start
+//   fields (active = expect_b[c]). An item is taken when every assembler it feeds is ready (their res_ready are flops).
+//   The jobs of the two assemblers are merged by a registered 2:1 stage in front of the cluster's job pipe (where the ATT job
+//   mux is): A first, then B. The merged job's `last` is set only on the cluster's final job, the job that carries `last`
+//   from one assembler when the other has already sent its last job or is not active. The job format, the job pipes,
+//   the pair links and the central part are unchanged. A's last group and B's first group may share one SPM line with
+//   disjoint lanes, like the groups of two clusters. DUAL = 0: the item has no B part and the above is absent.
 // K4 GATHER_PAIR (NUM_CH4, JOB_PIPE2 only): {0,2} and {1,3} each arbitrate locally
 // into a full-width member-tagged link. A two-slot source slice per cluster plus local
 // and central two-slot shared slices preserve eight slots/pair. Minimum job latency is
@@ -487,11 +496,13 @@ module tsr_mvm_gather
   parameter  int unsigned SPM_BYTES  = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          DUAL       = 1'b0,  // dual weight stream (header): T_MAX even and >= 2
   parameter  bit          GATHER_PAIR = 1'b0, // K4: source-local queues, pairs {0,2}/{1,3}
   parameter  int unsigned GATHER_FLITS = 1,   // 2: half-width serialized pair links
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   parameter  bit          XSLR_REG   = 1'b0,  // GATHER_PAIR: one tsr_rpipe stage on each pair link (below)
   parameter  bit          FAST_CLK   = 1'b0,  // the row-maxima emitter in three stages (tsr_mvm_rvec PIPE)
+  localparam int unsigned TH         = T_MAX / 2,
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
   localparam int unsigned AJW        = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
@@ -507,6 +518,7 @@ module tsr_mvm_gather
   input  logic [SPM_AW-1:0]                      dst_line,
   input  logic [31:0]                            dst_stride,
   input  logic [NUM_CH-1:0]                      expect_ch,
+  input  logic [NUM_CH-1:0]                      expect_b,       // DUAL: channel c's stream B has rows (ignored without DUAL)
   output logic                                   done,
   input  logic                                   scale_en, softcap,
   input  logic [31:0]                            scale, post_scale,
@@ -534,6 +546,9 @@ module tsr_mvm_gather
   input  logic [NUM_CH-1:0][31:0]                res_row,
   input  logic [NUM_CH-1:0]                      res_last,
   input  logic [NUM_CH-1:0][T_MAX-1:0][31:0]     res_y,
+  input  logic [NUM_CH-1:0][31:0]                res_row_b,      // DUAL: stream B's row of the item
+  input  logic [NUM_CH-1:0]                      res_bv,         // DUAL: the item has a B row
+  input  logic [NUM_CH-1:0]                      res_last_b,     // DUAL: it is B's last row
 
   // ---- SPM (client TSR_SPM_CL_MVM; tsr_mvm muxes the read port with the broadcast) ----
   output logic                                   spm_rd_req_valid,
@@ -554,6 +569,9 @@ module tsr_mvm_gather
   if (SPM_RD_LAT < 1 || ADD_LAT < 1 || ADD_LAT > 8) begin : g_chk_lat
     $fatal(1, "tsr_mvm_gather: SPM_RD_LAT >= 1, ADD_LAT in [1, 8]");
   end
+  if (DUAL && (T_MAX < 2 || (T_MAX % 2) != 0)) begin : g_chk_dual
+    $fatal(1, "tsr_mvm_gather: DUAL needs an even T_MAX >= 2");
+  end
 
   // -------------------------------------------------------------------------------------------
   // Sizes
@@ -567,7 +585,11 @@ module tsr_mvm_gather
   localparam int unsigned IS_W  = SPM_AW + 16 + 16 + TSR_LINE_BITS;        // {line, own, tail, y}
   localparam int unsigned MT_W  = SPM_AW + 16 + 16;                        // {line, own, tail}
   localparam int unsigned JW    = 1 + IS_W;                                // {last, line, own, tail, y}
-  localparam int unsigned SW    = 2 + TKW + 32 + 2 * SPM_AW;               // {att, active, tm1, nm1, dst, stride}
+  localparam int unsigned SWB   = DUAL ? 1 : 0;                           // the start fields carry B's active bit
+  localparam int unsigned SW    = 2 + SWB + TKW + 32 + 2 * SPM_AW;         // {att, active, [active_b,] tm1, nm1, dst, stride}
+  localparam int unsigned O_TM1 = 2 * SPM_AW + 32;                         // field offsets in the start fields
+  localparam int unsigned O_ACB = O_TM1 + TKW;                             // active_b (DUAL)
+  localparam int unsigned O_ACT = O_ACB + SWB;
 
   typedef logic [15:0][31:0] line_t;    // 16 f32 lanes (lane l = bits [32l +: 32])
 
@@ -618,7 +640,7 @@ module tsr_mvm_gather
   for (genvar c = 0; c < NUM_CH; c++) begin : g_asm
     logic              a_start;
     logic [SW-1:0]     a_f;
-    logic              a_jv, a_jr;
+    logic              a_jv;
     logic [JW-1:0]     a_jd;
     logic              p_v, p_r;             // job pipe input: the assembler's or the ATT job
     logic [JW-1:0]     p_d;
@@ -626,33 +648,114 @@ module tsr_mvm_gather
     // Identical across the clusters but for the active bit: kept separate (each next to its
     // assembler, which may sit in another SLR than the central part). The ATT op's start keeps
     // the assembler inactive (active = 0).
+    logic              ga_rv, ga_rr;         // the assemblers' result handshakes (DUAL: gated by the item's B part)
+    logic              mj_v, mj_r;           // the assembler jobs as the job pipe's source (DUAL: the merged job)
+    logic [JW-1:0]     mj_d;
+    logic              a_jr_g;               // the assembler A's job ready (DUAL: the merge stage's)
     tsr_vpipe #(.VW(1), .W(SW), .DEPTH(JOB_PIPE), .KEEP_REGS(1'b1)) u_sp (
       .clk, .rst_n, .in_valid(start),
-      .in_data({g_att, expect_ch[c] & ~g_att, s_tm1, s_nm1, dst_line, s_stride}),
+      .in_data(DUAL ? SW'({g_att, expect_ch[c] & ~g_att, expect_b[c] & ~g_att, s_tm1, s_nm1, dst_line, s_stride})
+                    : SW'({g_att, expect_ch[c] & ~g_att, s_tm1, s_nm1, dst_line, s_stride})),
       .out_valid(a_start), .out_data(a_f)
     );
     tsr_mvm_gasm #(.T_MAX(T_MAX), .SPM_AW(SPM_AW)) u_asm (
       .clk, .rst_n,
-      .start(a_start), .active(a_f[SW-2]), .tm1(a_f[SW-3 -: TKW]), .nm1(a_f[2*SPM_AW +: 32]),
+      .start(a_start), .active(a_f[O_ACT]), .tm1(a_f[O_TM1 +: TKW]), .nm1(a_f[2*SPM_AW +: 32]),
       .dst(a_f[SPM_AW +: SPM_AW]), .stride(a_f[0 +: SPM_AW]),
-      .res_valid(res_valid[c]), .res_ready(res_ready[c]), .res_row(res_row[c]),
+      .res_valid(ga_rv), .res_ready(ga_rr), .res_row(res_row[c]),
       .res_last(res_last[c]), .res_y(res_y[c]),
-      .job_valid(a_jv), .job_ready(a_jr), .job(a_jd)
+      .job_valid(a_jv), .job_ready(a_jr_g), .job(a_jd)
     );
+    if (DUAL) begin : g_b
+      // stream B: a second assembler with T_MAX / 2 tokens (y of the tokens TH + tk), the same start fields
+      localparam int unsigned TKWB = (TH > 1) ? $clog2(TH) : 1;
+      logic              b_rv, b_rr, b_jv, b_jr_g;
+      logic [JW-1:0]     b_jd;
+      tsr_mvm_gasm #(.T_MAX(TH), .SPM_AW(SPM_AW)) u_asm_b (
+        .clk, .rst_n,
+        .start(a_start), .active(a_f[O_ACB]), .tm1(a_f[O_TM1 +: TKWB]), .nm1(a_f[2*SPM_AW +: 32]),
+        .dst(a_f[SPM_AW +: SPM_AW]), .stride(a_f[0 +: SPM_AW]),
+        .res_valid(b_rv), .res_ready(b_rr), .res_row(res_row_b[c]),
+        .res_last(res_last_b[c]), .res_y(res_y[c][TH +: TH]),
+        .job_valid(b_jv), .job_ready(b_jr_g), .job(b_jd)
+      );
+      // An item goes to A, and to B when it has a B row; both assemblers take it in the same cycle or neither does. res_ready
+      // is made of flops only (no path from the item's fields): A's ready and B's ready, where B's is not needed once B
+      // has taken its last row (bgot_q: the unpaired last row of A, res_bv = 0) or when B is not active.
+      logic          mg_v_q, af_q, bf_q, bact_q, bgot_q;
+      wire           b_ok = b_rr | bgot_q | ~bact_q;
+      assign ga_rv     = res_valid[c] & b_ok;
+      assign b_rv      = res_valid[c] & res_bv[c] & ga_rr;
+      assign res_ready[c] = ga_rr & b_ok;
+      // registered 2:1 merge of the jobs (A first), with the cluster's `last` on the final job only
+      logic [JW-1:0] mg_q;
+      wire           mg_free = ~mg_v_q | mj_r;
+      wire           pick_a  = a_jv;                    // A first
+      assign a_jr_g  = mg_free;
+      assign b_jr_g  = mg_free & ~a_jv;
+      wire           a_last  = a_jd[JW-1];
+      wire           b_last  = b_jd[JW-1];
+      always_ff @(posedge clk) begin
+        if (!rst_n) begin
+          mg_v_q <= 1'b0;
+          af_q   <= 1'b0;
+          bf_q   <= 1'b0;
+          bact_q <= 1'b0;
+          bgot_q <= 1'b0;
+        end else begin
+          if (a_start) begin
+            af_q   <= 1'b0;
+            bf_q   <= 1'b0;
+            bact_q <= a_f[O_ACB];
+            bgot_q <= 1'b0;
+          end else begin
+            if (b_rv && b_rr && res_last_b[c]) bgot_q <= 1'b1;
+            if (mg_free && a_jv && a_last)          af_q <= 1'b1;
+            if (mg_free && !a_jv && b_jv && b_last) bf_q <= 1'b1;
+          end
+          if (mg_free) mg_v_q <= a_jv | b_jv;
+        end
+      end
+      always_ff @(posedge clk) begin
+        if (mg_free) mg_q <= pick_a ? {a_last & (bf_q | ~bact_q), a_jd[JW-2:0]} : {b_last & af_q, b_jd[JW-2:0]};
+      end
+      assign mj_v = mg_v_q;
+      assign mj_d = mg_q;
+`ifndef SYNTHESIS
+      logic a_on_q;
+      initial a_on_q = 1'b0;
+      always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+      always_ff @(posedge clk) begin
+        if (rst_n && a_on_q) begin
+          assert (!(res_valid[c] && res_ready[c] && res_bv[c] && !bact_q))
+            else $error("%m: a B row for cluster %0d without an active stream B", c);
+          assert (!(a_jv && a_last && af_q)) else $error("%m: second last job of stream A (cluster %0d)", c);
+          assert (!(b_jv && b_last && bf_q)) else $error("%m: second last job of stream B (cluster %0d)", c);
+        end
+      end
+`endif
+    end else begin : g_nob
+      assign ga_rv       = res_valid[c];
+      assign res_ready[c] = ga_rr;
+      assign a_jr_g      = mj_r;
+      assign mj_v        = a_jv;
+      assign mj_d        = a_jd;
+      wire unused_b = &{1'b0, expect_b, res_row_b[c], res_bv[c], res_last_b[c]};
+    end
     if (HAS_ATT) begin : g_aj
       always_ff @(posedge clk) begin
         if (!rst_n)       a_att_q <= 1'b0;
         else if (a_start) a_att_q <= a_f[SW-1];
       end
-      assign p_v         = a_att_q ? aj_valid[c] : a_jv;
-      assign p_d         = a_att_q ? aj[c] : a_jd;
-      assign a_jr        = p_r & ~a_att_q;
+      assign p_v         = a_att_q ? aj_valid[c] : mj_v;
+      assign p_d         = a_att_q ? aj[c] : mj_d;
+      assign mj_r        = p_r & ~a_att_q;
       assign aj_ready[c] = p_r & a_att_q;
     end else begin : g_noaj
       assign a_att_q     = 1'b0;
-      assign p_v         = a_jv;
-      assign p_d         = a_jd;
-      assign a_jr        = p_r;
+      assign p_v         = mj_v;
+      assign p_d         = mj_d;
+      assign mj_r        = p_r;
       assign aj_ready[c] = 1'b0;
       wire unused_att_c = &{1'b0, a_att_q, a_f[SW-1]};
     end

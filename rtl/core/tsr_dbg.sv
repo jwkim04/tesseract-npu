@@ -183,6 +183,8 @@ module tsr_dbg
   // ---- memory-port taps (DBG_RDOUT / DBG_WROUT) ----
   input  logic [NUM_CH-1:0]             mt_rd_req,         // read request handshake
   input  logic [NUM_CH-1:0]             mt_rd_last,        // read response last-beat handshake
+  input  logic [NUM_CH-1:0]             mt_rd_req_b,       // the same on the read-only port B (MVM_DUAL; 0 otherwise)
+  input  logic [NUM_CH-1:0]             mt_rd_last_b,
   input  logic [NUM_CH-1:0]             mt_wr_req,         // write request handshake
   input  logic [NUM_CH-1:0]             mt_wr_rsp,         // write response handshake
 
@@ -567,7 +569,7 @@ module tsr_dbg
       wrout_q <= '0;
     end else begin
       for (int c = 0; c < NUM_CH; c++) begin
-        rdout_q[c] <= rdout_q[c] + 8'(mt_rd_req[c]) - 8'(mt_rd_last[c]);
+        rdout_q[c] <= rdout_q[c] + 8'(mt_rd_req[c]) + 8'(mt_rd_req_b[c]) - 8'(mt_rd_last[c]) - 8'(mt_rd_last_b[c]);
         wrout_q[c] <= wrout_q[c] + 8'(mt_wr_req[c]) - 8'(mt_wr_rsp[c]);
       end
     end

@@ -594,8 +594,8 @@ counter and drops the snapshot. With C = `NUM_CH` and X = 5 + 2C (four channels:
 | 2 | `MVM_CYCLES` | time | the MVM unit holds an op (from the cycle after accept to done) |
 | 3 | `VU_CYCLES` | time | the VU holds an op |
 | 4 | | | reserved, reads 0 |
-| 5 + c | `CH_RD_BEATS[c]` | event | read beats delivered on channel c, including ch0 |
-| 5 + C + c | `CH_WAIT[c]` | time | channel c has a read outstanding and delivers no beat |
+| 5 + c | `CH_RD_BEATS[c]` | event | read beats delivered on channel c, including ch0 (with `CAPS` bit 16: on both ports of the channel, up to two per cycle) |
+| 5 + C + c | `CH_WAIT[c]` | time | channel c has a read outstanding and delivers no beat (with `CAPS` bit 16: outstanding on either port and a beat on neither) |
 | X + 0 | `DMA_CYCLES` | time | the DMA unit holds an op |
 | X + 1 | `QACT_CYCLES` | time | the QACT unit holds an op |
 | X + 2 | `ATT_CYCLES` | time | unit 4 (AT) holds an op; reads 0 without it |
@@ -736,7 +736,10 @@ sets it to +0.0.
 - `CAPS`: bit0 VU (VOP, RED, ROPE, SOP present), bit1 0, bit2 retired, bit3 TOPK, bit4 retired, bit5
   ATT (the seven AT ops are present), bit6 DQROW, bit7 VMASK, bit8 GDN (the fused state update of
   VU §7.12; the RTL builds with `HAS_GDN`), bits 9–11 reserved for VU, bits 12–15 reserved for AT,
-  bits 16–31 0. Retired bits are never set and never reused. The simulator reports what its
+  bit 16 MVM_DUAL (the core reads two weight streams per channel when an MVM has T ≤ T_MAX / 2; the RTL
+  builds with `MVM_DUAL`; information for cycle models and tools, results never depend on it, and the
+  adapter's run-time enable, `ADAPTER_CTRL.DUAL_DIS`, does not change it), bits 17–31 0. Retired bits are
+  never set and never reused. The simulator reports what its
   configuration implements, so a simulator may set bits that a bitstream does not. The release image
   reads 0x121 (bits 0, 5 and 8).
 - `CFG3`: [4:0] VU front lanes with an EXP core, [9:5] VU back lanes, [15:10] 0 (VU §5.10); [31:16]
@@ -872,7 +875,8 @@ reset only, so a debugger stays attached.
 ### 9.1 Control protocol: `ap_ctrl_none`
 
 - kernel.xml: `hwControlProtocol="ap_ctrl_none"`, `interrupt="false"`. The only args are `ch<c>` (`void*`
-  on `m_axi_ch<c>`) at 0x040 + 8c. The `s_axi_control` range is 0x2000.
+  on `m_axi_ch<c>`) at 0x040 + 8c. A kernel with the dual weight stream (`CAPS` bit 16) has the read-only masters
+  `m_axi_chb<c>` and the args `chb<c>` at 0x100 + 8c, which have no register behind them. The `s_axi_control` range is 0x2000.
 - XRT 2.18 facts:
   - `xrt::kernel` refuses `ap_ctrl_none` compute units: "AP_CTRL_NONE is only supported by XRT native API
     xrt::ip".
@@ -888,7 +892,7 @@ reset only, so a debugger stays attached.
 |---|---|---|---|
 | 0x000–0x03C | | | reserved, read 0 |
 | 0x040 + 8c | `ch<c>_base` lo / hi | RW | device byte address of the channel-c buffer; 4 KiB aligned. Written while `MEM_EN` = 0; a write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
-| 0x0E0 | `ADAPTER_CTRL` | RW | bit0 `MEM_EN`. Rising edge: if every base is 4 KiB aligned, latch all bases into the bridges and set `MEM_EN`; otherwise stay 0 and set `ADAPTER_STATUS` bit3. While `MEM_EN` = 0, core memory requests are held (not forwarded, not dropped) and set bit4 |
+| 0x0E0 | `ADAPTER_CTRL` | RW | bit1 `DUAL_DIS` (reset 0; 1 turns the dual weight stream off for the MVMs accepted afterwards; platform-u200.md §2), bit0 `MEM_EN`. Rising edge: if every base is 4 KiB aligned, latch all bases into the bridges and set `MEM_EN`; otherwise stay 0 and set `ADAPTER_STATUS` bit3. While `MEM_EN` = 0, core memory requests are held (not forwarded, not dropped) and set bit4 |
 | 0x0F0 | `ADAPTER_STATUS` | R / W1C sticky | bits 0–2 and [31:16] as in [platform-u200.md](../platform-u200.md) §2; bit3 means "base misaligned at `MEM_EN`"; bit4 `REQ_HELD`, bit5 `BASE_LOCKED` |
 | 0x0F4 | `ADAPTER_VERSION` | R | {16'h0001, 8'h00, NUM_CH}: adapter major 1 (the host requires it) |
 | 0x1000 + off | core CSR window | | off < 0x1000, any time, writes need WSTRB = 0xF |

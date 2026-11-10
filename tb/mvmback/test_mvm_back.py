@@ -45,6 +45,11 @@ cocotb tests (each configuration runs all of them):
   back_reset       synchronous reset in the middle of an MVM (beats, partial sums, tree and result
                    FIFO occupied, also with res_ready = 0), reset values, then checked MVMs
   back_comb_probe  no combinational path from any input to any output (clock stopped, inputs wiggled)
+  back_dual        DUAL = 1 only (docs/rtl-mvm.md §15): MVMs with two row sets A and B read in lockstep (beat_b / b_use, the
+                   activation lines copied to the tokens t + T_MAX / 2): res_y[t] == A's row r and res_y[T_MAX / 2 + t]
+                   == B's row r for t < T <= T_MAX / 2, B with as many rows as A or one fewer (A's unpaired last row:
+                   b_use = 0 with garbage on beat_b), random gaps and backpressure, both formats, K to K_MAX, alternating
+                   with single-mode MVMs (b_use = 0, T up to T_MAX) whose upper tokens must see A's weights and scale data
 Configurations: t1 (U200: K_MAX 32768, T_MAX 1, default latencies), t8 (T_MAX 8, defaults),
 lat1 (every latency 1), lat8 (every latency 8), mix (K_MAX 65280, T_MAX 5, ACT 3 / MAC 1 / MUL 8 /
 ADD 7: the d*Dx path is longer than the integer path, so the f32 sums are the delayed ones), k256
@@ -98,10 +103,17 @@ CFGS = {
     # at K_MAX 768 the Q8_0 rows do (13 beats), the Q4_K ones do not (7 beats)
     "k256": dict(K_MAX=256, T_MAX=8, ACT_RD_LAT=1, MAC_LAT=8, MUL_LAT=1, ADD_LAT=8),
     "k768": dict(K_MAX=768, T_MAX=2, ACT_RD_LAT=4, MAC_LAT=2, MUL_LAT=2, ADD_LAT=3),
+    # dual weight stream (DUAL = 1: TH = T_MAX / 2): every test above runs with b_use = 0 (single mode, the cycles of
+    # the same build without DUAL), back_dual with partners. d4: T_MAX 4, the release image's; d2: TH 1, every latency
+    # 1; d8: T_MAX 8, the U200 MAC latency; d6: an odd TH
+    "d4":   dict(K_MAX=4096, T_MAX=4, ACT_RD_LAT=2, MAC_LAT=3, MUL_LAT=4, ADD_LAT=5, DUAL=1),
+    "d2":   dict(K_MAX=2048, T_MAX=2, ACT_RD_LAT=1, MAC_LAT=1, MUL_LAT=1, ADD_LAT=1, DUAL=1),
+    "d8":   dict(K_MAX=2304, T_MAX=8, ACT_RD_LAT=2, MAC_LAT=9, MUL_LAT=4, ADD_LAT=5, DUAL=1),
+    "d6":   dict(K_MAX=1536, T_MAX=6, ACT_RD_LAT=3, MAC_LAT=2, MUL_LAT=3, ADD_LAT=8, DUAL=1),
 }
 
 TESTS = ["back_actbuf", "back_directed", "back_special", "back_random", "back_throughput", "back_backpressure",
-         "back_reset", "back_comb_probe"]
+         "back_reset", "back_comb_probe", "back_dual"]
 
 MAC_CFGS = {
     "n32_t1_l1": dict(N=32, T=1, LAT=1),
@@ -114,6 +126,10 @@ MAC_CFGS = {
     "n32_t8_l9": dict(N=32, T=8, LAT=9),
     "n5_t2_l4":  dict(N=5, T=2, LAT=4),
     "n1_t1_l2":  dict(N=1, T=1, LAT=2),
+    # dual weight stream: tokens >= TH take the second weight vector
+    "n32_t4_th2_l5": dict(N=32, T=4, LAT=5, TH=2),
+    "n32_t2_th1_l3": dict(N=32, T=2, LAT=3, TH=1),
+    "n5_t6_th3_l4":  dict(N=5, T=6, LAT=4, TH=3),
 }
 
 # tsr_mac_lane register placement (docs/rtl-mvm.md §9.2 item 4), N = 32: logic layer i (0 = the
@@ -124,8 +140,8 @@ MAC_STAGES_N32 = {1: [0, 0, 0, 0, 0, 0], 2: [0, 1, 1, 1, 1, 1], 3: [0, 1, 1, 2, 
 
 RB_MIN = 9          # achieved bound (tsr_mvm_back header): rows of >= 8 quant beats never stall
 
-INPUTS = ["wr_valid", "wr_line", "cfg_fmt", "cfg_d_lines", "beat_valid", "beat", "res_ready", "tb_rd",
-          "tb_qs_re", "tb_qs_addr", "tb_dbs_re", "tb_dbs_addr"]
+INPUTS = ["wr_valid", "wr_line", "cfg_fmt", "cfg_d_lines", "beat_valid", "beat", "beat_b", "b_use", "dual", "res_ready",
+          "tb_rd", "tb_qs_re", "tb_qs_addr", "tb_dbs_re", "tb_dbs_addr"]
 OUTPUTS = ["beat_ready", "res_valid", "res_y", "idle", "qs_data", "dbs_data", "be_qs_re", "be_qs_addr",
            "be_dbs_re", "be_dbs_addr"]
 
@@ -604,6 +620,95 @@ class Bench:
                     beat_span=(last_acc - first_acc + 1) if first_acc is not None else 0, lat=lat,
                     rl_cyc=rl_cyc, res_cyc=res_cyc)
 
+    async def run_dual(self, ma: Mvm, mb: Mvm, p_valid: float = 1.0, p_ready: float = 1.0, bc_gap: float = 0.0,
+                       gap_max: int = 0) -> dict:
+        """A dual MVM (DUAL = 1): A's rows and B's rows (the same fmt, K and activations; B has as many rows as A or
+        one fewer) read in lockstep. Beat i of A goes with beat i of B while B has it (b_use = 1), and alone
+        afterwards (b_use = 0 with random bits on beat_b). Checks res_y[t] == A's row r and res_y[TH + t] == B's
+        row r for every token t < T (B's half only for the rows B has), R2 on the results and the idle flag."""
+        dut, rnd = self.dut, self.rnd
+        th = self.tmax // 2
+        assert ma.fmt == mb.fmt and ma.K == mb.K and ma.T == mb.T <= th
+        assert len(mb.y) in (len(ma.y), len(ma.y) - 1)
+        dut.dual.value = 1
+        await self.broadcast(ma, bc_gap)
+        dut.cfg_fmt.value = ma.fmt
+        dut.cfg_d_lines.value = ma.d_lines
+        nb, nbb, nrows, nrb = len(ma.packed), len(mb.packed), len(ma.y), len(mb.y)
+        bi, ri, valid, cyc = 0, 0, 0, 0
+        acc_beats, pop_beats = 0, 0
+        row_q = [sum(1 for d in ma.beats if d["row"] == r) for r in range(nrows)]
+        held = None
+        gap_left = rnd.randint(0, gap_max) if gap_max else 0
+        pairs = 0
+        timeout = 40 * nb + 400 * nrows + 2000 + nb * gap_max
+        while ri < nrows:
+            if not valid and bi < nb:
+                want = rnd.random() < p_valid
+                if gap_left:
+                    want, gap_left = False, gap_left - 1
+                if want:
+                    valid = 1
+                    dut.beat.value = ma.packed[bi]
+                    if bi < nbb:
+                        dut.beat_b.value = mb.packed[bi]
+                        dut.b_use.value = 1
+                    else:
+                        dut.beat_b.value = rnd.getrandbits(1175)       # garbage: must not matter
+                        dut.b_use.value = 0
+            dut.beat_valid.value = valid
+            dut.res_ready.value = 1 if rnd.random() < p_ready else 0
+            await FallingEdge(dut.clk)
+            cyc += 1
+            br = int(dut.beat_ready.value)
+            rr = int(dut.res_ready.value)
+            rv = int(dut.res_valid.value)
+            assert int(dut.idle.value) == int(acc_beats == pop_beats), \
+                "%s: idle %d with %d beats accepted, %d beats of taken rows (cycle %d)" % (
+                    ma, int(dut.idle.value), acc_beats, pop_beats, cyc)
+            if valid and br:
+                pairs += int(bi < nbb)
+                bi += 1
+                acc_beats += 1
+                valid = 0
+                if gap_max:
+                    gap_left = rnd.randint(0, gap_max)
+            if rv:
+                y = int(dut.res_y.value)
+                if held is not None:
+                    assert y == held, "%s: res_y changed while res_valid and not taken (R2)" % ma
+                if rr:
+                    for t in range(ma.T):
+                        got = (y >> (32 * t)) & 0xFFFFFFFF
+                        assert got == ma.y[ri][t], "%s row %d token %d (stream A): got 0x%08x expected 0x%08x (%s)" % (
+                            ma, ri, t, got, ma.y[ri][t], ma.diag(ri, t))
+                        if ri < nrb:
+                            gotb = (y >> (32 * (th + t))) & 0xFFFFFFFF
+                            assert gotb == mb.y[ri][t], \
+                                "%s row %d token %d (stream B): got 0x%08x expected 0x%08x (%s)" % (
+                                    ma, ri, t, gotb, mb.y[ri][t], mb.diag(ri, t))
+                    pop_beats += row_q[ri]
+                    ri += 1
+                    held = None
+                else:
+                    held = y
+            else:
+                assert held is None, "%s: res_valid dropped before the result was taken (R2)" % ma
+            assert cyc < timeout, "%s: timeout (%d of %d beats, %d of %d results)" % (ma, bi, nb, ri, nrows)
+            await RisingEdge(dut.clk)
+        dut.beat_valid.value = 0
+        dut.b_use.value = 0
+        dut.dual.value = 0
+        dut.res_ready.value = 1
+        for k in range(4):
+            await FallingEdge(dut.clk)
+            assert not int(dut.res_valid.value), "%s: extra result after the last row" % ma
+            if k >= 1:
+                assert int(dut.idle.value) == 1, "%s: not idle after the last result" % ma
+            await RisingEdge(dut.clk)
+        assert bi == nb
+        return dict(cycles=cyc, pairs=pairs)
+
 
 async def setup(dut, salt: int):
     cfg = cfg_from_env()
@@ -945,6 +1050,91 @@ async def back_comb_probe(dut):
     dut._log.info("comb probe: %d input pokes, no input->output path; the MVM still completed exactly", pokes)
 
 
+def dual_pair(fmt: int, K: int, na: int, nb: int, T: int, rnd: random.Random, rmode: str = "mix", qmode: str = "mix"):
+    """Two Mvm objects of one dual MVM: the rows of A and of B share the activations."""
+    qas = gen_qas(fmt, K, T, rnd, qmode)
+    return (Mvm(fmt, K, gen_rows(fmt, K, na, rnd, rmode), qas, "dualA"),
+            Mvm(fmt, K, gen_rows(fmt, K, nb, rnd, rmode), qas, "dualB"))
+
+
+@cocotb.test()
+async def back_dual(dut):
+    """Dual weight stream (DUAL = 1 builds only): lockstep rows, unpaired last row, alternating with single mode."""
+    cfg, rnd, b = await setup(dut, 9)
+    if not cfg.get("DUAL"):
+        dut._log.info("dual: not a DUAL build, skipped")
+        return
+    tmax, kmax = cfg["T_MAX"], cfg["K_MAX"]
+    th = tmax // 2
+    n = 0
+    pairs = 0
+    modes = [("pack", "qact"), ("raw", "raw"), ("pack_special", "qact_special"), ("raw", "raw_special"), ("mix", "mix")]
+    # (a) a K sweep over both formats: rows 1..4 for A, B = A or A - 1 (a single row of A leaves B without rows: only
+    #     a dual MVM with B active is run here, so A >= 2 rows when B has one fewer)
+    for fmt in (0, 1):
+        for i, K in enumerate(k_choices(fmt, kmax)):
+            rm, qm = modes[(i + fmt) % len(modes)]
+            na = 1 + (i % 4)
+            nb_ = na if (i % 3) != 1 or na < 2 else na - 1
+            if K > 8192:
+                na, nb_ = 2, 1
+            T = 1 + (i % th)
+            ma, mb = dual_pair(fmt, K, na, nb_, T, rnd, rm, qm)
+            st = await b.run_dual(ma, mb, p_valid=0.85, p_ready=0.8, bc_gap=0.1)
+            n += 1
+            pairs += st["pairs"]
+            # a single-mode MVM in between: T up to T_MAX, the upper tokens use A's weights and scale data
+            m = Mvm(fmt, K, gen_rows(fmt, K, 1 + (i % 3), rnd, rm), gen_qas(fmt, K, 1 + ((i * 3 + 1) % tmax), rnd, qm),
+                    "single")
+            await b.run_mvm(m, p_valid=0.9, p_ready=0.9)
+            n += 1
+    # (b) full-rate pairs (no gaps, res_ready 1) and random runs with gaps / backpressure
+    for fmt, K in ((0, min(kmax, 896)), (1, min(kmax, 1024)), (0, kmax), (1, kmax)):
+        rb = mm.row_beats(fmt, K)
+        nrows = max(3, min(12, 1200 // rb))
+        ma, mb = dual_pair(fmt, K, nrows, nrows - (nrows % 2), th, rnd, "raw", "raw")
+        st = await b.run_dual(ma, mb, p_valid=1.0, p_ready=1.0)
+        n += 1
+        pairs += st["pairs"]
+    nrand = max(6, int(40 * scale()))
+    for i in range(nrand):
+        fmt = rnd.randrange(2)
+        bs = mm.block_size(fmt)
+        cap = kmax if rnd.random() < 0.1 else min(kmax, 3072)
+        K = bs * rnd.randint(1, cap // bs)
+        rb = mm.row_beats(fmt, K)
+        na = rnd.randint(1, max(1, min(10, 1800 // rb)))
+        nb_ = na - rnd.randint(0, 1) if na >= 2 else 0
+        if nb_ == 0:
+            na = max(na, 2)
+            nb_ = 1
+        T = rnd.randint(1, th)
+        ma, mb = dual_pair(fmt, K, na, nb_, T, rnd)
+        st = await b.run_dual(ma, mb, p_valid=rnd.choice((1.0, 0.9, 0.5, 0.2)), p_ready=rnd.choice((1.0, 0.7, 0.3)),
+                              bc_gap=rnd.choice((0.0, 0.3)), gap_max=rnd.choice((0, 0, 3)))
+        n += 1
+        pairs += st["pairs"]
+        if rnd.random() < 0.4:
+            fmt2 = rnd.randrange(2)
+            K2 = min(kmax, mm.block_size(fmt2) * rnd.randint(1, 20))
+            m = Mvm(fmt2, K2, gen_rows(fmt2, K2, rnd.randint(1, 4), rnd), gen_qas(fmt2, K2, rnd.randint(1, tmax), rnd),
+                    "single-r")
+            await b.run_mvm(m, p_valid=rnd.choice((1.0, 0.6)), p_ready=rnd.choice((1.0, 0.5)))
+            n += 1
+    # (c) numeric extremes on both streams: the constructed cases of back_special as A, a second set as B
+    for ca, cb in zip(special_cases(rnd, kmax, th), special_cases(rnd, kmax, th)):
+        if len(ca.y) < 1 or len(cb.y) < 1 or ca.fmt != cb.fmt or ca.K != cb.K:
+            continue
+        mb = Mvm(cb.fmt, cb.K, cb.rows[:len(ca.rows)], ca.qas, "dual special B")
+        if len(mb.y) < len(ca.y) - 1:
+            continue
+        ma = Mvm(ca.fmt, ca.K, ca.rows, ca.qas, "dual special A")
+        st = await b.run_dual(ma, mb, p_valid=0.9, p_ready=0.7)
+        n += 1
+        pairs += st["pairs"]
+    dut._log.info("dual: %d MVMs checked (dual and single mode alternating), %d beat pairs", n, pairs)
+
+
 # =============================================================================================
 # tsr_mac_lane alone
 # =============================================================================================
@@ -952,13 +1142,14 @@ async def back_comb_probe(dut):
 async def mac_lane(dut):
     """Random / extreme operands, random ce and in_valid; out_valid and y against a LAT-deep model."""
     p = json.loads(os.environ["TSR_MAC_CFG"])
-    N, T, LAT = p["N"], p["T"], p["LAT"]
+    N, T, LAT, TH = p["N"], p["T"], p["LAT"], p.get("TH", 0)
     seed = int(os.environ.get("TSR_SEED", "1"), 0)
     rnd = random.Random(seed * 31 + N * 7 + T * 3 + LAT)
     dut.rst_n.value = 0
     dut.ce.value = 0
     dut.in_valid.value = 0
     dut.w.value = 0
+    dut.wb.value = 0
     dut.x.value = 0
     clk = Clock(dut.clk, 10, unit="ns")
     clk.start(start_high=True)
@@ -978,10 +1169,12 @@ async def mac_lane(dut):
     for cyc in range(4000):
         kind = rnd.choice((0, 0, 1, 2)) if cyc % 500 else 2
         w = [operand(kind) for _ in range(N)]
+        wb = [operand(kind) for _ in range(N)] if TH else w        # the tokens >= TH take the second weights
         x = [[operand(kind) for _ in range(N)] for _ in range(T)]
         ce = 1 if rnd.random() < (0.7 if cyc % 1000 < 500 else 1.0) else 0
         iv = 1 if rnd.random() < 0.8 else 0
         dut.w.value = isa.pack_array(w, 8)
+        dut.wb.value = isa.pack_array(wb, 8)
         dut.x.value = sum(isa.pack_array(x[t], 8) << (8 * N * t) for t in range(T))
         dut.ce.value = ce
         dut.in_valid.value = iv
@@ -1001,7 +1194,7 @@ async def mac_lane(dut):
                 checked += 1
         await RisingEdge(dut.clk)
         if ce:
-            sums = [sum(w[i] * x[t][i] for i in range(N)) for t in range(T)]
+            sums = [sum((wb[i] if TH and t >= TH else w[i]) * x[t][i] for i in range(N)) for t in range(T)]
             pipe = pipe[1:] + [(iv, sums)]
     assert checked > 1000
     dut._log.info("mac_lane N %d T %d LAT %d: %d sums checked with random ce stalls", N, T, LAT, checked)
@@ -1059,6 +1252,7 @@ async def mac_lane_structure(dut):
 
     def drive(w, x):
         dut.w.value = isa.pack_array(w, 8)
+        dut.wb.value = isa.pack_array(w, 8)        # (TH > 0: the layers below are those of one weight vector)
         dut.x.value = sum(isa.pack_array(x[t], 8) << (8 * N * t) for t in range(T))
 
     wa, xa, la = operands()

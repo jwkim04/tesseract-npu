@@ -7,10 +7,12 @@
 // Configurations (index c, the order macpv_equiv.cpp rebuilds):
 //   N 32: T {1, 2, 3, 8} x LAT {3, 4, 5, 6, 7, 9, 11}      c = 0 .. 27
 //   N 5 : T 3 x LAT {3, 6}                                 c = 28, 29
+//   N 32, dual weight stream (TH = T / 2; the second weight vector equals the first, as in the PV mode of tsr_mvm_back):
+//         T 4 x LAT 9, T 2 x LAT 5, T 6 x LAT 6                c = 30, 31, 32
 // yy[c]: y in its low T x SUM_W bits; pva[c]: pv_acc in its low NS x N x 38 bits.
 
 module tsr_tb_tech_macpv #(
-  localparam int unsigned NC  = 30,
+  localparam int unsigned NC  = 33,
   localparam int unsigned YW  = 8 * 21,
   localparam int unsigned PW  = 4 * 32 * 38
 ) (
@@ -33,9 +35,10 @@ module tsr_tb_tech_macpv #(
   localparam int unsigned LS [7] = '{3, 4, 5, 6, 7, 9, 11};
 
   for (genvar c = 0; c < NC; c++) begin : g_c
-    localparam int unsigned N   = (c < 28) ? 32 : 5;
-    localparam int unsigned T   = (c < 28) ? TS[c / 7] : 3;
-    localparam int unsigned LAT = (c < 28) ? LS[c % 7] : ((c == 28) ? 3 : 6);
+    localparam int unsigned N   = (c < 28 || c >= 30) ? 32 : 5;
+    localparam int unsigned T   = (c < 28) ? TS[c / 7] : (c < 30) ? 3 : (c == 30) ? 4 : (c == 31) ? 2 : 6;
+    localparam int unsigned LAT = (c < 28) ? LS[c % 7] : (c < 30) ? ((c == 28) ? 3 : 6) : (c == 30) ? 9 : (c == 31) ? 5 : 6;
+    localparam int unsigned TH  = (c < 30) ? 0 : T / 2;
     localparam int unsigned SW  = 16 + $clog2(N);
     localparam int unsigned NS  = (T + 1) / 2;
 
@@ -48,8 +51,8 @@ module tsr_tb_tech_macpv #(
       assign xi[t] = x[t][N-1:0];
     end
 
-    tsr_mac_lane #(.N(N), .T(T), .LAT(LAT), .PV(1'b1)) u_mac (
-      .clk, .rst_n, .ce, .in_valid, .w(wi), .x(xi), .out_valid(ov[c]), .y(yo),
+    tsr_mac_lane #(.N(N), .T(T), .LAT(LAT), .PV(1'b1), .TH(TH)) u_mac (
+      .clk, .rst_n, .ce, .in_valid, .w(wi), .wb(wi), .x(xi), .out_valid(ov[c]), .y(yo),
       .pv_en, .pv_valid, .pv_first, .pv_a(pv_a[NS-1:0]), .pv_acc(po)
     );
 

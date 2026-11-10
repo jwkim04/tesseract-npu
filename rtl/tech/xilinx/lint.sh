@@ -71,6 +71,12 @@ for t in 1 2 8; do
 done
 lint tsr_mac_lane -GN=5 -GT=3 -GLAT=4 -GPV=1
 lint tsr_mac_lane -GN=1 -GT=2 -GLAT=5 -GPV=1
+# dual weight stream (TH = T / 2: tokens >= TH take wb)
+for t in 2 4 6 8; do
+    for l in 1 3 5 9; do lint tsr_mac_lane -GT=$t -GTH=$((t / 2)) -GLAT=$l; done
+    lint tsr_mac_lane -GT=$t -GTH=$((t / 2)) -GLAT=9 -GPV=1
+done
+lint tsr_mac_lane -GN=5 -GT=2 -GTH=1 -GLAT=4
 lint tsr_mac_lane -GN=5 -GT=3 -GLAT=4
 lint tsr_mac_lane -GN=2 -GT=2 -GLAT=5
 lint tsr_mac_lane -GN=1 -GT=1 -GLAT=2

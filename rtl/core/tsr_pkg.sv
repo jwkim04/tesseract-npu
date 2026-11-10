@@ -358,7 +358,9 @@ package tsr_pkg;
     logic [15:0] row_beats;    // ROW_BEATS(fmt, K) (<= 1084)
     logic [31:0] w_off;        // first beat of the tensor, same offset in every channel
     logic [7:0]  d_lines;      // QA D-region lines ceil(4*(K/bs)/64): BS lines follow them
-  } tsr_mvm_ccmd_t;            // 137 bits
+    logic        dual;         // dual weight stream (docs/rtl-mvm.md §15): the cluster reads its rows as two streams
+                               //   and the broadcast writes every line also into the token t + T_MAX / 2 (0 without DUAL)
+  } tsr_mvm_ccmd_t;            // 138 bits
 
   // tsr_mvm -> every cluster (broadcast pipe): one line of the QA images, in SPM order
   // (token 0 lines 0..QA_LINES-1, token 1, ...). The activation buffer stores it at

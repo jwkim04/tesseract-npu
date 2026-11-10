@@ -229,6 +229,7 @@ module tsr_csr
 
   // ---- datapath PERF events and the other areas' slots ----
   input  logic [NUM_CH-1:0]          perf_ch_rd_beat,
+  input  logic [NUM_CH-1:0]          perf_ch_rd_beat_b,   // beats of the read-only port B (MVM_DUAL; 0 otherwise): CH_RD_BEATS counts both ports
   input  logic [NUM_CH-1:0]          perf_ch_wait,
   input  logic [63:0][3:0]           perf_ext,
   input  logic [5:0]                 unit_progress,
@@ -918,7 +919,7 @@ module tsr_csr
     p_int[2] = 4'(perf_busy[2]);
     p_int[3] = 4'(perf_busy[3]);
     for (int c = 0; c < NUM_CH; c++) begin
-      p_int[5 + c]          = 4'(perf_ch_rd_beat[c]);
+      p_int[5 + c]          = 4'(perf_ch_rd_beat[c]) + 4'(perf_ch_rd_beat_b[c]);
       p_int[5 + NUM_CH + c] = 4'(perf_ch_wait[c]);
     end
     p_int[X + 0]  = 4'(perf_busy[0]);
