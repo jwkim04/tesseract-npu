@@ -477,7 +477,7 @@ struct tsr_kernel_desc {
 | 2, 3 | `itcm_min`, `dtcm_min` | bytes (`link.ld` fills them at link time; the host compares them with `RV_CFG` KiB × 1024) |
 | 4 | `caps_req` | `CAPS` bits the image needs |
 | 5 | `n_kernels` | entries of `.tsr_kernels` |
-| 6 | `basis_version` | the Tesseract Basis version, major << 16 \| minor << 8 \| patch (0x0001_0000 = 1.0.0); 0 = built before versioning (refused) |
+| 6 | `basis_version` | the Tesseract Basis version, major << 16 \| minor << 8 \| patch (0x0001_0100 = 1.1.0); 0 = built before versioning (refused) |
 | 7 | reserved | 0 |
 
 Words 0, 1 and 6 come from the link's `--defsym` (`sw/ctrl/cmake/tsr_version.cmake`: `tsr/version.h` and
@@ -625,7 +625,7 @@ describes them for users.
 | Number | Value | Source | Carried in |
 |---|---|---|---|
 | Tesseract Core capability MAJOR.MINOR | 1.0 | `sw/tables/tsr_tables.py` `ISA_MAJOR` / `ISA_MINOR` | `VERSION` (EX §7.5), `.note.tsr` `cap_min` (the image's need) |
-| Tesseract Basis MAJOR.MINOR.PATCH (SemVer) | 1.0.0 | `sw/ctrl/include/tsr/version.h` | `.note.tsr` word 6 and HELLO r6, both from the link's `__tsr_basis_version` (major << 16 \| minor << 8 \| patch); `tsr_fw_image(... BASIS_VERSION <code>)` links a test image as another version |
+| Tesseract Basis MAJOR.MINOR.PATCH (SemVer) | 1.1.0 | `sw/ctrl/include/tsr/version.h` | `.note.tsr` word 6 and HELLO r6, both from the link's `__tsr_basis_version` (major << 16 \| minor << 8 \| patch); `tsr_fw_image(... BASIS_VERSION <code>)` links a test image as another version |
 | Basis ABI | 1 | `version.h` `TSR_SDK_ABI` (the only source) | `.note.tsr` word 0, HELLO r4[15:0] |
 | Kind revision (u8, 0 = absent) | 1 for every kind of §7.2 except GATED_DELTA_NET, which is at 2 (§7.10, SW-78) | `tsr/opl.hpp` `kind_rev` | `.tsr_kinds`; HELLO r4[31:16] = the kind table signature |
 
@@ -671,7 +671,7 @@ Who refuses what:
 Internal identifiers, never shown as product versions: `CTL_ID[7:0]` = 1 (control-core revision; 0 = no control
 core), `ADAPTER_VERSION` major 1, `DBG_ID[7:0]` = 1 (DB §10.1), the kind table signature, the image id.
 File-format versions: OPL header 1, trace meta 2, `.klc` 2, numcheck meta 2, DBG_INFO 1, CRASH 1, MSUM 1.
-Display (`tsr_versions_str`): "Tesseract Core 1.0 (VU ATT GDN), Tesseract Basis 1.0.0 (ABI 1, N kinds)".
+Display (`tsr_versions_str`): "Tesseract Core 1.0 (VU ATT GDN), Tesseract Basis 1.1.0 (ABI 1, N kinds)".
 
 ---
 
@@ -731,7 +731,7 @@ word2..: args[n_args]                  (n_args <= 16 * n_slots - 2)
 
 Kinds and argument words. Matmul mode uses 0x01 and 0x10 (and 0x1F with MUL_MAT_ID); full mode uses every kind. The
 Gated DeltaNet kinds (0x2D to 0x2F) are numbered from the top of the free range downward. Rev is the kind's
-numerics revision at Tesseract Basis 1.0.0 (`opl::kind_rev`, §6.9). Shapes are flattened to rows: `rows` =
+numerics revision at Tesseract Basis 1.1.0 (`opl::kind_rev`, §6.9). Shapes are flattened to rows: `rows` =
 ne1·ne2·ne3, and every row of a tensor starts on a line (ensured by `supports_op`).
 
 | Kind | Name | Rev | Args (word index: meaning) | ggml source |
@@ -1585,7 +1585,7 @@ its own and builds a kind mask from the booted image's `.tsr_kinds` (`TSR_KINDS=
 JOIN and MUL_MAT); supports_op, the MUL_MAT path included, refuses a kind outside the mask ("kind ADD is not in
 the booted image (Tesseract Basis X.Y.Z, image <id>)", at `TSR_DEBUG=2`), so a subset image leaves those ops on
 the CPU; the builder asserts the mask before each launch. The description reads "Tesseract Core 1.0 (VU ATT
-GDN; sim, C=4, …), Tesseract Basis 1.0.0 (ABI 1, N kinds, image <id>)";
+GDN; sim, C=4, …), Tesseract Basis 1.1.0 (ABI 1, N kinds, image <id>)";
 `get_proc_address("ggml_backend_tesseract_versions")` returns the `tsr_versions` of the opened device. `sw/rt`
 applies the Basis rule and requires MUL_MAT.
 
@@ -1783,7 +1783,7 @@ cut into several launches by the 256-line preload area, and a FLASH_ATTN of more
 | Item | Value |
 |---|---|
 | Tesseract Core capability | 1.0 (`VERSION` 0x0000_0100; EX §7.5) |
-| Tesseract Basis | 1.0.0, Basis ABI 1 (§6.9) |
+| Tesseract Basis | 1.1.0, Basis ABI 1 (§6.9) |
 | Image | `tsr_u200_k4`: four channels, `T_MAX` 4, VU with 8 front, 8 EXP and 4 back lanes behind two lane-pipe stages, `CAPS` 0x121 (VU, ATT, GDN), core clock 200 MHz, `clk_rv` 100 MHz (CC §14) |
 | Firmware kinds | the 21 kinds of §7.2 (MUL_MAT_SCALE and MUL_MAT_SOFTCAP are declared but need `CAPS` bits 13 and 14, which the image does not have; TOPK, DQROW and VMASK are not in the image) |
 | Firmware size | ITCM at most 96 KiB of 128 KiB, DTCM at most 56 KiB of 64 KiB (§7.8) |

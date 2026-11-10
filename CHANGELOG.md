@@ -6,10 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-10
+
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).
+It runs on Tesseract Core 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)).
+
+### Added
+
+- Transport hooks for a channel buffer that is larger than the memory behind it: `kdev::buf_bytes` and `kdev::detect_capacity`. Their defaults keep `ch_bytes`, so the simulated kinds do not change. The xrt kind measures the capacity at open (`detect_ch_capacity`). `tsr_mon_cap_read` and `tsr_mon_cap_write` record it per card in `tsr-cap-<bdf>`, so an attach open and `tsr-top` use what an owner open measured.
+- `tsr-selftest` checks the channel capacity: distinct patterns at 0 and at P for every power of two P below the buffer, and the transport's channel size must equal the capacity found. Its memory checks wrote and read back at the same address and could not see a wrap.
+
+### Changed
+
+- The nominal core clock of the transport and the tools is 200 MHz, the core clock of the release image, instead of 276.3 MHz. The simulated kinds count device time at it, so a timeout of the same length covers 28 percent fewer core cycles. On xrt the PERF summary takes the clock that the driver reports in sysfs (`kdev::core_clock_hz`), and the clock fitted from `DBG_MTIME` once the session is long enough. `tsr_perf_summary.core_hz_fitted` says which one it is: 0 nominal, 1 fitted, 2 platform (`TSR_CORE_HZ_*`). `tsr-selftest` reports the PONG DURATION at that clock. `tsr-top`, `tsr-prof` and the profile report fall back to 200 MHz where no card clock is known. Results do not change.
+- `tsr-top` shows the device memory in use against the card's DDR as the MEMORY meter. The DDR bar in the header and the bandwidth meter and series are gone.
+
 ### Fixed
 
 - The xrt transport measures the capacity of each channel at open. The U200 card holds 8 GiB per channel, but the shell's memory topology says 16 GB per bank, so addresses above 8 GiB wrapped and a model of more than about 8 GiB per channel overwrote its own weights. The heap, the KV placement, the range checks and the monitor record now use the measured size, `TSR_XRT_CH_GIB` above it is refused, and a model that does not fit stops with `WEIGHT heap full`. `TSR_ATTACH` writes nothing and takes the capacity that an owner open recorded in `tsr-cap-<bdf>`. `tsr-top` shows 32 GiB for the card also when no process owns it.
-- `tsr-selftest` checks the channel capacity: distinct patterns at 0 and at P for every power of two P below the buffer, and the transport's channel size must equal the capacity found. Its memory checks wrote and read back at the same address and could not see a wrap.
 - Models that share KV between layers (Gemma 4 E4B) no longer abort in prefill at a large ubatch: the backend copies the K indices that ggml-alloc overwrites before a sharing layer's FLASH_ATTN (SW-89).
 
 ## [1.0.0] - 2026-11-10
@@ -56,6 +70,7 @@ Basis ABI 1. Targets Tesseract Core capability 1.0.
 - ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
 - Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.0.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.1.0...HEAD
+[1.1.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.0.0...basis-v1.1.0
 [1.0.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v0.1.0...basis-v1.0.0
 [0.1.0]: https://github.com/jwkim04/tesseract-npu/releases/tag/basis-v0.1.0

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
   <a href="rtl/CHANGELOG.md"><img alt="Core: 1.0.0" src="https://img.shields.io/badge/core-1.0.0-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.0.0" src="https://img.shields.io/badge/basis-1.0.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.1.0" src="https://img.shields.io/badge/basis-1.1.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
