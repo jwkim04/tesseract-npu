@@ -13,8 +13,8 @@
 
 A full-stack, open-source NPU for LLM inference.
 
-- <img alt="Tesseract Core" src="docs/logo/tesseract-core-lockup-universal.png" height="20"> hardware: NPU core in SystemVerilog with an on-chip RISC-V control core.
-- <img alt="Tesseract Basis" src="docs/logo/tesseract-basis-lockup-universal.png" height="20"> firmware: C++20 runtime, kernel library and kernel SDK.
+- <img alt="Tesseract Core" src="docs/logo/tesseract-core-lockup-universal.png" height="20" align="absmiddle"> hardware: NPU core in SystemVerilog with an on-chip RISC-V control core.
+- <img alt="Tesseract Basis" src="docs/logo/tesseract-basis-lockup-universal.png" height="20" align="absmiddle"> firmware: C++20 runtime, kernel library and kernel SDK.
 - Software: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
 
 Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
