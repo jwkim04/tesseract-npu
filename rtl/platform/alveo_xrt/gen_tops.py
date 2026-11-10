@@ -253,11 +253,16 @@ def gen_wrap(name: str, k: dict) -> str:
     if k.get("MVM_DUAL"):
         for c in range(C):
             conns += ["    .m_axi_chb%d_%s(m_axib_%s[%d])" % (c, s, s, c) for s, _, _ in AXIB]
-    else:
-        L.append("  // no dual weight stream: m_axib_* are not driven (outputs 0)")
     L.append(",\n".join(conns))
     L.append("  );")
     L.append("")
+    if not k.get("MVM_DUAL"):
+        L.append("  // no dual weight stream: the read-only ports exist for the bench only (outputs 0, inputs unused)")
+        for s_, d, w in AXIB:
+            if d == "out":
+                L.append("  assign m_axib_%s = '0;" % s_)
+        L.append("  wire unused_b = &{1'b0, %s};" % ", ".join("m_axib_%s" % s_ for s_, d, _ in AXIB if d == "in"))
+        L.append("")
     L.append("endmodule")
     return "\n".join(L) + "\n"
 

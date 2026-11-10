@@ -89,7 +89,6 @@ module kwrap_tsr_u200_k1 #(
   end
 
   tsr_u200_k1 u_top (
-  // no dual weight stream: m_axib_* are not driven (outputs 0)
     .ap_clk,
     .ap_rst_n,
     .ap_clk_2,
@@ -149,5 +148,19 @@ module kwrap_tsr_u200_k1 #(
     .m_axi_ch0_rlast(m_axi_rlast[0]),
     .m_axi_ch0_rid(m_axi_rid[0])
   );
+
+  // no dual weight stream: the read-only ports exist for the bench only (outputs 0, inputs unused)
+  assign m_axib_arvalid = '0;
+  assign m_axib_araddr = '0;
+  assign m_axib_arlen = '0;
+  assign m_axib_arsize = '0;
+  assign m_axib_arburst = '0;
+  assign m_axib_arlock = '0;
+  assign m_axib_arcache = '0;
+  assign m_axib_arprot = '0;
+  assign m_axib_arqos = '0;
+  assign m_axib_arid = '0;
+  assign m_axib_rready = '0;
+  wire unused_b = &{1'b0, m_axib_arready, m_axib_rvalid, m_axib_rdata, m_axib_rresp, m_axib_rlast, m_axib_rid};
 
 endmodule
