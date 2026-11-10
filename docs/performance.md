@@ -1,15 +1,17 @@
 # Performance
 
-This page says how to measure Tesseract and what to report with a result. Results are published
-with each release.
+This page says how to measure Tesseract and what to report with a result. The last section holds
+the results of the current release.
 
 ## What is measured
 
-- Decode rate: tokens per second of the generation phase, from the `eval time` line of llama.cpp.
-  Batch 1, greedy sampling (`--temp 0`).
-- Prefill rate: tokens per second of prompt processing (`prompt eval time`) at a stated ubatch
-  size (`-ub`).
-- Device cycles per token: the `PERF_CYCLES` counter over a run, divided by the number of tokens.
+- Decode rate: tokens per second of the generation phase. `llama-bench` reports it as `tg` and
+  llama.cpp prints it on the `eval time` line. Batch 1.
+- Prefill rate: tokens per second of prompt processing (`pp` of `llama-bench`, `prompt eval time`
+  of llama.cpp) at a stated ubatch size (`-ub`).
+- Decode power: the board power of the card while it decodes, and the decode rate per watt.
+- Device cycles per token: the change of the `PERF_CYCLES` counter over the launch of one decode token.
+- Device memory: the DRAM in use on the card.
 - Unit busy cycles per token: `MVM_CYCLES`, `VU_CYCLES`, `DMA_CYCLES` and `QACT_CYCLES`, and the
   stall counters `MVM_WAIT` (idle while the queue holds an entry that cannot start) and `MVM_EMPTY`
   (idle with an empty queue, which means issue bound).
@@ -22,7 +24,9 @@ Accuracy is a separate question. Check a configuration with [klcheck](klcheck.md
 
 | Tool | Use |
 | --- | --- |
-| `llama-completion` | decode and prefill rates; with `TSR_STATS=1` it also prints the backend report and the PERF counter deltas |
+| `llama-bench` | prefill and decode rates, with the mean and the standard deviation of the repetitions |
+| `llama-cli` | one chat turn with the model's template; with `TSR_STATS=1` it also prints the backend report and the PERF totals at exit |
+| `llama-completion` | decode and prefill rates of a raw prompt; with `TSR_STATS=1` it also prints the backend report and the PERF counter deltas |
 | `tsr-mtp` | speculative decoding with a model's MTP head; device cycles per phase for a list of draft lengths |
 | `klcheck`, `tsr-numcheck` | accuracy against the CPU and bit identity against the simulator |
 | `tsr-selftest` | identity of the device: `CAPS`, `T_MAX`, `NUM_CH`, kind table, firmware image id |
@@ -48,19 +52,37 @@ Complete lists are in [getting-started.md](getting-started.md) and [prof-dbg.md]
 | `TSR_SIM_DRAM_DIR` | back the simulated DRAM with files, for models that do not fit in host RAM |
 | `TSR_DUMP_PLAN=<dir>` | write the plan, the launches with their PERF deltas and the trace records that `prof_report.py` reads |
 | `TSR_MON=0` | turn off the record that `tsr-top` reads (on by default) |
+| `TSR_MON_PERF_MS=0` | read the PERF counters after every launch instead of every 100 ms, so the record holds the cycles of each launch ([prof-dbg.md](prof-dbg.md) §7.2) |
 | `TSR_GDN_CELL=0`, `TSR_HEAD_SPLIT=0` | switch off a host lowering choice, for an A/B comparison |
 
 Full mode and matmul mode are defined in [design/README.md](design/README.md).
 
 ## Procedure
 
-Decode. Run `llama-completion -m MODEL -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv
--n 65` with a prompt of a few tokens, `LLAMA_ATTN_ROT_DISABLE=1` and `TSR_STATS=1`. Run it again
-with `-n 1`. The per-token device figures are the difference of the two counter totals divided by
-64. The rate is the `eval time` rate of the `-n 65` run. Repeat at least three times.
+Rates. Run `llama-bench -m MODEL -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -ub 512 -p 512 -n 64 -r 3 -t 8
+-o jsonl` with `LLAMA_ATTN_ROT_DISABLE=1`. It loads the model once, runs a warmup, then times three
+repetitions of a 512-token prompt (`pp512`) and three of 64 generated tokens (`tg64`). Each result
+line gives the mean and the standard deviation of the three rates. The default `-ub` is 512.
+Attention for a ubatch of more than 680 tokens runs on the CPU.
 
-Prefill. Process one prompt of a stated length with `-n 1` at a stated `-ub`. The default `-ub` is
-512. Attention for a ubatch of more than 680 tokens runs on the CPU.
+Power. While `llama-bench` runs, read the board power of the card every 0.2 s, with a timestamp. The
+reading is `power1_input` (microwatts) of the hwmon node of the card's user function, which is the
+XRT shell's board sensor and not the host's power. Take the idle power as the mean of ten readings
+before the run, with no process on the card. Take the decode power as the mean of the readings inside
+the `tg64` repetitions. A result line is timestamped when `llama-bench` prints it, and its
+`samples_ns` give the length of the timed repetitions. The decode rate per watt is the `tg64` mean
+over the decode power.
+
+Cycles, memory and a text check. Run one chat turn with the model's template, so that the model
+sees the prompt it was trained on: `llama-cli -m MODEL -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096
+--temp 0 -n 65 -t 8 -sys "You are a helpful assistant." -p "PROMPT" -st -rea off --simple-io`, with
+`TSR_STATS=1` and `TSR_MON_PERF_MS=0`, under `script -qec` so that it has a terminal. It is a single
+turn with greedy sampling and thinking off. Read the text and check that it is coherent. Do not judge
+a model from a raw prompt without its template: an instruct model can degenerate on one, even on the
+CPU. During the run, poll the monitor record of the process (`/dev/shm/tsr-mon-<pid>`,
+[prof-dbg.md](prof-dbg.md) §7.2). It holds the PERF totals after every launch and `mem_used`. The 64
+launches after the prompt each decode one token. The cycles per token are the mean `PERF_CYCLES`
+change of those launches. The device memory is the largest `mem_used` of the run.
 
 Speculative decoding. Run `tsr-mtp` with `--mtp-mode all` and a `--mtp-k-list`, and compare the
 cycles per token with plain decoding of the same prompts.
@@ -118,8 +140,88 @@ at the same ratio.
 - Model: file name, source, weight type and sha256.
 - Run: the command line with every `TSR_*` variable, the mode (full mode or matmul mode), `-t`, `-c`, `-ub`, the KV
   types, and the prompt and generated token counts.
-- Numbers: the number of runs, the median and the range, the device cycles per token, the unit busy
-  cycles, the device share of the wall time and the load average at the start.
+- Numbers: the number of runs, the mean and the standard deviation (or the median and the range),
+  the idle and the decode power, the device cycles per token, the unit busy cycles, the device share
+  of the wall time and the load average at the start.
 - Accuracy: the klcheck ratio and top-1 for the same configuration, and the bit identity against the
   simulator where it was checked.
 - For a simulator figure: the cycle model configuration.
+
+## Results
+
+Seven models on one Alveo U200 card, in full mode, measured as described under Procedure. Prefill and
+decode rates are the mean ± the standard deviation of three repetitions.
+
+| Model | Quantization | File size | Device memory | Prefill tok/s (pp512, -ub 512) | Decode tok/s (tg64) | Decode power (W) | tok/s/W | Device cycles per token |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8 27B | Q8_0 | 26.6 GiB | 25.8 GiB | 5.079 ± 0.001 | 1.587 ± 0.001 | 55.9 | 0.028 | 125.05 M |
+| Qwen3.5 9B | Q8_0 | 8.9 GiB | 8.1 GiB | 16.617 ± 0.004 | 4.992 ± 0.006 | 55.3 | 0.090 | 39.65 M |
+| Gemma 4 31B | Q4_K_M | 17.1 GiB | 19.1 GiB | 9.294 ± 0.003 | 2.442 ± 0.001 | 58.6 | 0.042 | 81.42 M |
+| Gemma 4 26B-A4B | Q8_0 | 25.0 GiB | 25.6 GiB | 20.942 ± 0.020 | 10.178 ± 0.013 | 55.8 | 0.182 | 19.37 M |
+| Gemma 4 12B | Q8_0 | 11.8 GiB | 12.2 GiB | 15.538 ± 0.011 | 3.743 ± 0.001 | 57.7 | 0.065 | 53.14 M |
+| Gemma 4 E4B | Q8_0 | 7.6 GiB | 4.9 GiB | 39.399 ± 0.022 | 9.034 ± 0.012 | 55.4 | 0.163 | 21.84 M |
+| Gemma 4 E2B | Q8_0 | 4.7 GiB | 2.5 GiB | 75.959 ± 0.091 | 17.442 ± 0.007 | 54.9 | 0.318 | 11.33 M |
+
+- Device memory is the largest `mem_used` of the chat run at `-c 4096`. It holds the weights, the KV cache
+  and the work buffers. A weight type other than Q8_0 and Q4_K is converted to Q8_0 when the model
+  loads. The per-layer embedding tables of Gemma 4 E4B and E2B stay in host memory.
+- Decode power is the mean card board power over the timed `tg64` repetitions. The tok/s/W column is
+  the decode rate over it.
+- Device cycles per token are the mean over the 64 decode launches of the chat run, in millions of
+  core cycles. At the 200 MHz core clock the device time of a token is 98 to 99 percent of the time
+  per token of `tg64` in every row.
+- Each chat run produced 65 tokens of coherent text. The runs do not measure accuracy; see
+  [klcheck](klcheck.md) and [numcheck](numcheck.md).
+
+### Conditions
+
+- Host: AMD Ryzen 7 9700X (8 cores, 16 threads), 14.7 GiB RAM, Linux 7.0.0-38-generic (Ubuntu 24.04),
+  XRT 2.18.179 (2024.2). `-t 8`. The 1-minute load average at the start of the `llama-bench` runs was
+  0.4 to 4.0.
+- Card: Alveo U200 with the shell `xilinx_u200_gen3x16_xdma_base_2` (platform 202110.1), PCIe Gen3 x16,
+  32 GiB of DDR4 in four channels of 8 GiB (measured at open).
+- Image: `tsr_u200_k4.xclbin`, sha256
+  `944ea2b59a436c7e7a60b9915d499e6a501cbefd1673c5ac2ca6fdd6d0f7a5f9`, UUID
+  `7f5e7240-e3e6-de7a-55aa-42fc777c128d`. Core clock 200 MHz and RISC-V clock 100 MHz (fitted from
+  `DBG_MTIME` against host time: 199.995 and 99.998 MHz). Tesseract Core 1.0, `CAPS` 0x121 (VU, ATT,
+  GDN), `NUM_CH` 4, `T_MAX` 4, 128 lanes, `K_MAX` 32768.
+- Firmware: `tsr-fw.elf`, sha256 `6c13251d6e2c7cb5b53f4f247abc171ea8c2df48856d7ef074b0f6733bc3f147`,
+  Tesseract Basis 1.0.0 (ABI 1), image id `94a464a9da1a22b0`, 21 kinds, kind table signature 0x2381.
+- Software: this repository at commit 7d1ba0a, Release build with `TSR_WITH_XRT=ON`, llama.cpp
+  pinned at e3797b184 (b11810) with `third_party/patches/0001-ggml-tesseract.patch`.
+- Mode: full mode (`TSR_KINDS` unset), Q8_0 KV cache, flash attention on. The chat run uses greedy
+  sampling.
+- Power: the card board power from the U200 sensors (`power1_input` of the hwmon node of the card's
+  user function, 0.2 s interval), not the host's power. Idle power with no process on the card,
+  as the mean of ten readings before each run: 36.6 W (35.7 to 37.4 W over the seven runs).
+
+Environment of both runs: `TSR_DEVICE=xrt`, `TSR_XCLBIN=<tsr_u200_k4.xclbin>`,
+`TSR_IMAGE=build/xrt/fw/tsr-fw.elf`, `LLAMA_ATTN_ROT_DISABLE=1`. The chat run adds `TSR_STATS=1` and
+`TSR_MON_PERF_MS=0`.
+
+```
+build/xrt/bin/llama-bench -m MODEL -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -ub 512 -p 512 -n 64 -r 3 -t 8 -o jsonl
+
+build/xrt/bin/llama-cli -m MODEL -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -n 65 -t 8 \
+    -sys "You are a helpful assistant." -p "Write a short story about a robot who learns to paint a sunset." \
+    -st -rea off --simple-io --no-display-prompt
+```
+
+### Model files
+
+The files are GGUF files as published. The sha256 sums are those of the files that were run.
+
+- Qwen3.8 27B: `Qwen3.8-27B-Q8_0.gguf`, ggml-org/Qwen3.8-27B-GGUF, sha256
+  `6bc9e7220d8400574fd62df25f04a961cb5cbb0d766cf0118c21c36c0059c35a`.
+- Qwen3.5 9B: `Qwen3.5-9B-Q8_0.gguf`, unsloth/Qwen3.5-9B-GGUF, sha256
+  `809626574d0cb43d4becfa56169980da2bb448f2299270f7be443cb89d0a6ae4`.
+- Gemma 4 31B: `gemma-4-31B-it-Q4_K_M.gguf`, unsloth/gemma-4-31B-it-GGUF, sha256
+  `38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84`.
+- Gemma 4 26B-A4B: `google_gemma-4-26B-A4B-it-Q8_0.gguf`, bartowski/google_gemma-4-26B-A4B-it-GGUF, sha256
+  `1bb7fdb37fbd542ba972b3eb83ae87752bb9063aff560402e0e2f64235c85226`.
+- Gemma 4 12B: `gemma-4-12b-it-Q8_0.gguf`, quantized by Unsloth (GGUF metadata), sha256
+  `f20e7ff1be28c283eeeb18fc895733791c56a5851d5cd3fe9691b7f7d12afa72`.
+- Gemma 4 E4B: `gemma-4-E4B-it-Q8_0.gguf`, quantized by Unsloth (GGUF metadata), sha256
+  `f8854aa4480df62585a279e7ca0a881554fc18a41c59c4f62642d16a2ae47012`.
+- Gemma 4 E2B: `gemma-4-E2B-it-Q8_0.gguf`, unsloth/gemma-4-E2B-it-GGUF, sha256
+  `605d3c2647d7c58c1e4b5375ccb5702acf94c2611b4c8d4877812f8fdd32d053`.

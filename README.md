@@ -19,6 +19,25 @@ A full-stack, open-source NPU for LLM inference.
 
 Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA. The U200 card holds 32 GiB of DDR4, four channels of 8 GiB. The design supports up to 16 GiB per channel.
 
+<!-- demo -->
+## Performance
+
+Decode and prefill rates on one Alveo U200 card, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
+and decode is 64 tokens, both from `llama-bench`. The last column is the decode rate per watt of card
+board power.
+
+| Model | Quantization | Prefill tok/s | Decode tok/s | tok/s/W |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.8 27B | Q8_0 | 5.08 | 1.59 | 0.028 |
+| Qwen3.5 9B | Q8_0 | 16.62 | 4.99 | 0.090 |
+| Gemma 4 31B | Q4_K_M | 9.29 | 2.44 | 0.042 |
+| Gemma 4 26B-A4B | Q8_0 | 20.94 | 10.18 | 0.182 |
+| Gemma 4 12B | Q8_0 | 15.54 | 3.74 | 0.065 |
+| Gemma 4 E4B | Q8_0 | 39.40 | 9.03 | 0.163 |
+| Gemma 4 E2B | Q8_0 | 75.96 | 17.44 | 0.318 |
+
+Conditions, device memory, cycles per token and the method are in [docs/performance.md](docs/performance.md).
+
 ## Operators and features
 
 The device runs these ggml ops. The op list kinds behind them are in [docs/versioning.md](docs/versioning.md).

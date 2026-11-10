@@ -30,7 +30,7 @@ the design documents in [design/](design/README.md), then the other documents.
 - [klcheck.md](klcheck.md): the model-level KL check against the CPU.
 - [numcheck.md](numcheck.md): the one-prompt numeric check of every weight matrix product.
 - [prof-dbg.md](prof-dbg.md): debugging and profiling tools, the profile report and `tsr-top`.
-- [performance.md](performance.md): how to measure and what to report.
+- [performance.md](performance.md): how to measure, what to report and the results.
 
 Component documentation lives next to the code: [sw/ctrl](../sw/ctrl/README.md) (the Basis kernel
 SDK), [sw/ggml-tesseract](../sw/ggml-tesseract/README.md), [sw/transport](../sw/transport/README.md),
