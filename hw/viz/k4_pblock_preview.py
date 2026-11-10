@@ -177,8 +177,15 @@ def cr_label(r):
     return m[1] if m[1] == m[2] else f"{m[1]}–{m[2]}"
 
 
+def clock_request(hook):
+    """Core and RV clock in MHz of the link config beside the hook (k4.cfg: kernel_frequency=0:<core>|1:<rv>)."""
+    m = re.search(r"(?m)^kernel_frequency=0:([\d.]+)\|1:([\d.]+)", (hook.parent / "k4.cfg").read_text())
+    return m.group(1), m.group(2)
+
+
 def render(hook, report, output):
     groups, children = assignments(hook)
+    core_mhz, rv_mhz = clock_request(hook)
     shapes = slice_ranges(report)
     placed = [path for paths in groups.values() for path in paths]
     has_vu_banks = any(path.endswith(".u_bank") for path in placed)
@@ -231,11 +238,11 @@ def render(hook, report, output):
             word(x, y + i * 22, line, 16, INK)
         return len(lines)
 
-    word(44, 30, ("ALVEO U200   /   K4   /   CORE 250 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
+    word(44, 30, (f"ALVEO U200   /   K4   /   CORE {core_mhz} MHz · CLK_RV {rv_mhz} MHz   /   PRE-BUILD" if full else
                   "ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
                   "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if (full or reduced) else
          "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
-    title = ("풀 구성 카드 이미지(250 MHz, GDN 포함)의 Pblock 계획" if full else
+    title = (f"풀 구성 카드 이미지({core_mhz} MHz, GDN 포함)의 Pblock 계획" if full else
              "첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
              "첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
              "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
