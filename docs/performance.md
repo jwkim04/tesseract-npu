@@ -173,6 +173,51 @@ decode rates are the mean ± the standard deviation of three repetitions.
 - Each chat run produced 65 tokens of coherent text. The runs do not measure accuracy; see
   [klcheck](klcheck.md) and [numcheck](numcheck.md).
 
+### MTP
+
+Multi-token prediction on the same card and image, in full mode. The target decodes a window of the
+draft head's tokens in one launch and rolls back the recurrent state on a rejection
+([software verification](design/06-software-verification.md) §7.11).
+
+| Model | Quantization (target / MTP) | Best K | Plain tok/s | MTP tok/s | Speedup | Accepted per step | tok/s/W |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8 27B | Q4_K_M / Q8_0 (separate file) | 3 | 2.19 | 3.59 | 1.64x | 2.09 | 0.072 |
+| Qwen3.8 2B | Q4_K_M / Q4_K_M (in the file) | 1 | 23.06 | 25.45 | 1.10x | 0.81 | 0.51 |
+
+Device cycles per generated token, in millions, and the tok/s of each K:
+
+| Model | Plain | K = 1 | K = 2 | K = 3 | K = 4 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8 27B | 90.87 (2.19) | 63.08 (3.11) | 55.23 (3.53) | 54.39 (3.59) | 79.28 (2.46) |
+| Qwen3.8 2B | 8.50 (23.06) | 7.46 (25.45) | 7.81 (24.10) | 8.62 (21.81) | 11.54 (16.61) |
+
+Command line, with `TSR_DEVICE=xrt`, the release image, `LLAMA_ATTN_ROT_DISABLE=1` and the default
+`tsr-mtp` settings (flash attention, q8_0 KV for target and draft, every layer on the device):
+
+```
+tsr-mtp -m TARGET.gguf [-md MTP.gguf] --spec-type draft-mtp --mtp-mode all --mtp-k-list 1,2,3,4 \
+  --mtp-device xrt --mtp-prompts PROMPTS.txt -n 128 -c 2048 -t 8
+```
+
+- The prompts are three single-turn chat prompts (a hash table, a palindrome function, documentation
+  tips) in the model's template with thinking off, 22 to 30 tokens each. Decoding is greedy and every
+  run generates 128 tokens per prompt, 384 in all.
+- The tok/s are wall rates of the decode loop (draft, verify and catch-up) on this host, from one run of
+  each K. The plain rate is the same loop with one token per decode, in the same process. The cycles
+  are the device counters of the same phases. The accepted figure is drafts accepted per step at the
+  best K, so a step yields that plus one tokens.
+- Power is the mean card board power (`power1_input`, every 0.2 s) over the decode loop of a second run
+  at the best K. The idle power was 36.1 W. The tok/s/W column is the MTP rate over that power: 50.1 W
+  for the 27B and 49.9 W for the 2B.
+- The MTP token stream equals plain greedy decoding in every run: 3 of 3 prompts identical for each K
+  of both models.
+- The best K depends on the acceptance. Past it the verify launch gets longer than the drafts repay,
+  and K = 4 is slower than plain decoding on the 2B.
+
+Skipped: Gemma 4 26B-A4B Q8_0 with the Gemma 4 assistant MTP head (`gemma4-assistant`). The pinned
+llama.cpp loads it, but `tsr-mtp` stops before the first launch: the target has no recurrent layers,
+keeps 0 rollback snapshots, and `tsr-mtp` requires at least K.
+
 ### Conditions
 
 - Host: AMD Ryzen 7 9700X (8 cores, 16 threads), 14.7 GiB RAM, Linux 7.0.0-38-generic (Ubuntu 24.04),

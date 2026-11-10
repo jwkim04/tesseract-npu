@@ -49,6 +49,15 @@ board power.
 | Gemma 4 E4B | Q8_0 | 39.40 | 9.03 | 0.163 |
 | Gemma 4 E2B | Q8_0 | 75.96 | 17.44 | 0.318 |
 
+With multi-token prediction the draft head proposes tokens and the device verifies them in one launch. The output is identical to plain greedy decoding.
+
+| Model | Quantization | Plain tok/s | MTP tok/s | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.8 27B | Q4_K_M | 2.19 | 3.59 | 1.64x |
+| Qwen3.8 2B | Q4_K_M | 23.06 | 25.45 | 1.10x |
+
+The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
+
 Conditions, device memory, cycles per token and the method are in [docs/performance.md](docs/performance.md).
 
 ## Operators and features
