@@ -288,4 +288,11 @@ if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
         set_tests_properties(ggml_tesseract_mtp_card_${_m} PROPERTIES TIMEOUT 600
             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_CARD=k4full;LLAMA_ATTN_ROT_DISABLE=1")
     endforeach()
+    # a target without recurrent layers (tiny Gemma 4): no snapshots, the rejected tail is a KV removal; tsr-mtp accepts n_rs_seq 0
+    add_test(NAME ggml_tesseract_mtp_gemma4-tiny-q8_0 COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf 3 12)
+    set_tests_properties(ggml_tesseract_mtp_gemma4-tiny-q8_0 PROPERTIES TIMEOUT 600
+        ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4;LLAMA_ATTN_ROT_DISABLE=1")
+    add_test(NAME ggml_tesseract_mtp_card_gemma4-tiny-q8_0 COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf 2 9)
+    set_tests_properties(ggml_tesseract_mtp_card_gemma4-tiny-q8_0 PROPERTIES TIMEOUT 600
+        ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_CARD=k4full;LLAMA_ATTN_ROT_DISABLE=1")
 endif()

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Fixed
+
+- `tsr-mtp` runs targets without recurrent layers (Gemma 4): it asks for rollback snapshots only when the target is recurrent or hybrid.
+
 ### Changed
 
 - The profile report page (`sw/tools/prof`) is a profiler window: toolbar, launch tree, timeline with a row per unit, and a bottom pane with Summary, Records, Graph and Details tabs. `capture_card.sh` defaults to the k4f250 release image and no longer replays the first-ATTPV trace unless `WARM=1`.

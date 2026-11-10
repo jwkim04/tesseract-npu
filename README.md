@@ -55,6 +55,7 @@ With multi-token prediction the draft head proposes tokens and the device verifi
 | --- | --- | ---: | ---: | ---: |
 | Qwen3.8 27B | Q4_K_M | 2.19 | 3.59 | 1.64x |
 | Qwen3.8 2B | Q4_K_M | 23.06 | 25.45 | 1.10x |
+| Gemma 4 26B-A4B | Q8_0 | 10.15 | 11.77 | 1.16x |
 
 The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
 

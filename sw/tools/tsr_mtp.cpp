@@ -362,7 +362,7 @@ result run_set(engine & e, bool spec, int K, const std::vector<std::string> & pr
                     break;
                 }
             }
-            {   // roll the target and the draft back to the accepted position: the recurrent memory moves to the snapshot
+            {   // roll the target and the draft back to the accepted position: a recurrent memory moves to the snapshot, a KV cache is trimmed
                 const ctr c0 = read_ctr();
                 const double t0 = now_s();
                 llama_memory_seq_rm(mem_tgt, seq, n_past, -1);
@@ -553,7 +553,9 @@ int main(int argc, char ** argv) {
         e.ctx_spec = ctx_tgt;
         e.ctx_dft = spec_init->context();
         if (e.ctx_dft == nullptr) fail("cannot create the MTP draft context (--spec-type draft-mtp with the MTP head in the model or -md)");
-        if (llama_n_rs_seq(ctx_tgt) < (uint32_t) params.speculative.draft.n_max)
+        // only a recurrent or hybrid target rolls back through snapshots; a plain KV cache is trimmed by llama_memory_seq_rm
+        const bool needs_snapshots = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt);
+        if (needs_snapshots && llama_n_rs_seq(ctx_tgt) < (uint32_t) params.speculative.draft.n_max)
             fail("the target keeps %u rollback snapshots, the draft is up to %d tokens", llama_n_rs_seq(ctx_tgt), params.speculative.draft.n_max);
     }
     if (want_plain) e.ctx_plain = want_spec ? make_plain_context(e) : ctx_tgt;
