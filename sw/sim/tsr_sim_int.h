@@ -708,6 +708,8 @@ struct tsr_sim {
     double     rv_ratio;
     uint32_t   rv_core;         // TSR_RV_CORE_* (tsr_rv.h)
     uint32_t   vu_front, vu_exp, vu_back, vu_pipe;   // the VU's lanes and lane-pipe stages (tsr_sim_opts.vu_timing)
+    int        mvm_dual_en;     // the dual weight stream's run-time enable (tsr_sim_opts.mvm_dual); used with CAPS.MVM_DUAL
+    double     mem_rate;        // MVM cycle model: at most this many weight beats per cycle and channel (0: unbounded)
 
     // PERF (EX §6)
     uint64_t   perf[TSR_PERF_SLOTS];

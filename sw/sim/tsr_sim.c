@@ -26,8 +26,11 @@
 // the bit-exact contract):
 //   LD / ST                 64 (DMA latency) + n_lines
 //   QACT                    T * (ceil(K / VL) + QA_LINES(kind, K))
-//   MVM                     64 (pipeline fill/drain) + T * QA_LINES (activation broadcast)
-//                           + max over channels of rows_c * ROW_BEATS (1 weight beat/cycle)
+//   MVM                     CYC_MVM_FILL (pipeline fill/drain) + T * QA_LINES (activation broadcast)
+//                           + max over channels of rows_c * ROW_BEATS (1 weight beat/cycle); with CAPS.MVM_DUAL, the
+//                           run-time enable and T <= T_MAX / 2 the dual weight stream: ceil(rows_c / 2) * ROW_BEATS;
+//                           the optional memory rate bound (tsr_sim_opts.mem_rate) raises a channel to at least
+//                           rows_c * ROW_BEATS / mem_rate
 //   NOP, FENCE              none (SYNC entries complete without running: 1 cycle in the queue model)
 // The queue model (tsr_q.c) runs ops for these times and integrates PERF over time (EX §6:
 // time counters gated by ACTIVE and not QHALT, event counters by ACTIVE). The tsr_sim_op test
@@ -497,7 +500,7 @@ static const char * cfg_problem(const tsr_config * c) {
         return "ATT_LOCAL requires CAPS.ATT";
     if ((c->caps & (TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP)) && !(c->caps & TSR_CAPS_VU))
         return "local MVM epilogues require CAPS.VU";
-    if (c->caps & ~tsr_sim_caps_implemented()) return "caps requests features this simulator does not implement";
+    if (c->caps & ~(tsr_sim_caps_implemented() | TSR_CAPS_MVM_DUAL)) return "caps requests features this simulator does not implement";
     return NULL;
 }
 
@@ -618,6 +621,31 @@ static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, siz
     if (o->trace_dir == NULL && (e = getenv("TSR_TRACE")) != NULL && e[0] != '\0') o->trace_dir = e;
     if (o->rv_core == NULL && (e = getenv("TSR_SIM_RV_CORE")) != NULL && e[0] != '\0') o->rv_core = e;
     if (o->vu_timing == NULL && (e = getenv("TSR_SIM_VU_TIMING")) != NULL && e[0] != '\0') o->vu_timing = e;
+    if (o->mvm_dual == 0 && (e = getenv("TSR_MVM_DUAL")) != NULL && e[0] != '\0') {
+        if (strcmp(e, "1") == 0) o->mvm_dual = 1;
+        else if (strcmp(e, "0") == 0) o->mvm_dual = 2;
+        else {
+            snprintf(buf, n, "TSR_MVM_DUAL=\"%s\": expected 0 or 1", e);
+            return buf;
+        }
+    }
+    if (o->mvm_dual > 2) {
+        snprintf(buf, n, "mvm_dual=%u: expected 0 (default), 1 (enabled) or 2 (disabled)", o->mvm_dual);
+        return buf;
+    }
+    if (o->mem_rate == 0.0 && (e = getenv("TSR_SIM_MEM_RATE")) != NULL && e[0] != '\0') {
+        char * end = NULL;
+        const double r = strtod(e, &end);
+        if (end == e || *end != '\0' || !(r > 0.0 && r <= 64.0)) {
+            snprintf(buf, n, "TSR_SIM_MEM_RATE=\"%s\": expected a number in (0, 64] (weight beats per cycle and channel)", e);
+            return buf;
+        }
+        o->mem_rate = r;
+    }
+    if (o->mem_rate < 0.0 || o->mem_rate > 64.0 || o->mem_rate != o->mem_rate) {
+        snprintf(buf, n, "mem_rate=%g: expected a number in [0, 64] (0: unbounded)", o->mem_rate);
+        return buf;
+    }
     if (o->vu_timing != NULL && vu_timing_parse(o->vu_timing, NULL) != 0) {
         snprintf(buf, n, "TSR_SIM_VU_TIMING / vu_timing=\"%s\": expected u200, k4 or F,E,B,P (front 8|16, EXP 8|16, back 4|8, pipe 0..3)",
                  o->vu_timing);
@@ -746,6 +774,8 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
         if (o.vu_timing != NULL) (void)vu_timing_parse(o.vu_timing, v);
         sim->vu_front = v[0]; sim->vu_exp = v[1]; sim->vu_back = v[2]; sim->vu_pipe = v[3];
     }
+    sim->mvm_dual_en = o.mvm_dual != 2;
+    sim->mem_rate = o.mem_rate;
     sim->xbuf = (float *)xcalloc(cfg->k_max, sizeof(float));
     sim->threads = 1;
     sim->log = (FILE *)o.log;
@@ -1632,15 +1662,31 @@ static void ex_mvm(tsr_sim * sim, const uint32_t w[8]) {
     }
 }
 
+// Cycles of the weight phase: the slowest channel. A cluster consumes one weight beat per cycle per stream: rows_c ROW_BEATS
+// cycles in one stream, ceil(rows_c / 2) ROW_BEATS in the two streams of the dual configuration (CAPS.MVM_DUAL, the run-time
+// enable on, T <= T_MAX / 2: rows [first, first + rA) and [first + rA, first + rows_c) of the cluster are read in lockstep,
+// rA = ceil(rows_c / 2); docs/rtl-mvm.md §15). A memory that delivers at most mem_rate beats per cycle and channel bounds
+// it from below by rows_c ROW_BEATS / mem_rate. Results do not depend on any of this.
+static uint64_t mvm_weight_cycles(const tsr_sim * sim, const mvm_dec * d) {
+    const int dual = (sim->cfg.caps & TSR_CAPS_MVM_DUAL) != 0 && sim->mvm_dual_en && d->T <= sim->cfg.t_max / 2u;
+    uint64_t max_cyc = 0;
+    for (uint32_t c = 0; c < sim->num_ch; ++c) {
+        const uint64_t b = mvm_ch_beats(d, c);
+        const uint64_t rows = d->row_beats ? b / d->row_beats : 0;
+        uint64_t cyc = (dual ? (rows + 1) / 2 : rows) * d->row_beats;
+        if (sim->mem_rate > 0.0) {
+            const uint64_t mem = (uint64_t)((double)b / sim->mem_rate + 0.999999999);
+            if (mem > cyc) cyc = mem;
+        }
+        if (cyc > max_cyc) max_cyc = cyc;
+    }
+    return max_cyc;
+}
+
 static uint64_t cyc_mvm(const tsr_sim * sim, const uint32_t w[8]) {
     mvm_dec d;
     mvm_decode(sim, w, &d);
-    uint64_t max_beats = 0;
-    for (uint32_t c = 0; c < sim->num_ch; ++c) {
-        const uint64_t b = mvm_ch_beats(&d, c);
-        if (b > max_beats) max_beats = b;
-    }
-    return CYC_MVM_FILL + (uint64_t)d.T * d.qa_lines + max_beats;
+    return CYC_MVM_FILL + (uint64_t)d.T * d.qa_lines + mvm_weight_cycles(sim, &d);
 }
 
 void tsr_core_register(void) {

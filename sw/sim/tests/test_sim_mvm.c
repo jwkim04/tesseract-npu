@@ -314,8 +314,98 @@ static void test_n_zero_and_chain(void) {
     tsr_sim_destroy(s);
 }
 
+// The dual weight stream (CAPS.MVM_DUAL, docs/rtl-mvm.md §15) changes the cycle model only. One MVM on a configuration: its
+// MVM_CYCLES, and a hash of the SPM dst span (the results).
+static uint64_t dual_run(const tsr_config * cfg, const tsr_sim_opts * so, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T,
+                         uint64_t * cyc) {
+    tsr_sim * s = tsr_sim_create_opts(cfg, so);
+    CHECK(s != NULL, "dual: create");
+    rng_t r = { 4711 + N * 31 + K + T };
+    const uint32_t kind = tsr_qa_kind_for_fmt(fmt);
+    const uint32_t qa_lines = tsr_qa_lines(kind, K), y_lines = tsr_ceil_div_u32(4 * N, 64);
+    const size_t row_bytes = (size_t)(K / tsr_fmt_block_size(fmt)) * tsr_fmt_ggml_block_bytes(fmt);
+    uint8_t * blocks = (uint8_t *)malloc(row_bytes * N + 1);
+    for (uint32_t n = 0; n < N; ++n) gen_row_blocks(&r, fmt, K, blocks + row_bytes * n);
+    const uint64_t w_off = TSR_REGION_WEIGHT_OFF / 64;
+    put_weights(s, fmt, N, K, w_off, blocks);
+    const uint32_t spm_qa = 16, spm_y = spm_qa + T * qa_lines + 3;
+    for (uint32_t t = 0; t < T; ++t) {
+        float * x = (float *)malloc(sizeof(float) * K);
+        gen_f32(&r, x, K);
+        uint8_t * qa = (uint8_t *)malloc((size_t)qa_lines * 64);
+        tsr_qact(kind, x, K, qa);
+        memcpy(tsr_sim_spm(s) + (size_t)(spm_qa + t * qa_lines) * 64, qa, (size_t)qa_lines * 64);
+        free(qa);
+        free(x);
+    }
+    const uint64_t c0 = tsr_sim_perf(s, TSR_PERF_MVM_CYCLES);
+    CHECK(op_ok(s, tsr_enc_mvm(fmt, 0, spm_y, spm_qa, (uint32_t)w_off, N, K, T, 0)), "dual: mvm");
+    *cyc = tsr_sim_perf(s, TSR_PERF_MVM_CYCLES) - c0;
+    const uint64_t h = fnv64(tsr_sim_spm(s) + (size_t)spm_y * 64, (size_t)((T - 1) * y_lines + y_lines) * 64);
+    free(blocks);
+    tsr_sim_destroy(s);
+    return h;
+}
+
+static void test_dual_cycles(void) {
+    const uint32_t shapes[][5] = {          // C, fmt, N, K, T
+        { 4, 0, 1, 64, 1 }, { 4, 0, 2, 64, 1 }, { 4, 0, 3, 96, 1 }, { 4, 0, 8, 1056, 2 }, { 4, 0, 9, 1056, 2 },
+        { 4, 1, 17, 768, 2 }, { 4, 1, 70, 512, 3 }, { 4, 0, 70, 896, 4 }, { 3, 1, 41, 1280, 1 }, { 1, 0, 5, 160, 1 },
+        { 2, 0, 33, 416, 2 },
+    };
+    for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); ++i) {
+        const uint32_t C = shapes[i][0], fmt = shapes[i][1], N = shapes[i][2], K = shapes[i][3], T = shapes[i][4];
+        const uint32_t qa_lines = tsr_qa_lines(tsr_qa_kind_for_fmt(fmt), K), rb = tsr_row_beats(fmt, K);
+        const uint32_t R = tsr_ceil_div_u32(N, C);
+        uint64_t max_rows = 0, max_ra = 0;
+        for (uint32_t c = 0; c < C; ++c) {
+            const uint64_t rows = (N > c * R) ? ((N - c * R < R) ? N - c * R : R) : 0;
+            if (rows > max_rows) max_rows = rows;
+            if ((rows + 1) / 2 > max_ra) max_ra = (rows + 1) / 2;
+        }
+        tsr_config cfg = cfg_u200(4);
+        cfg.num_ch = C;
+        tsr_config dual = cfg;
+        dual.caps |= TSR_CAPS_MVM_DUAL;
+        tsr_sim_opts off, nodual, rate;
+        memset(&off, 0, sizeof off);
+        nodual = off;
+        nodual.mvm_dual = 2;
+        rate = off;
+        rate.mem_rate = 1.4;
+        uint64_t c_single, c_dual, c_off, c_rate, c_rate1;
+        const uint64_t h0 = dual_run(&cfg, &off, fmt, N, K, T, &c_single);
+        const uint64_t h1 = dual_run(&dual, &off, fmt, N, K, T, &c_dual);
+        const uint64_t h2 = dual_run(&dual, &nodual, fmt, N, K, T, &c_off);
+        const uint64_t h3 = dual_run(&dual, &rate, fmt, N, K, T, &c_rate);
+        const uint64_t h4 = dual_run(&cfg, &rate, fmt, N, K, T, &c_rate1);
+        const uint64_t fill = 144 + (uint64_t)T * qa_lines;
+        const int is_dual = T <= 2;           // T <= T_MAX / 2
+        CHECK(h0 == h1 && h0 == h2 && h0 == h3 && h0 == h4, "dual shape %zu: the results differ with the cycle model", i);
+        CHECK(c_single == fill + max_rows * rb, "dual shape %zu: single cycles %llu", i, (unsigned long long)c_single);
+        CHECK(c_off == c_single, "dual shape %zu: the disabled dual stream changes the cycles", i);
+        CHECK(c_dual == fill + (is_dual ? max_ra : max_rows) * rb, "dual shape %zu: dual cycles %llu, expected %llu", i,
+              (unsigned long long)c_dual, (unsigned long long)(fill + (is_dual ? max_ra : max_rows) * rb));
+        // with a memory rate of 1.4 beats per cycle the dual MVM is memory bound: ceil(beats_c / 1.4) per channel; a single
+        // stream stays at one beat per cycle
+        uint64_t mem = 0;
+        for (uint32_t c = 0; c < C; ++c) {
+            const uint64_t rows = (N > c * R) ? ((N - c * R < R) ? N - c * R : R) : 0;
+            const uint64_t b = rows * rb, m = (uint64_t)((double)b / 1.4 + 0.999999999);
+            if (m > mem) mem = m;
+        }
+        const uint64_t d_ph = (is_dual ? max_ra : max_rows) * rb;
+        CHECK(c_rate == fill + (mem > d_ph ? mem : d_ph), "dual shape %zu: rate-bound dual cycles %llu", i,
+              (unsigned long long)c_rate);
+        CHECK(c_rate1 == fill + max_rows * rb, "dual shape %zu: rate-bound single cycles %llu", i, (unsigned long long)c_rate1);
+    }
+    // a configuration that takes every implemented capability models the single stream
+    CHECK((tsr_sim_caps_implemented() & TSR_CAPS_MVM_DUAL) == 0, "CAPS.MVM_DUAL is not an implemented-by-default capability");
+}
+
 int main(int argc, char ** argv) {
     const int n_random = argc > 1 ? atoi(argv[1]) : 150;
+    test_dual_cycles();
     test_qact_only();
     test_directed();
     test_n_zero_and_chain();

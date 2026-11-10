@@ -386,11 +386,12 @@ package tsr_tables_pkg;
   localparam logic [12:0] TSR_SAXI_CH_BASE_HI_BASE   = 13'h0044;  // [RW] EX §9.2: bits [63:32]
   localparam int unsigned TSR_SAXI_CH_BASE_HI_N      = 16;
   localparam int unsigned TSR_SAXI_CH_BASE_HI_STRIDE = 8;
-  localparam logic [12:0] TSR_SAXI_ADAPTER_CTRL      = 13'h00E0;  // [RW] EX §9.2: MEM_EN
+  localparam logic [12:0] TSR_SAXI_ADAPTER_CTRL      = 13'h00E0;  // [RW] EX §9.2: MEM_EN, DUAL_DIS
   localparam logic [12:0] TSR_SAXI_ADAPTER_STATUS    = 13'h00F0;  // [R/W1C] EX §9.2: sticky adapter errors
   localparam logic [12:0] TSR_SAXI_ADAPTER_VERSION   = 13'h00F4;  // [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
-  localparam logic [12:0] TSR_SAXI_CORE_BASE         = 13'h1000;  // [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
-  localparam int unsigned TSR_SAXI_CORE_BYTES        = 4096;
+  // 0x100..0x17C reserved (EX §9.2)
+  localparam logic [12:0] TSR_SAXI_CORE_BASE  = 13'h1000;  // [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
+  localparam int unsigned TSR_SAXI_CORE_BYTES = 4096;
 
   // ---------------------------------------------------------------------------------------------
   // RISC-V address map (CC §4.1); region sizes are the U200 values
@@ -532,6 +533,9 @@ package tsr_tables_pkg;
   localparam logic [31:0] TSR_CAPS_AT_RSVD               = 32'h0000_8000;  // [15] reserved for AT, 0
   localparam int unsigned TSR_CAPS_AT_RSVD_LSB           = 15;
   localparam int unsigned TSR_CAPS_AT_RSVD_W             = 1;
+  localparam logic [31:0] TSR_CAPS_MVM_DUAL              = 32'h0001_0000;  // [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
+  localparam int unsigned TSR_CAPS_MVM_DUAL_LSB          = 16;
+  localparam int unsigned TSR_CAPS_MVM_DUAL_W            = 1;
   // bit 2 retired (RLD / MULI / LOOP), never set, never reused
   // bit 4 retired (WAITM / JUMP), never set, never reused
   // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
@@ -797,9 +801,12 @@ package tsr_tables_pkg;
   localparam int unsigned TSR_Q_FIFO_ENTRIES_LSB = 0;
   localparam int unsigned TSR_Q_FIFO_ENTRIES_W   = 8;
   // ADAPTER_CTRL (EX §9.2)
-  localparam logic [31:0] TSR_ADAPTER_CTRL_MEM_EN     = 32'h0000_0001;  // [0] rising edge: latch and alignment-check all bases; requests are held while 0
-  localparam int unsigned TSR_ADAPTER_CTRL_MEM_EN_LSB = 0;
-  localparam int unsigned TSR_ADAPTER_CTRL_MEM_EN_W   = 1;
+  localparam logic [31:0] TSR_ADAPTER_CTRL_MEM_EN       = 32'h0000_0001;  // [0] rising edge: latch and alignment-check all bases; requests are held while 0
+  localparam int unsigned TSR_ADAPTER_CTRL_MEM_EN_LSB   = 0;
+  localparam int unsigned TSR_ADAPTER_CTRL_MEM_EN_W     = 1;
+  localparam logic [31:0] TSR_ADAPTER_CTRL_DUAL_DIS     = 32'h0000_0002;  // [1] 1: the dual weight stream of the MVM unit is off (reset 0: on; effective for the MVMs accepted after the write)
+  localparam int unsigned TSR_ADAPTER_CTRL_DUAL_DIS_LSB = 1;
+  localparam int unsigned TSR_ADAPTER_CTRL_DUAL_DIS_W   = 1;
   // ADAPTER_STATUS (EX §9.2, docs/platform-u200.md §2): sticky, W1C
   localparam logic [31:0] TSR_ADAPTER_STATUS_RRESP_ERR           = 32'h0000_0001;  // [0] RRESP error
   localparam int unsigned TSR_ADAPTER_STATUS_RRESP_ERR_LSB       = 0;

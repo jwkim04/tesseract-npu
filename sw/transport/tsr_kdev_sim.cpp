@@ -22,12 +22,15 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     // TSR_SIM_CARD=k4full: the full-feature card image of the fourth link (docs/platform-u200.md §8.8): T_MAX 4, none of
     // the local intermediates (CAPS 0x21), the VU's 8 / 8 / 4 lanes behind two lane-pipe stages and clk_rv at half the
     // core clock. The image has no GDN op (HAS_GDN 0): CAPS bit 8 is clear, TSR_SIM_GDN=1 sets it for the release image
-    // (k4f250: HAS_GDN 1; SW-78). The variables below still override what they name (SW-80).
+    // (k4f250: HAS_GDN 1; SW-78). TSR_SIM_CARD=k4dual is k4full with the dual weight stream (CAPS bit 16, docs/rtl-mvm.md §15):
+    // the MVM's cycle model reads two weight streams per channel for T <= T_MAX / 2 (TSR_MVM_DUAL=0 turns the run-time enable
+    // off, TSR_SIM_MEM_RATE bounds the memory rate). The variables below still override what they name (SW-80).
     if (const char * card = getenv("TSR_SIM_CARD"); card != nullptr && card[0] != '\0') {
-        if (strcmp(card, "k4full") != 0) {
-            fprintf(stderr, "%s: TSR_SIM_CARD=\"%s\": expected k4full\n", who, card);
+        if (strcmp(card, "k4full") != 0 && strcmp(card, "k4dual") != 0) {
+            fprintf(stderr, "%s: TSR_SIM_CARD=\"%s\": expected k4full or k4dual\n", who, card);
             return false;
         }
+        if (strcmp(card, "k4dual") == 0) cfg.caps |= TSR_CAPS_MVM_DUAL;
         cfg.t_max = 4;
         cfg.caps &= ~(TSR_CAPS_ATT_LOCAL | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP | TSR_CAPS_GDN);
         const char * rr = getenv("TSR_SIM_RV_RATIO"), * vt = getenv("TSR_SIM_VU_TIMING");
@@ -43,6 +46,9 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if ((r = env_u64(who, "TSR_SIM_GDN", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_GDN;   // an image without the fused GDN op (HAS_GDN 0): the composed GATED_DELTA_NET path
     if (r && v == 1) cfg.caps |= tsr_sim_caps_implemented() & TSR_CAPS_GDN;   // an image with it (HAS_GDN 1): the fused path
+    if ((r = env_u64(who, "TSR_SIM_MVM_DUAL", 0, 1, &v)) < 0) return false;
+    if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_DUAL;   // a build without the dual weight stream
+    if (r && v == 1) cfg.caps |= TSR_CAPS_MVM_DUAL;    // a build with it (the image of tsr_u200_k4 with MVM_DUAL 1)
     if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
     if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
         cfg.caps = 0;

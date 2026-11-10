@@ -52,6 +52,17 @@ as relative tickets), the completion records r0 to r6, the RISC-V's SPM stores a
 lines are the same (SW §4.7). The tests run the fixed schedule and seven random ones with the race detector fatal.
 Poll counts, `MTIME`, `PERF`, record word r7 (duration), completion records (REC) and the log are never compared.
 
+## MVM cycle model and the dual weight stream
+
+An MVM takes `64 + T * QA_LINES` cycles plus the weight phase, the largest number of weight beats of any channel (one
+beat per cycle and channel). With `CAPS.MVM_DUAL` (bit 16: the core has two weight streams per channel,
+[`docs/rtl-mvm.md`](../../docs/rtl-mvm.md) §15) and the run-time enable on (`TSR_MVM_DUAL`, default on), a weight MVM with
+`T <= T_MAX / 2` reads each channel as two streams: the channel's `rows_c` rows split into `ceil(rows_c / 2)` rows and
+the rest, and the weight phase is `max_c ceil(rows_c / 2) * ROW_BEATS`. `TSR_SIM_MEM_RATE=<r>` bounds the memory: a
+channel delivers at most `r` weight beats per cycle, so its weight phase is at least `beats_c / r` (unset: unbounded,
+which is the ideal memory of the first formula). Attention ops and `T > T_MAX / 2` keep one stream. Results never depend
+on any of it. `TSR_SIM_CARD=k4dual` (`sw/transport`) is the card image with the dual weight stream.
+
 ## Environment
 
 `TSR_SIM_SCHED` as above. `TSR_SIM_RACE=off|report|fatal` is the race detector (`off` by default for model runs, and
@@ -61,7 +72,8 @@ the ctests that run firmware or queue programs set `fatal`). `TSR_SIM_RV_CORE=ma
 one line per retired RISC-V instruction and with `w,` the eight words of every push (`TSR_SIM_LOG=rv,stderr` is the
 quickest way to see what the firmware does). `TSR_SIM_VU_TIMING=u200|k4|F,E,B,P` sets the VU lanes of the cycle model
 (16 / 16 / 8 and no lane pipe by default, `k4` is the release image's 8 / 8 / 4 behind two lane-pipe stages; timing
-only, SW-80). `TSR_TRACE=<dir>` dumps one trace per launch. `TSR_SIM_THREADS` (1 to 64) sets the MVM worker threads:
+only, SW-80). `TSR_MVM_DUAL=0|1` and `TSR_SIM_MEM_RATE=<beats>` are the dual weight stream of the cycle model (below).
+`TSR_TRACE=<dir>` dumps one trace per launch. `TSR_SIM_THREADS` (1 to 64) sets the MVM worker threads:
 the library default is 1, the `sim` and `mock` transport kinds default to `min(online CPUs, 8)`, `tsr-numcheck` to 4,
 and results do not depend on it. `TSR_REF_MATH_FULL=1` enables the exhaustive `ref_math_*_full` tests. The variables
 that configure the simulated core behind the `sim` transport (`TSR_SIM_TMAX`, `_CH_GIB`, `_DRAM_DIR`, `_VU`, `_GDN`,

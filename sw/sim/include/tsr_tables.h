@@ -440,11 +440,12 @@ extern "C" {
 #define TSR_SAXI_CH_BASE_HI_N      16u
 #define TSR_SAXI_CH_BASE_HI_STRIDE 8u
 #define TSR_SAXI_CH_BASE_HI(i) (0x044u + 8u * (i))
-#define TSR_SAXI_ADAPTER_CTRL    0x00E0u  // [RW] EX §9.2: MEM_EN
+#define TSR_SAXI_ADAPTER_CTRL    0x00E0u  // [RW] EX §9.2: MEM_EN, DUAL_DIS
 #define TSR_SAXI_ADAPTER_STATUS  0x00F0u  // [R/W1C] EX §9.2: sticky adapter errors
 #define TSR_SAXI_ADAPTER_VERSION 0x00F4u  // [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
-#define TSR_SAXI_CORE_BASE       0x1000u  // [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
-#define TSR_SAXI_CORE_BYTES      4096u
+// 0x100..0x17C reserved (EX §9.2)
+#define TSR_SAXI_CORE_BASE  0x1000u  // [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
+#define TSR_SAXI_CORE_BYTES 4096u
 
 // -----------------------------------------------------------------------------------------------
 // RISC-V address map (CC §4.1); region sizes are the U200 values
@@ -586,6 +587,9 @@ extern "C" {
 #define TSR_CAPS_AT_RSVD               0x00008000u  // [15] reserved for AT, 0
 #define TSR_CAPS_AT_RSVD_LSB           15u
 #define TSR_CAPS_AT_RSVD_W             1u
+#define TSR_CAPS_MVM_DUAL              0x00010000u  // [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
+#define TSR_CAPS_MVM_DUAL_LSB          16u
+#define TSR_CAPS_MVM_DUAL_W            1u
 // bit 2 retired (RLD / MULI / LOOP), never set, never reused
 // bit 4 retired (WAITM / JUMP), never set, never reused
 // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
@@ -851,9 +855,12 @@ extern "C" {
 #define TSR_Q_FIFO_ENTRIES_LSB 0u
 #define TSR_Q_FIFO_ENTRIES_W   8u
 // ADAPTER_CTRL (EX §9.2)
-#define TSR_ADAPTER_CTRL_MEM_EN     0x00000001u  // [0] rising edge: latch and alignment-check all bases; requests are held while 0
-#define TSR_ADAPTER_CTRL_MEM_EN_LSB 0u
-#define TSR_ADAPTER_CTRL_MEM_EN_W   1u
+#define TSR_ADAPTER_CTRL_MEM_EN       0x00000001u  // [0] rising edge: latch and alignment-check all bases; requests are held while 0
+#define TSR_ADAPTER_CTRL_MEM_EN_LSB   0u
+#define TSR_ADAPTER_CTRL_MEM_EN_W     1u
+#define TSR_ADAPTER_CTRL_DUAL_DIS     0x00000002u  // [1] 1: the dual weight stream of the MVM unit is off (reset 0: on; effective for the MVMs accepted after the write)
+#define TSR_ADAPTER_CTRL_DUAL_DIS_LSB 1u
+#define TSR_ADAPTER_CTRL_DUAL_DIS_W   1u
 // ADAPTER_STATUS (EX §9.2, docs/platform-u200.md §2): sticky, W1C
 #define TSR_ADAPTER_STATUS_RRESP_ERR           0x00000001u  // [0] RRESP error
 #define TSR_ADAPTER_STATUS_RRESP_ERR_LSB       0u

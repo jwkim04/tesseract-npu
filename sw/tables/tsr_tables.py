@@ -179,6 +179,7 @@ LAYOUTS = {
         ("13",    "MVM_LOCAL_SCALE", "scale MVM output through the owner-local VU before export"),
         ("14",    "MVM_LOCAL_SOFTCAP", "owner-local FP32 scale, TANH, scale after MVM"),
         ("15",    "AT_RSVD", "reserved for AT, 0"),
+        ("16",    "MVM_DUAL", "dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)"),
     ], retired=[
         (2, "RLD_LOOP",   "RLD / MULI / LOOP"),
         (4, "WAITM_JUMP", "WAITM / JUMP"),
@@ -283,6 +284,7 @@ LAYOUTS = {
     # ---- adapter (EX §9.2) -------------------------------------------------------------------
     "ADAPTER_CTRL": dict(src="EX §9.2", desc="", fields=[
         ("0", "MEM_EN", "rising edge: latch and alignment-check all bases; requests are held while 0"),
+        ("1", "DUAL_DIS", "1: the dual weight stream of the MVM unit is off (reset 0: on; effective for the MVMs accepted after the write)"),
     ]),
     "ADAPTER_STATUS": dict(src="EX §9.2, docs/platform-u200.md §2", desc="sticky, W1C", fields=[
         ("0", "RRESP_ERR", "RRESP error"), ("1", "BRESP_ERR", "BRESP error"),
@@ -686,9 +688,10 @@ SAXI = [
     (0x000,  None,              "-",     "EX", "EX §9.2", "reserved, read 0 (AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg* deleted)", dict(block=0x40)),
     (0x040,  "CH_BASE_LO",      "RW",    "EX", "EX §9.2", "device byte address of the channel-c buffer, bits [31:0]; 4 KiB aligned; written while MEM_EN = 0", dict(n=16, stride=8)),
     (0x044,  "CH_BASE_HI",      "RW",    "EX", "EX §9.2", "bits [63:32]", dict(n=16, stride=8)),
-    (0x0E0,  "ADAPTER_CTRL",    "RW",    "EX", "EX §9.2", "MEM_EN"),
+    (0x0E0,  "ADAPTER_CTRL",    "RW",    "EX", "EX §9.2", "MEM_EN, DUAL_DIS"),
     (0x0F0,  "ADAPTER_STATUS",  "R/W1C", "EX", "EX §9.2", "sticky adapter errors"),
     (0x0F4,  "ADAPTER_VERSION", "R",     "EX", "EX §9.2", "{16'h0001, 8'h00, NUM_CH}"),
+    (0x100,  None,              "-",     "EX", "EX §9.2", "the args chb<c> of the read-only second ports m_axi_chb<c> (MVM_DUAL images), 8 bytes at 0x100 + 8c; no register is behind them: read 0, writes ignored", dict(block=0x80)),
     (0x1000, "CORE",            "-",     "EX", "EX §9.2", "core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF", dict(block=0x1000)),
 ]
 SAXI_BYTES = 0x2000   # EX §9.1

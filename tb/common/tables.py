@@ -609,11 +609,12 @@ SAXI_CH_BASE_HI_STRIDE = 8
 def SAXI_CH_BASE_HI(i):
     return 0x044 + 8 * i
 
-SAXI_ADAPTER_CTRL    = 0x0E0   # [RW] EX §9.2: MEM_EN
-SAXI_ADAPTER_STATUS  = 0x0F0   # [R/W1C] EX §9.2: sticky adapter errors
-SAXI_ADAPTER_VERSION = 0x0F4   # [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
-SAXI_CORE_BASE       = 0x1000  # [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
-SAXI_CORE_BYTES      = 4096
+SAXI_ADAPTER_CTRL    = 0x0E0  # [RW] EX §9.2: MEM_EN, DUAL_DIS
+SAXI_ADAPTER_STATUS  = 0x0F0  # [R/W1C] EX §9.2: sticky adapter errors
+SAXI_ADAPTER_VERSION = 0x0F4  # [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
+# 0x100..0x17C reserved (EX §9.2)
+SAXI_CORE_BASE  = 0x1000  # [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
+SAXI_CORE_BYTES = 4096
 
 # -------------------------------------------------------------------------------------------------
 # RISC-V address map (CC §4.1); region sizes are the U200 values
@@ -722,39 +723,42 @@ CFG2_K_MAX_256     = 0xFFFF0000  # [31:16] K_MAX / 256
 CFG2_K_MAX_256_LSB = 16
 CFG2_K_MAX_256_W   = 16
 # CAPS (EX §7.5): capability bits; retired bits are never set and never reused
-CAPS_VU                    = 0x1     # [0] VOP, RED, ROPE and SOP present (VU §5.10)
+CAPS_VU                    = 0x1      # [0] VOP, RED, ROPE and SOP present (VU §5.10)
 CAPS_VU_LSB                = 0
 CAPS_VU_W                  = 1
-CAPS_TOPK                  = 0x8     # [3] TOPK present (the simulator; an RTL option, off in the release image)
+CAPS_TOPK                  = 0x8      # [3] TOPK present (the simulator; an RTL option, off in the release image)
 CAPS_TOPK_LSB              = 3
 CAPS_TOPK_W                = 1
-CAPS_ATT                   = 0x20    # [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
+CAPS_ATT                   = 0x20     # [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
 CAPS_ATT_LSB               = 5
 CAPS_ATT_W                 = 1
-CAPS_DQROW                 = 0x40    # [6] DQROW in the SPM form (the simulator; an RTL option, off in the release image)
+CAPS_DQROW                 = 0x40     # [6] DQROW in the SPM form (the simulator; an RTL option, off in the release image)
 CAPS_DQROW_LSB             = 6
 CAPS_DQROW_W               = 1
-CAPS_VMASK                 = 0x80    # [7] VMASK (specified, not implemented)
+CAPS_VMASK                 = 0x80     # [7] VMASK (specified, not implemented)
 CAPS_VMASK_LSB             = 7
 CAPS_VMASK_W               = 1
-CAPS_GDN                   = 0x100   # [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
+CAPS_GDN                   = 0x100    # [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
 CAPS_GDN_LSB               = 8
 CAPS_GDN_W                 = 1
-CAPS_VU_RSVD               = 0xE00   # [11:9] reserved for VU extensions, 0
+CAPS_VU_RSVD               = 0xE00    # [11:9] reserved for VU extensions, 0
 CAPS_VU_RSVD_LSB           = 9
 CAPS_VU_RSVD_W             = 3
-CAPS_ATT_LOCAL             = 0x1000  # [12] four-owner local FAST attention score and probability slots
+CAPS_ATT_LOCAL             = 0x1000   # [12] four-owner local FAST attention score and probability slots
 CAPS_ATT_LOCAL_LSB         = 12
 CAPS_ATT_LOCAL_W           = 1
-CAPS_MVM_LOCAL_SCALE       = 0x2000  # [13] scale MVM output through the owner-local VU before export
+CAPS_MVM_LOCAL_SCALE       = 0x2000   # [13] scale MVM output through the owner-local VU before export
 CAPS_MVM_LOCAL_SCALE_LSB   = 13
 CAPS_MVM_LOCAL_SCALE_W     = 1
-CAPS_MVM_LOCAL_SOFTCAP     = 0x4000  # [14] owner-local FP32 scale, TANH, scale after MVM
+CAPS_MVM_LOCAL_SOFTCAP     = 0x4000   # [14] owner-local FP32 scale, TANH, scale after MVM
 CAPS_MVM_LOCAL_SOFTCAP_LSB = 14
 CAPS_MVM_LOCAL_SOFTCAP_W   = 1
-CAPS_AT_RSVD               = 0x8000  # [15] reserved for AT, 0
+CAPS_AT_RSVD               = 0x8000   # [15] reserved for AT, 0
 CAPS_AT_RSVD_LSB           = 15
 CAPS_AT_RSVD_W             = 1
+CAPS_MVM_DUAL              = 0x10000  # [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
+CAPS_MVM_DUAL_LSB          = 16
+CAPS_MVM_DUAL_W            = 1
 # bit 2 retired (RLD / MULI / LOOP), never set, never reused
 # bit 4 retired (WAITM / JUMP), never set, never reused
 # CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
@@ -1020,9 +1024,12 @@ Q_FIFO_ENTRIES     = 0xFF  # [7:0] issue-FIFO entries waiting for the dispatcher
 Q_FIFO_ENTRIES_LSB = 0
 Q_FIFO_ENTRIES_W   = 8
 # ADAPTER_CTRL (EX §9.2)
-ADAPTER_CTRL_MEM_EN     = 0x1  # [0] rising edge: latch and alignment-check all bases; requests are held while 0
-ADAPTER_CTRL_MEM_EN_LSB = 0
-ADAPTER_CTRL_MEM_EN_W   = 1
+ADAPTER_CTRL_MEM_EN       = 0x1  # [0] rising edge: latch and alignment-check all bases; requests are held while 0
+ADAPTER_CTRL_MEM_EN_LSB   = 0
+ADAPTER_CTRL_MEM_EN_W     = 1
+ADAPTER_CTRL_DUAL_DIS     = 0x2  # [1] 1: the dual weight stream of the MVM unit is off (reset 0: on; effective for the MVMs accepted after the write)
+ADAPTER_CTRL_DUAL_DIS_LSB = 1
+ADAPTER_CTRL_DUAL_DIS_W   = 1
 # ADAPTER_STATUS (EX §9.2, docs/platform-u200.md §2): sticky, W1C
 ADAPTER_STATUS_RRESP_ERR           = 0x1         # [0] RRESP error
 ADAPTER_STATUS_RRESP_ERR_LSB       = 0
@@ -3286,7 +3293,7 @@ LAYOUTS = {   # layout -> field -> (lsb, width)
     'VERSION': {'MINOR': (0, 8), 'MAJOR': (8, 8)},
     'CFG0': {'NUM_CH': (0, 8), 'LANES': (8, 12), 'T_MAX': (20, 4)},
     'CFG2': {'VL': (0, 8), 'NSREG': (8, 8), 'K_MAX_256': (16, 16)},
-    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'GDN': (8, 1), 'VU_RSVD': (9, 3), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1)},
+    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'GDN': (8, 1), 'VU_RSVD': (9, 3), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1), 'MVM_DUAL': (16, 1)},
     'CFG3': {'VU_FRONT': (0, 5), 'VU_BACK': (5, 5), 'PCAP16': (16, 16)},
     'CTL_ID': {'VERSION': (0, 8), 'DM': (8, 1), 'REC': (9, 1), 'BRIDGE': (10, 1), 'LOG': (11, 1), 'WDOG': (12, 1), 'SBA': (13, 1), 'SPM_LB': (14, 1)},
     'CTRL': {'RV_RUN': (0, 1), 'HOST_HOLD': (1, 1), 'HOLD_ON_HALT': (2, 1), 'IRQ_EN': (3, 1), 'QABORT': (8, 1), 'QCLEAR': (9, 1), 'SOFT_RESET': (10, 1)},
@@ -3304,7 +3311,7 @@ LAYOUTS = {   # layout -> field -> (lsb, width)
     'LOAD_STATUS': {'VERIFY_BUSY': (0, 1)},
     'Q_STATE': {'ENTRIES': (0, 5), 'RUNNING': (5, 1), 'DEP_WAIT': (6, 1), 'HELD': (7, 1), 'ERR': (8, 1), 'HUNG': (9, 1)},
     'Q_FIFO': {'ENTRIES': (0, 8)},
-    'ADAPTER_CTRL': {'MEM_EN': (0, 1)},
+    'ADAPTER_CTRL': {'MEM_EN': (0, 1), 'DUAL_DIS': (1, 1)},
     'ADAPTER_STATUS': {'RRESP_ERR': (0, 1), 'BRESP_ERR': (1, 1), 'ORPHAN_RESP': (2, 1), 'BASE_MISALIGNED': (3, 1), 'REQ_HELD': (4, 1), 'BASE_LOCKED': (5, 1), 'ERR_COUNT': (16, 16)},
     'ADAPTER_VERSION': {'NUM_CH': (0, 8), 'MAJOR': (16, 16)},
     'HANDLE': {'BEAT': (0, 28), 'CH': (28, 4)},

@@ -35,7 +35,9 @@ typedef struct tsr_sim tsr_sim;
 
 // CAPS bits this simulator implements: computed from the registered op handlers (TSR_CAPS_VU when
 // VOP, RED, ROPE and SOP are present, TSR_CAPS_ATT when all seven AT ops are, TOPK, DQROW, VMASK).
-// A config whose caps field asks for more is rejected by tsr_sim_create.
+// A config whose caps field asks for more is rejected by tsr_sim_create. TSR_CAPS_MVM_DUAL (the dual weight stream of
+// the image, a cycle-model property with no effect on results) is accepted in a config but is not in this set: a
+// config that takes every implemented capability models the single weight stream.
 uint32_t tsr_sim_caps_implemented(void);
 #define TSR_SIM_CAPS_IMPLEMENTED tsr_sim_caps_implemented()
 
@@ -53,6 +55,14 @@ uint32_t tsr_sim_caps_implemented(void);
 //                                link: 8 / 8 / 4 lanes behind two lane-pipe stages) or "F,E,B,P" (front lanes 8 | 16,
 //                                EXP lanes 8 | 16, back lanes 4 | 8, lane-pipe stages 0 .. 3). Timing only; CFG3 reports
 //                                the EXP and back lane counts as the RTL does
+//   mvm_dual   TSR_MVM_DUAL      the run-time enable of the dual weight stream (CAPS.MVM_DUAL, docs/rtl-mvm.md §15): 0 =
+//                                 default (enabled), 1 = enabled, 2 = disabled; "0" / "1" in the variable mean disabled /
+//                                 enabled. Timing only: with CAPS.MVM_DUAL and the enable on, an MVM with T <= T_MAX / 2 takes
+//                                 the cycles of the dual stream (the weight phase max_c(ceil(rows_c / 2) ROW_BEATS) with an
+//                                 ideal memory)
+//   mem_rate   TSR_SIM_MEM_RATE  an upper bound of the memory rate in weight beats per core cycle and channel for the MVM's
+//                                 cycle model (the card delivers about 1.4 in total over both ports; 0 = unbounded, the
+//                                 default): the weight phase of a channel is at least beats / mem_rate
 //   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector)
 //   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines and "w," for the
 //                                words of every push
@@ -74,6 +84,8 @@ typedef struct tsr_sim_opts {
     const char *    trace_dir;    // (env) TSR_TRACE directory, or NULL
     const char *    rv_core;      // (env) "small" | "maxperf", or NULL: TSR_SIM_RV_CORE, else the default
     const char *    vu_timing;    // (env) "u200" | "k4" | "F,E,B,P", or NULL: TSR_SIM_VU_TIMING, else "u200"
+    uint32_t        mvm_dual;     // (env) 0 default (the dual stream enabled if CAPS.MVM_DUAL), 1 enabled, 2 disabled
+    double          mem_rate;     // (env) weight beats per cycle and channel at most (cycle model); 0 = unbounded
 } tsr_sim_opts;
 #define TSR_SIM_LOG_RV 1u
 #define TSR_SIM_LOG_WORDS 2u   // every push line also carries the eight words (TSR_SIM_LOG prefix "w,")
