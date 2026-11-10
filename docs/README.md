@@ -62,6 +62,8 @@ and their style guide are in [fig/src](fig/src/STYLE.md).
 - A mixture-of-experts router runs on the device only for softmax gating with top-k selection and weights normalized by their sum. Other routers run on the CPU and the experts still run on the device.
 - Prefill of a mixture-of-experts layer runs one matrix product per token and expert slot. Tokens are not grouped by expert.
 - Gated DeltaNet and multi-token prediction are checked with one sequence per ubatch. Several sequences with snapshots in one ubatch, vision positions and the KDA gate run on the CPU or are not checked.
-- A model that combines mixture-of-experts layers and Gated DeltaNet layers has not been tested.
+- A model that combines mixture-of-experts layers and Gated DeltaNet layers (Qwen3.6-35B-A3B) gives the CPU's
+  text on the simulator and on the card with part of its layers on the device. Its Q8_0 file does not fit
+  this card, and a run with every layer on the card has not been done.
 - The host submits the graph of every token, reads the logits and samples. There is no resident decode loop on the device.
 - One process owns the card at a time, and one card is used per process. Multi-card operation is not supported.
