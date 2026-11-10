@@ -19,7 +19,15 @@ A full-stack, open-source NPU for LLM inference.
 
 Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA. The U200 card holds 32 GiB of DDR4, four channels of 8 GiB. The design supports up to 16 GiB per channel.
 
-<!-- demo -->
+## Demo
+
+[![Gemma 4 26B-A4B Q8_0 on one Alveo U200: llama.cpp chat on the left, tsr-top on the right](docs/demo/demo.gif)](docs/demo/demo.mp4)
+
+Gemma 4 26B-A4B Q8_0 in the llama.cpp chat (left) on one Alveo U200 in full mode, with thinking off, and
+`tsr-top` watching the card (right). The model load is sped up 3x; prompt processing and generation run
+in real time. The shell sets `TSR_DEVICE=xrt`, `TSR_XCLBIN` and `LLAMA_ATTN_ROT_DISABLE=1`
+([getting-started](docs/getting-started.md)). [MP4](docs/demo/demo.mp4)
+
 ## Performance
 
 Decode and prefill rates on one Alveo U200 card, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
