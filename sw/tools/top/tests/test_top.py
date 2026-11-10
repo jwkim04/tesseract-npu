@@ -110,7 +110,7 @@ def synth_page(k, hz, **kw):
     d = dict(pid=os.getpid(), uid=os.getuid(), proc_start_ticks=my_ticks(), flags=tsr_top.F_FITTED, core_hz=int(hz), rv_hz=int(hz / 2), num_ch=4, perf_x=13,
              perf=perf, dperf=dperf, transport="xrt", owner="graph", mode="M7", quant="q4_K", model="synthetic-Q4_K_M.gguf",
              cmdline="llama-completion -m synthetic-Q4_K_M.gguf", comm="llama-completion", image_id=0x1234567890abcdef, caps=0x21,
-             n_kinds=22, core_ver=0x100, t_max=4, mem_used=12 * 2 ** 30, mem_total=64 * 2 ** 30, ch_bytes=16 * 2 ** 30,
+             n_kinds=22, core_ver=0x100, t_max=4, mem_used=12 * 2 ** 30, mem_total=32 * 2 ** 30, ch_bytes=8 * 2 ** 30,
              device_info="device xilinx_u200_gen3x16_xdma_base_2 (0000:ff:00.1), xclbin /x/tsr_u200_k4.xclbin (uuid u), kernel tsr_u200_k4, compute unit cu",
              kinds="NOP JOIN MUL_MAT")
     d.update(kw)
@@ -269,7 +269,7 @@ def test_synth():
             check(all(len(x) <= w for x in lines), "%s: a line is wider than the screen: %d" % (size, max(len(x) for x in lines)))
             if w >= 80 and h >= 24:
                 txt = r.stdout
-                for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "12.0Gi/64.0Gi",
+                for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "12.0Gi/32.0Gi",
                                "COMPUTE[", "MEMORY[", "% MVM", "COMPUTE ", "PID", "TOK/S", "synth",
                                "M7", str(os.getpid()), "F2Setup", "F6Sort", "F10Quit"):
                     check(want_s in txt, "%s: the frame shows '%s'" % (size, want_s))
@@ -279,6 +279,40 @@ def test_synth():
                     check(len(lines) >= 20, "%s: the frame fills the screen (%d lines)" % (size, len(lines)))
         r = run_top(["--once", "--window", "0", "--dir", d, "--size", "80x24", "--ascii"] + sargs, env=senv)
         check(r.returncode == 0 and all(ord(c) < 128 for c in r.stdout), "--ascii output is ASCII")
+
+        # an idle card (no publisher): the MEMORY meter measures against the capacity the transport recorded for it
+        di = os.path.join(d, "idle")
+        os.makedirs(di)
+        cap = os.path.join(di, "tsr-cap-0000:ff:00.1")
+
+        def idle_card():
+            r = run_top(["--json", "--window", "0", "--dir", di] + sargs, env=senv)
+            dv = [x for x in json.loads(r.stdout)["devices"] if x["kind"] == "card"][0]
+            t = run_top(["--once", "--window", "0", "--dir", di, "--size", "100x36"] + sargs, env=senv).stdout
+            return dv, t
+        dv, txt = idle_card()
+        check(dv["state"] == "idle" and dv["capacity"] is None and "MEMORY[" in txt and "Gi/" not in txt and "64.0Gi" not in txt,
+              "idle card, no capacity record: no memory total (not a made-up 64 GiB): %s" % dv["capacity"])
+        with open(cap, "w") as f:
+            f.write("tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes %d\n" % (8 * 2 ** 30))
+        check(tsr_top.card_capacity(di, "0000:ff:00.1") == 32 * 2 ** 30, "card_capacity reads the record")
+        dv, txt = idle_card()
+        check(dv["capacity"] == 32 * 2 ** 30 and "0.0Mi/32.0Gi" in txt and "64.0Gi" not in txt,
+              "idle card with a capacity record shows 0.0Mi/32.0Gi (%s)" % dv["capacity"])
+        for bad in ("tsr-cap 2\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes 8589934592\n", "tsr-cap 1\nbdf 0000:ff:00.0\nnum_ch 4\nch_bytes 8589934592\n",
+                    "tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes x\n", "tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 0\nch_bytes 8589934592\n", ""):
+            with open(cap, "w") as f:
+                f.write(bad)
+            check(tsr_top.card_capacity(di, "0000:ff:00.1") is None, "a bad capacity record is ignored: %r" % bad[:30])
+        check(tsr_top.card_capacity(di, "../x") is None and tsr_top.card_capacity(di, "") is None, "a bad address is refused")
+        with open(cap, "w") as f:
+            f.write("tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes %d\n" % (16 * 2 ** 30))
+        check(tsr_top.device_mem_total({"capacity": None, "probe": {"ok": True, "ch_bytes": 16 * 2 ** 30, "num_ch": 4}}) == 64 * 2 ** 30,
+              "without a record the idle probe's (topology) size is used")
+        check(tsr_top.device_mem_total({"capacity": 32 * 2 ** 30, "probe": {"ok": True, "ch_bytes": 16 * 2 ** 30, "num_ch": 4}}) == 32 * 2 ** 30,
+              "the recorded capacity wins over the probe")
+        check(tsr_top.device_mem_total({"capacity": None, "probe": None}) is None, "nothing known: None")
+        os.unlink(cap)
 
         # the other sources of the clocks and the sensors
         sysfs2 = os.path.join(d, "sys2")

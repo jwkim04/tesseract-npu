@@ -231,6 +231,67 @@ extern "C" void tsr_mon_path(char * path, size_t n, uint32_t pid) {
     snprintf(path, n, "%s/tsr-mon-%u", dir, pid);
 }
 
+namespace {
+
+// A PCIe address such as 0000:3b:00.1 and nothing else (it becomes part of a file name).
+bool cap_bdf_ok(const char * bdf) {
+    if (bdf == nullptr || bdf[0] == '\0' || strlen(bdf) > 32) return false;
+    for (const char * p = bdf; *p != '\0'; ++p) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F') || *p == ':' || *p == '.')) return false;
+    }
+    return true;
+}
+
+std::string cap_text(const char * bdf, uint32_t num_ch, uint64_t ch_bytes) {
+    char b[160];
+    snprintf(b, sizeof(b), "tsr-cap 1\nbdf %s\nnum_ch %u\nch_bytes %" PRIu64 "\n", bdf, num_ch, ch_bytes);
+    return b;
+}
+
+} // namespace
+
+extern "C" void tsr_mon_cap_path(char * path, size_t n, const char * bdf) {
+    const char * dir = getenv("TSR_MON_DIR");
+    if (dir == nullptr || dir[0] == '\0') dir = "/dev/shm";
+    snprintf(path, n, "%s/tsr-cap-%s", dir, bdf != nullptr ? bdf : "");
+}
+
+extern "C" int tsr_mon_cap_write(const char * bdf, uint32_t num_ch, uint64_t ch_bytes) {
+    if (!cap_bdf_ok(bdf) || num_ch == 0 || ch_bytes == 0) return -1;
+    char path[512], tmp[560];
+    tsr_mon_cap_path(path, sizeof(path), bdf);
+    const std::string want = cap_text(bdf, num_ch, ch_bytes);
+    if (read_file(path, 4096) == want) return 0;
+    snprintf(tmp, sizeof(tmp), "%s.%u.tmp", path, (unsigned) getpid());
+    const int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    if (fd < 0) return -1;
+    bool ok = write(fd, want.data(), want.size()) == (ssize_t) want.size();
+    ok = fchmod(fd, 0644) == 0 && ok;                     // the umask must not hide the file from other users
+    ok = close(fd) == 0 && ok;
+    if (!ok || rename(tmp, path) != 0) {                  // a file of another user in a sticky directory stays
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+extern "C" int tsr_mon_cap_read(const char * bdf, uint32_t * num_ch, uint64_t * ch_bytes) {
+    if (!cap_bdf_ok(bdf)) return -1;
+    char path[512];
+    tsr_mon_cap_path(path, sizeof(path), bdf);
+    const std::string s = read_file(path, 4096);
+    unsigned n = 0;
+    unsigned long long b = 0;
+    char who[40] = {};
+    if (s.compare(0, 10, "tsr-cap 1\n") != 0) return -1;
+    const char * p = s.c_str() + 10;
+    if (sscanf(p, "bdf %39s\nnum_ch %u\nch_bytes %llu\n", who, &n, &b) != 3) return -1;
+    if (strcmp(who, bdf) != 0 || n == 0 || b == 0) return -1;
+    *num_ch = n;
+    *ch_bytes = b;
+    return 0;
+}
+
 extern "C" void tsr_mon_attach(tsr_transport * t, const char * owner) {
     if (t == nullptr || !tsr_mon_enabled()) return;
     mon_state & s = st();

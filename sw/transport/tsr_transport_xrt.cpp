@@ -19,7 +19,12 @@
 //   TSR_XRT_KERNEL         kernel name (default: tsr_u200_k4, else tsr_u200_k1, whichever the xclbin has)
 //   TSR_XRT_CH_GIB         channel buffer size in GiB, 1..16 (default: the bank size, at most 16 GiB;
 //                          shrunk in 256 MiB steps while the allocation fails, down to 1 GiB; with
-//                          m2m the channel's staging buffer is allocated first, in the same bank)
+//                          m2m the channel's staging buffer is allocated first, in the same bank).
+//                          The memory behind a buffer can be smaller than the bank the xclbin names
+//                          (the lab U200 has 8 GiB DIMMs under a 16 GB topology, and addresses wrap
+//                          at 8 GiB): an owner open measures it (detect_capacity, docs/xrt-host.md
+//                          §4.4) and uses the measured size as the channel size. A value above the
+//                          measured capacity is refused.
 //   TSR_XRT_DMA            direct (default) device-only buffers, xrt::bo::write / read = the xocl
 //                                 unmanaged-DMA ioctls from the caller's memory
 //                          staged the same ioctls through an aligned bounce buffer (TSR_XRT_DMA_CHUNK_MIB)
@@ -33,6 +38,7 @@
 // transport stays on staged (one warning).
 
 #include "tsr_kdev.h"
+#include "tsr_mon.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -108,8 +114,10 @@ public:
     const char * name() const override { return "xrt"; }
     uint32_t num_ch() const override { return (uint32_t) bo_.size(); }
     uint64_t ch_bytes(uint32_t ch) const override { return size_[ch]; }
+    uint64_t buf_bytes(uint32_t ch) const override { return buf_[ch]; }
     uint64_t ch_addr(uint32_t ch) const override { return addr_[ch]; }
-    std::string describe() const override { return info_; }
+    int detect_capacity(bool probe) override;
+    std::string describe() const override;
     int reg_read(uint32_t off, uint32_t * val) override;
     int reg_write(uint32_t off, uint32_t val) override;
     int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override;
@@ -129,7 +137,12 @@ private:
     std::vector<int>      a_ch_;
     std::vector<int>      grp_;
     std::vector<xrt::bo>  bo_, stage_;
-    std::vector<uint64_t> size_, addr_;
+    std::vector<uint64_t> size_, addr_;   // size_: usable bytes (real memory), at most buf_
+    std::vector<uint64_t> buf_;           // the size of the device-only buffer of each channel
+    uint64_t gib_override_ = 0;           // TSR_XRT_CH_GIB (0: unset)
+    bool whole_ = true;                   // every buffer has the full size the topology gives (no override, no shrink)
+    std::string bdf_;                     // PCIe address of the card ("" if unknown)
+    std::string cap_how_;                 // how the usable size was found: "", "measured", "recorded"
     dma_mode  dma_  = dma_mode::direct;
     dma_rules staged_rules_;
     std::unique_ptr<dma_engine> eng_;
@@ -159,6 +172,7 @@ xrt_kdev::xrt_kdev() {
     const uint64_t align = env_u64("TSR_XRT_DMA_ALIGN", 1, 4096, dma_ == dma_mode::direct ? 1 : 64, nullptr, emu);
     bool gib_set = false;
     const uint64_t gib = env_u64("TSR_XRT_CH_GIB", 1, 16, 16, &gib_set, emu);
+    if (gib_set) gib_override_ = gib;
 
     // Device and xclbin.
     const std::string devs = env_str("TSR_XRT_DEVICE") ? env_str("TSR_XRT_DEVICE") : "0";
@@ -290,8 +304,10 @@ xrt_kdev::xrt_kdev() {
                 sz -= 256 * MiB;
             }
         }
+        if (gib_set || sz != std::min(bank, KERNEL_CH_BYTES)) whole_ = false;
         grp_.push_back(grp);
         size_.push_back(sz);
+        buf_.push_back(sz);
         addr_.push_back(bo.address());
         bo_.push_back(std::move(bo));
         stage_.push_back(std::move(stg));
@@ -313,16 +329,79 @@ xrt_kdev::xrt_kdev() {
     try {
         devname = dev_.get_info<xrt::info::device::name>();
         bdf = dev_.get_info<xrt::info::device::bdf>();
+        bdf_ = bdf;
     } catch (const std::exception &) {
     }
     info_ = fmt("device %s (%s), xclbin %s (uuid %s), kernel %s, compute unit %s through xrt::ip (exclusive), %s\n",
                 devname.c_str(), bdf.c_str(), xclbin, uuid_.to_string().c_str(), kname_.c_str(), cuname_.c_str(), ctl_name);
     info_ += fmt("DMA %s, chunk %" PRIu64 " MiB, align %" PRIu64 "%s\n", dma_mode_name(dma_), chunk / MiB, align,
                  dma_ == dma_mode::m2m ? ", a staging buffer of one chunk per channel (host + its bank)" : "");
+}
+
+// The header lines of the open, then one line per channel: the buffer, and how much of it is memory.
+std::string xrt_kdev::describe() const {
+    std::string d = info_;
     for (size_t c = 0; c < bo_.size(); ++c) {
-        info_ += fmt("ch%zu: arg %d, memory group %d, %.2f GiB device-only at 0x%" PRIx64 "\n", c, a_ch_[c], grp_[c],
-                     (double) size_[c] / GiB, addr_[c]);
+        d += fmt("ch%zu: arg %d, memory group %d, %.2f GiB device-only at 0x%" PRIx64, c, a_ch_[c], grp_[c], (double) buf_[c] / GiB, addr_[c]);
+        if (size_[c] != buf_[c]) {
+            d += fmt(", memory holds %.2f GiB (%s; addresses above it wrap)", (double) size_[c] / GiB, cap_how_.c_str());
+        } else if (!cap_how_.empty()) {
+            d += fmt(", all of it is memory (%s)", cap_how_.c_str());
+        }
+        d += "\n";
     }
+    return d;
+}
+
+// The memory behind a buffer can be smaller than the buffer (the xclbin topology says 16 GB per
+// bank, the lab U200 has 8 GiB DIMMs, and an address above 8 GiB then reads and writes the cell
+// 8 GiB below). Owner mode measures it with detect_ch_capacity and makes it the channel size, so
+// that no heap, KV cache or tensor is placed above it. TSR_ATTACH writes nothing: it takes the
+// value an earlier owner recorded for this card (tsr_mon_cap_write), else keeps the buffer size.
+int xrt_kdev::detect_capacity(bool probe) {
+    constexpr uint64_t MIN_CAP = 1 * GiB;   // smaller sizes are not tested (the channel buffer is at least 1 GiB)
+    if (bo_.empty()) return 0;
+    if (!probe) {
+        uint32_t n = 0;
+        uint64_t b = 0;
+        if (!bdf_.empty() && tsr_mon_cap_read(bdf_.c_str(), &n, &b) == 0 && n == bo_.size() && b >= MIN_CAP) {
+            for (size_t c = 0; c < bo_.size(); ++c) size_[c] = std::min(size_[c], b);
+            cap_how_ = "recorded by an earlier open";
+        }
+        return 0;
+    }
+    uint64_t smallest = UINT64_MAX;
+    for (size_t c = 0; c < bo_.size(); ++c) {
+        const uint32_t ch = (uint32_t) c;
+        uint64_t cap = 0;
+        const int rc = detect_ch_capacity(
+            buf_[c], MIN_CAP, [this, ch](uint64_t off, const void * p, size_t n) { return mem_write(ch, off, p, n); },
+            [this, ch](uint64_t off, void * p, size_t n) { return mem_read(ch, off, p, n); }, &cap);
+        if (rc != 0) {
+            fprintf(stderr, "tsr_transport(xrt): cannot measure the capacity of channel %zu\n", c);
+            return -1;
+        }
+        if (gib_override_ != 0 && cap < buf_[c]) {
+            fprintf(stderr, "tsr_transport(xrt): TSR_XRT_CH_GIB=%" PRIu64 " is more than channel %zu holds: its memory is %.2f GiB (measured at open; "
+                            "the xclbin memory topology says %.2f GiB). Use TSR_XRT_CH_GIB=%" PRIu64 " or less, or leave it unset\n",
+                    gib_override_, c, (double) cap / GiB, (double) buf_[c] / GiB, std::max<uint64_t>(cap / GiB, 1));
+            return -1;
+        }
+        size_[c] = cap;
+        smallest = std::min(smallest, cap);
+    }
+    cap_how_ = "measured";
+    const char * dbg = getenv("TSR_DEBUG");
+    if (dbg != nullptr && atoi(dbg) >= 1) {
+        for (size_t c = 0; c < bo_.size(); ++c) {
+            fprintf(stderr, "tsr_transport(xrt): ch%zu: buffer %.2f GiB, memory %.2f GiB (measured)\n", c, (double) buf_[c] / GiB,
+                    (double) size_[c] / GiB);
+        }
+    }
+    // The card's capacity, for the view of an idle card and for the attach open. Only when the buffers had the full topology
+    // size: with TSR_XRT_CH_GIB or a shrunk buffer the measurement cannot see past the buffer.
+    if (whole_ && !bdf_.empty()) (void) tsr_mon_cap_write(bdf_.c_str(), (uint32_t) bo_.size(), smallest);
+    return 0;
 }
 
 // EX §9.1: xrt::ip register access (offsets inside the compute unit's s_axi_control range).

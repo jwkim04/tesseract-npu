@@ -261,10 +261,59 @@ void identity(tsr_transport * t) {
 // ---------------------------------------------------------------------------
 // 2. Memory
 // ---------------------------------------------------------------------------
+// Channel capacity. The memory behind a buffer can be smaller than the buffer, and an address above
+// it then wraps: on the lab U200 the four DIMMs hold 8 GiB each under a memory topology of 16 GB per
+// bank, and offset + 8 GiB reads and writes offset. A write and a read back at the same address
+// cannot see that. This writes two distinct patterns at 0 and at P, for every power of two P from
+// 1 MiB up to below the buffer, and reads both back: the first P at which 0 returns the second
+// pattern is the capacity (memory repeats every P bytes), and none means the whole buffer is
+// memory. It uses the kdev's own access to the whole buffer, not the transport's (which refuses
+// offsets above its channel size), and restores the bytes it touches. The transport's channel size
+// must equal the capacity found: larger, and it would place data on wrapped memory.
+void capacity(tsr_transport * t, rng & r) {
+    tsr::kdev * kd = tsr::transport_kdev(t);
+    if (kd == nullptr) return;
+    const tsr_config * c = tsr_transport_config(t);
+    const double G = (double) (1ull << 30);
+    printf("  channel capacity (distinct patterns at 0 and P, P = 2^20 up to below the buffer):\n");
+    uint64_t smallest = UINT64_MAX;
+    for (uint32_t ch = 0; ch < kd->num_ch(); ++ch) {
+        const uint64_t buf = kd->buf_bytes(ch);
+        uint64_t cap = buf & ~(uint64_t) 63;
+        std::string bad;
+        for (uint64_t P = 1ull << 20; P + 64 <= buf && bad.empty(); P <<= 1) {
+            uint8_t sa[64], sb[64], pa[64], pb[64], ra[64], rb[64];
+            r.fill(pa, 64);
+            for (int i = 0; i < 64; ++i) pb[i] = (uint8_t) ~pa[i];
+            const bool ok = kd->mem_read(ch, 0, sa, 64) == 0 && kd->mem_read(ch, P, sb, 64) == 0 && kd->mem_write(ch, 0, pa, 64) == 0 &&
+                            kd->mem_write(ch, P, pb, 64) == 0 && kd->mem_read(ch, 0, ra, 64) == 0 && kd->mem_read(ch, P, rb, 64) == 0;
+            const bool restored = kd->mem_write(ch, P, sb, 64) == 0 && kd->mem_write(ch, 0, sa, 64) == 0;
+            if (!ok || !restored) {
+                bad = strf("access failed at 0 / 0x%" PRIx64, P);
+            } else if (memcmp(ra, pa, 64) == 0 && memcmp(rb, pb, 64) == 0) {
+                continue;                                      // two cells: no wrap at P
+            } else if (memcmp(ra, pb, 64) == 0 && memcmp(rb, pb, 64) == 0) {
+                cap = P;                                       // 0 reads what was written at P: wraps every P
+                break;
+            } else {
+                bad = strf("0 and 0x%" PRIx64 " read neither pattern", P);
+            }
+        }
+        smallest = std::min(smallest, cap);
+        printf("  ch%u: %.2f GiB of memory in a %.2f GiB buffer%s, transport channel size %.2f GiB\n", ch, (double) cap / G, (double) buf / G,
+               cap < buf ? strf(" (wraps at 0x%" PRIx64 ")", cap).c_str() : "", (double) kd->ch_bytes(ch) / G);
+        result(bad.empty() && kd->ch_bytes(ch) == cap, strf("ch%u capacity: the transport's channel size equals the measured memory", ch),
+               bad.empty() ? strf("%.3f GiB vs %.3f GiB", (double) kd->ch_bytes(ch) / G, (double) cap / G) : bad);
+    }
+    result(c->ch_bytes <= smallest, "the configured channel size (CFG ch_bytes) is not above the smallest capacity",
+           strf("%.3f GiB vs %.3f GiB", (double) c->ch_bytes / G, (double) smallest / G));
+}
+
 void memory(tsr_transport * t, uint64_t mem_mib, rng & r) {
     const tsr_config * c = tsr_transport_config(t);
     const uint64_t CB = c->ch_bytes, G4 = 4ull << 30;
     printf("== memory\n");
+    capacity(t, r);
     struct mcase { uint64_t off, n; };
     std::vector<mcase> cases = { { 0, 64 }, { 1, 1 }, { 63, 2 }, { 4093, 4099 }, { 65536 + 17, (1u << 20) + 13 } };
     if (CB > G4 + 65536) cases.push_back({ G4 - 3, 8192 + 7 });

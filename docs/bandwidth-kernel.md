@@ -144,8 +144,8 @@ those of `hw/u200/build_xclbin.sh`.
 A packaging is checked by `ipx::check_integrity` (kernel and xrt), by the 12-file manifest matching the working tree, by the 9 HDL
 sources inside the `.xo` being byte-identical to the repository, and by `component.xml` carrying `FREQ_HZ` and the m_axi hints on
 all four `m_axi_ch<c>`. `tb/platform/bw/viv/bw_ooc.tcl ... impl` runs `tsr_bw_k4` alone out of context on xcu200-fsgd2104-2-e
-(`ap_clk` 3.333 ns, every I/O budgeted 1.6 ns outside). The linked xclbin maps `ch0..3` to bank0..bank3, 16 GiB each at
-0x4000000000 + 0x1000000000 * c, uses no BRAM, URAM or DSP, and places all four engines and bridges in SLR1 when no floorplan is
+(`ap_clk` 3.333 ns, every I/O budgeted 1.6 ns outside). The linked xclbin maps `ch0..3` to bank0..bank3, 16 GiB each in the
+shell's topology (the DIMMs of this U200 hold 8 GiB) at 0x4000000000 + 0x1000000000 * c, uses no BRAM, URAM or DSP, and places all four engines and bridges in SLR1 when no floorplan is
 given.
 
 ## 5. Verification
@@ -267,7 +267,9 @@ The per-channel and four-channel read, write and read plus write rates at bursts
 stream: 64-beat bursts, DMA LD and ST: up to 64) give the DDR bandwidth the core can use. The outstanding sweep gives the
 latency-bound rates and the first-beat latency, and the PCIe rates are the host to card and card to host DMA rates of `xrt::bo`,
 which bound the model load time. The capacity check passes when the read of [0, 8 GiB) matches the fill after the write of [8 GiB,
-16 GiB), which shows that the channel holds 16 GiB without aliasing. These rates are the yardstick of the performance model
+16 GiB), which shows that the channel holds 16 GiB without aliasing. A channel of 8 GiB fails it: the upper half wraps onto the
+lower half. This U200 has 8 GiB per channel, so the check fails here, and the capacity is measured by the transport at open and
+by `tsr-selftest` ([xrt-host.md](xrt-host.md) §4.4). These rates are the yardstick of the performance model
 (`docs/spec.md` §17, "Performance verification"). The core's `PERF_*` cycle counters are directly comparable, since the clock and
 the bridge are the same. Decode streams every weight byte once per token, so its upper bound is the read bandwidth divided by the
 bytes read per token.

@@ -284,6 +284,12 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
   clocks, the configuration (channels, `T_MAX`, lanes, SPM, `K_MAX`), `CAPS`, the capability, the Basis version, the
   image id and path, the kind table, the device line (name, BDF, kernel), `$TSR_XCLBIN`, and the model name and
   quantization. `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`).
+- The capacity of the card is a separate small file, `tsr-cap-<bdf>` (the PCIe address of the card) in the same
+  directory: four text lines, `tsr-cap 1`, `bdf <bdf>`, `num_ch <n>` and `ch_bytes <bytes>`. An owner open of the xrt
+  transport writes it after it measured the channel capacity ([xrt-host.md](xrt-host.md) §4.4), whatever `TSR_MON` says.
+  It stays after the process exits, since the capacity belongs to the card. `tsr-top` reads it to show an idle card
+  against its real capacity (32 GiB on this U200), not the 64 GiB that the xclbin memory topology implies. Without it
+  `tsr-top` uses the size that an idle probe (`--probe`) read, which is the topology, and else shows `n/a`.
 
 ### 7.3 What each part of the screen shows
 
@@ -294,9 +300,12 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
   user function and from `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s. None of these
   touches the compute unit.
 - `COMPUTE`: the busiest compute unit as a share of wall time, with its name (`MVM`, `VU`, `QACT`, `ATT`, `ATT_QK`,
-  `ATT_PV`; the DMA moves data, it is not compute), from the change of PERF over the window. `MEMORY`: the busiest
-  DDR channel against that channel's DRAM bandwidth (`CH_RD_BEATS[c]` x 64 B over wall time). The time series box
-  shows both from 0 to 100 % over the last two minutes.
+  `ATT_PV`; the DMA moves data, it is not compute), from the change of PERF over the window. `MEMORY`: the device
+  memory in use against the memory of the card, for example `12.0Gi/32.0Gi` on this U200 (four channels of 8 GiB). The
+  total is the `mem_total` of the owner's record, which its transport measured at open. For an idle card it is the
+  capacity recorded for the card (see the next section), which gives `0.0Mi/32.0Gi`, and `n/a` when none is known (a
+  process that holds the card without publishing leaves the use unknown, so the meter shows `n/a`). The time series box
+  shows the compute share from 0 to 100 % over the last two minutes.
 - Process table: `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`. `MODE` is `M6` or `M7`, and `TOK/S` is
   `pp n` while a prefill runs. A process that has the card open but does not publish is listed dimmed with `(no
   tsr-mon)`. User, CPU % and RSS come from `/proc/<pid>`, and the other users of the card from the `/proc/*/fd`

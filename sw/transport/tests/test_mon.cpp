@@ -5,7 +5,8 @@
 // launches (launch count, op records, wall time, the launch in flight), a PERF read (totals equal
 // the transport's own summary, the deltas between two reads), the seqlock under a writer that never
 // stops (a reader must never see a torn page), the layout table, TSR_MON=0 (no file), the stale file
-// of a dead pid left alone, and that closing the transport removes the file.
+// of a dead pid left alone, and that closing the transport removes the file. The capacity record of a
+// card (tsr-cap-<bdf>: written once, read back, replaced, refused for a bad address, left by the process).
 //
 // `test-tsr-mon layout` prints the layout table as JSON (the Python reader's test compares it).
 
@@ -193,6 +194,50 @@ int main(int argc, char ** argv) {
     CHECK(!exists(path), "the record is removed when the transport closes");
     CHECK(exists(stale), "the stale record of another pid is still there");
     unlink(stale);
+
+    // The capacity record of a card (tsr_mon_cap_*): what an owner open measured, for the view of an idle card.
+    {
+        const char * bdf = "0000:3b:00.1";
+        char cp[320];
+        tsr_mon_cap_path(cp, sizeof(cp), bdf);
+        unlink(cp);
+        uint32_t n = 0;
+        uint64_t b = 0;
+        CHECK(tsr_mon_cap_read(bdf, &n, &b) != 0, "no capacity record before the write");
+        CHECK(tsr_mon_cap_write(bdf, 4, 8ull << 30) == 0 && exists(cp), "write the capacity record");
+        CHECK(strstr(cp, "tsr-cap-0000:3b:00.1") != nullptr && strstr(cp, dir.c_str()) == cp, "its name %s", cp);
+        struct stat cst;
+        CHECK(stat(cp, &cst) == 0 && (cst.st_mode & 0777) == 0644, "mode %o", (unsigned) (cst.st_mode & 0777));
+        CHECK(tsr_mon_cap_read(bdf, &n, &b) == 0 && n == 4 && b == (8ull << 30), "read it back: %u channels of %" PRIu64 " bytes", n, b);
+        FILE * f = fopen(cp, "r");
+        char txt[256] = {};
+        if (f) {
+            size_t got = fread(txt, 1, sizeof(txt) - 1, f);
+            (void) got;
+            fclose(f);
+        }
+        CHECK(strcmp(txt, "tsr-cap 1\nbdf 0000:3b:00.1\nnum_ch 4\nch_bytes 8589934592\n") == 0, "the file is four text lines: %s", txt);
+        CHECK(tsr_mon_cap_write(bdf, 4, 16ull << 30) == 0 && tsr_mon_cap_read(bdf, &n, &b) == 0 && b == (16ull << 30), "a new write replaces it");
+        CHECK(tsr_mon_cap_read("0000:3b:00.0", &n, &b) != 0, "another card has no record");
+        CHECK(tsr_mon_cap_write("../x", 4, 1) != 0 && tsr_mon_cap_write("", 4, 1) != 0 && tsr_mon_cap_write(bdf, 0, 1) != 0 &&
+              tsr_mon_cap_write(bdf, 4, 0) != 0 && tsr_mon_cap_read("a/b", &n, &b) != 0, "bad addresses and values refused");
+        CHECK(!exists((std::string(cp) + "." + std::to_string(getpid()) + ".tmp").c_str()), "no temporary file left");
+        // A file that is not a record of this card is not read.
+        f = fopen(cp, "w");
+        if (f) {
+            fputs("tsr-cap 1\nbdf 0000:ff:00.0\nnum_ch 4\nch_bytes 8589934592\n", f);
+            fclose(f);
+        }
+        CHECK(tsr_mon_cap_read(bdf, &n, &b) != 0, "a record of another address is refused");
+        f = fopen(cp, "w");
+        if (f) {
+            fputs("tsr-cap 2\nbdf 0000:3b:00.1\nnum_ch 4\nch_bytes 8589934592\n", f);
+            fclose(f);
+        }
+        CHECK(tsr_mon_cap_read(bdf, &n, &b) != 0, "an unknown version is refused");
+        CHECK(tsr_mon_cap_write(bdf, 4, 8ull << 30) == 0 && exists(cp), "written again");
+        unlink(cp);
+    }
     rmdir(dir.c_str());
 
     printf("%d checks, %d failed\n", g_checks, g_fail);

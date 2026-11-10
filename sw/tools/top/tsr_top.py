@@ -178,6 +178,29 @@ def scan_records(directory, include_dead=False):
     return out
 
 
+def card_capacity(directory, bdf):
+    """The memory capacity of a card in bytes (channels times bytes per channel), from the record an owner open
+    leaves, <dir>/tsr-cap-<bdf> (sw/transport/tsr_mon.h): the transport measures it, because the xclbin memory
+    topology can say more than the DIMMs hold. None when there is no such record."""
+    if not bdf or not re.fullmatch(r"[0-9a-fA-F:.]{1,32}", bdf):
+        return None
+    try:
+        with open(os.path.join(directory, "tsr-cap-" + bdf), "r") as f:
+            lines = f.read(4096).split("\n")
+    except OSError:
+        return None
+    if not lines or lines[0] != "tsr-cap 1":
+        return None
+    kv = dict(l.split(" ", 1) for l in lines[1:] if " " in l)
+    try:
+        n, b = int(kv["num_ch"]), int(kv["ch_bytes"])
+    except (KeyError, ValueError):
+        return None
+    if kv.get("bdf") != bdf or n <= 0 or b <= 0:
+        return None
+    return n * b
+
+
 # ---------------------------------------------------------------------------------------------
 # Host side: /proc, sysfs, xbutil
 # ---------------------------------------------------------------------------------------------
@@ -742,7 +765,8 @@ class Monitor:
                  "board": ("Alveo " + c["board"].upper()) if c["board"] else "Alveo card", "shell": c["shell"],
                  "link": pcie_link(c["bdf"]), "sensors": self.bg.sensors.get(c["bdf"]),
                  "holders": list(self.bg.holders.get(c["bdf"], [])), "probe": self.bg.probe.get(c["bdf"]),
-                 "clocks": self.bg.clocks.get(c["bdf"]), "publisher": None}
+                 "clocks": self.bg.clocks.get(c["bdf"]), "publisher": None,
+                 "capacity": card_capacity(self.dir, c["bdf"])}
             devices.append(d)
             by_bdf[c["bdf"].lower()] = d
         for r in recs:
@@ -758,12 +782,12 @@ class Monitor:
                 if dev is None:
                     dev = {"id": "xrt:%d" % r["pid"], "kind": "card", "bdf": m.group(1) if m else "", "board": "Tesseract card",
                            "shell": "", "link": {"gen": None, "width": None, "speed": ""}, "sensors": None, "holders": [],
-                           "probe": None, "clocks": None, "publisher": None}
+                           "probe": None, "clocks": None, "publisher": None, "capacity": None}
                     devices.append(dev)
             else:
                 dev = {"id": "sim:%d" % r["pid"], "kind": "sim", "bdf": "", "board": "Tesseract %s (pid %d)" % (r["transport"], r["pid"]),
                        "shell": "", "link": {"gen": None, "width": None, "speed": ""}, "sensors": None, "holders": [],
-                       "probe": None, "clocks": None, "publisher": None}
+                       "probe": None, "clocks": None, "publisher": None, "capacity": None}
                 devices.append(dev)
             dev["publisher"] = r["pid"]
             dev["rec"] = r
@@ -1136,6 +1160,21 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
     f.segs(y + 2, 0, sp)
 
 
+def device_mem_total(dev):
+    """The memory the MEMORY meter measures against, in bytes: the owner's record (num_ch * ch_bytes, the size its
+    transport measured), else the capacity recorded for the card (tsr-cap-<bdf>), else what the idle probe read
+    (the xclbin memory topology when no record exists). None when none of them is known."""
+    r = dev.get("rec")
+    if r and r["mem_total"]:
+        return r["mem_total"]
+    if dev.get("capacity"):
+        return dev["capacity"]
+    probe = dev.get("probe")
+    if probe and probe.get("ok") and probe.get("ch_bytes") and probe.get("num_ch"):
+        return probe["ch_bytes"] * probe["num_ch"]
+    return None
+
+
 def summary_meters(f, y, w, dev):
     """COMPUTE (the busiest compute unit) and MEMORY (device memory in use against the card's DDR), side by side: one row."""
     rr = dev.get("rates")
@@ -1145,12 +1184,15 @@ def summary_meters(f, y, w, dev):
         draw_bar(f, y, 1, bw, "COMPUTE", c["pct"], "%3.0f%% %s" % (100 * c["pct"], c["unit"]), S_BAR)
     else:
         draw_bar(f, y, 1, bw, "COMPUTE", None, "", na=True)
-    r, probe = dev.get("rec"), dev.get("probe")
-    used = r["mem_used"] if r else None
-    total = r["mem_total"] if r else (probe["ch_bytes"] * probe["num_ch"] if probe and probe.get("ok") else 64 * 2 ** 30)
-    txt = "n/a" if used is None else "%s/%s" % (fmt_gib(used), fmt_gib(total))
-    frac = None if used is None else used / total if total else 0.0
-    draw_bar(f, y, 2 + bw, bw, "MEMORY", frac, txt, S_BAR, na=used is None)
+    r = dev.get("rec")
+    total = device_mem_total(dev)
+    # No process owns an idle card, so nothing of Tesseract is in its memory; a process that holds the card
+    # without publishing leaves the use unknown.
+    used = r["mem_used"] if r else (0 if dev.get("state") == "idle" else None)
+    if total is None or used is None:
+        draw_bar(f, y, 2 + bw, bw, "MEMORY", None, "", S_BAR, na=True)
+    else:
+        draw_bar(f, y, 2 + bw, bw, "MEMORY", min(1.0, used / total), "%s/%s" % (fmt_gib(used), fmt_gib(total)), S_BAR)
     return 1
 
 

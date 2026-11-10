@@ -145,6 +145,24 @@ void tsr_mon_set_mem(uint64_t used, uint64_t total);
 void tsr_mon_add_tokens(uint32_t decode, uint32_t prefill, uint32_t passes);
 
 // ---------------------------------------------------------------------------------------------
+// The capacity of a card (written by the xrt transport, read by tsr-top and the attach open)
+// ---------------------------------------------------------------------------------------------
+// The memory behind a card's channel buffers can be smaller than the xclbin memory topology says
+// (the lab U200 has 8 GiB per channel, its topology 16 GiB). An owner open measures the capacity
+// (tsr_kdev.h, detect_ch_capacity) and records it in <dir>/tsr-cap-<bdf>, where <bdf> is the PCIe
+// address of the card (0000:3b:00.1), so that a view of an idle card, and an open in attach mode
+// (which writes nothing and cannot measure), know it. The file is four text lines, `tsr-cap 1`,
+// `bdf <bdf>`, `num_ch <n>` and `ch_bytes <bytes>` (per channel, the smallest one), and it stays
+// after the process exits: the capacity belongs to the card, not to the process. TSR_MON=0 does
+// not stop it (it is not the publisher), TSR_MON_DIR moves it. Neither call can fail the caller.
+// Writes the record (replaces the file atomically; 0 on success, -1 if it cannot, for example
+// because another user owns the file in a sticky directory).
+int  tsr_mon_cap_write(const char * bdf, uint32_t num_ch, uint64_t ch_bytes);
+// Reads it. 0 on success, -1 if there is none or it is not a record of this card.
+int  tsr_mon_cap_read(const char * bdf, uint32_t * num_ch, uint64_t * ch_bytes);
+void tsr_mon_cap_path(char * path, size_t n, const char * bdf);
+
+// ---------------------------------------------------------------------------------------------
 // Reader helpers (tests, the C tools). Python has its own (tsr_top.py).
 // ---------------------------------------------------------------------------------------------
 // The directory the records are in: $TSR_MON_DIR or /dev/shm. Fills `path` with the record of `pid`.

@@ -19,7 +19,10 @@
 // offsets / sizes / host addresses, across and beyond 4 GiB, under DMA rules from align 1 to 4096
 // with small chunks (shadow-memory compare, guard bytes untouched, every raw transfer checked
 // against the rules), raw LCQ read / acknowledgment failures (retry without losing answers,
-// duplicating events or returning launch credit), and the xrt kdev's hw_emu defaults (xrt_env_defaults).
+// duplicating events or returning launch credit), the xrt kdev's hw_emu defaults (xrt_env_defaults),
+// and the channel capacity (a buffer larger than the memory behind it wraps: detect_ch_capacity over a
+// fake wrapping memory, and the open with a kdev that measures it: owner mode uses the measured size
+// and restores the probed bytes, TSR_ATTACH writes nothing).
 
 #include "tsr_fw_paths.h"
 #include "tsr_kdev.h"
@@ -1176,6 +1179,239 @@ static void test_dispatch() {
     CHECK(strcmp(tsr_transport_strerror(TSR_TE_LOST), "unknown error") != 0, "tsr_transport_strerror");
 }
 
+// ---------------------------------------------------------------------------
+// Channel capacity: a buffer larger than the memory behind it wraps (the lab U200: DIMMs of 8 GiB
+// under a memory topology of 16 GB per bank, an offset o + 8 GiB reads and writes the cell o).
+// ---------------------------------------------------------------------------
+// Fake memory of `cap` bytes behind a buffer of any size: offset o is the cell o % cap.
+struct wrap_mem {
+    sparse_mem mem;
+    uint64_t cap;
+    uint64_t writes = 0, reads = 0, top = 0;   // calls, and the highest offset + size seen
+    uint64_t fail_at = UINT64_MAX;             // an access that starts at this offset fails
+    bool dead = false;                         // writes are dropped, reads return zeros
+    bool fail_writes_only = false;             // fail_at fails writes only
+    explicit wrap_mem(uint64_t c) : cap(c) {}
+    int wr(uint64_t off, const void * s, size_t n) {
+        writes++;
+        top = std::max(top, off + n);
+        if (off == fail_at) return -1;
+        if (dead) return 0;
+        const uint8_t * p = (const uint8_t *) s;
+        for (size_t i = 0; i < n;) {
+            const size_t k = (size_t) std::min<uint64_t>(n - i, cap - (off + i) % cap);
+            mem.write((off + i) % cap, p + i, k);
+            i += k;
+        }
+        return 0;
+    }
+    int rd(uint64_t off, void * d, size_t n) {
+        reads++;
+        top = std::max(top, off + n);
+        if (off == fail_at && !fail_writes_only) return -1;
+        uint8_t * p = (uint8_t *) d;
+        for (size_t i = 0; i < n;) {
+            const size_t k = (size_t) std::min<uint64_t>(n - i, cap - (off + i) % cap);
+            if (dead) memset(p + i, 0, k);
+            else mem.read((off + i) % cap, p + i, k);
+            i += k;
+        }
+        return 0;
+    }
+    // Every page that was touched still holds its background: nothing the probe wrote is left.
+    bool pristine() {
+        sparse_mem fresh;
+        for (auto & pg : mem.pages) {
+            fresh.at(pg.first * sparse_mem::PG);
+            if (fresh.pages[pg.first] != pg.second) return false;
+        }
+        return true;
+    }
+};
+
+static void test_capacity_detect() {
+    printf("channel capacity: detect_ch_capacity over a fake wrapping memory\n");
+    constexpr uint64_t KiB = 1ull << 10, MiB = 1ull << 20, GiB = 1ull << 30;
+    struct tc { const char * what; uint64_t size, cap, min, want; };
+    const tc cases[] = {
+        { "1 MiB, all memory", 1 * MiB, 1 * MiB, 4 * KiB, 1 * MiB },
+        { "1 MiB buffer, 256 KiB memory", 1 * MiB, 256 * KiB, 4 * KiB, 256 * KiB },
+        { "1 MiB buffer, 64 KiB memory", 1 * MiB, 64 * KiB, 4 * KiB, 64 * KiB },
+        { "16 GiB, all memory", 16 * GiB, 16 * GiB, 1 * GiB, 16 * GiB },
+        { "16 GiB buffer, 8 GiB memory (the lab U200)", 16 * GiB, 8 * GiB, 1 * GiB, 8 * GiB },
+        { "16 GiB buffer, 4 GiB memory", 16 * GiB, 4 * GiB, 1 * GiB, 4 * GiB },
+        { "16 GiB buffer, 1 GiB memory", 16 * GiB, 1 * GiB, 1 * GiB, 1 * GiB },
+        { "16 GiB buffer, 1 GiB memory, floor 4 GiB", 16 * GiB, 1 * GiB, 4 * GiB, 4 * GiB },
+        { "8 GiB buffer, all memory", 8 * GiB, 8 * GiB, 1 * GiB, 8 * GiB },
+        { "3 GiB buffer (not a power of two), 2 GiB memory", 3 * GiB, 2 * GiB, 512 * MiB, 2 * GiB },
+        { "12 GiB buffer, 8 GiB memory", 12 * GiB, 8 * GiB, 1 * GiB, 8 * GiB },
+        { "12 GiB buffer, 12 GiB memory (not a power of two)", 12 * GiB, 12 * GiB, 1 * GiB, 12 * GiB },
+        { "buffer at the floor", 1 * GiB, 1 * GiB, 1 * GiB, 1 * GiB },
+    };
+    for (const tc & c : cases) {
+        wrap_mem m(c.cap);
+        uint64_t got = 12345;
+        const int rc = detect_ch_capacity(c.size, c.min,
+            [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); },
+            [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); }, &got);
+        CHECK(rc == 0 && got == c.want, "%s: capacity %" PRIu64 " (want %" PRIu64 ", rc %d)", c.what, got, c.want, rc);
+        CHECK(m.pristine(), "%s: every probed byte restored", c.what);
+        CHECK(m.top <= c.size, "%s: probes inside the buffer (top %" PRIu64 " of %" PRIu64 ")", c.what, m.top, c.size);
+        CHECK(m.writes <= 8 * 4 && m.writes % 4 == 0, "%s: %" PRIu64 " writes (two probes and two restores per test)", c.what, m.writes);
+    }
+    // The saved bytes come back, also where the original content is not the background.
+    {
+        wrap_mem m(8 * GiB);
+        std::vector<uint8_t> keep(64, 0xC3);
+        m.wr(8 * GiB - 64, keep.data(), 64);           // the first pair's cell (A = 8 GiB - 64, B = A + 8 GiB)
+        m.wr(4 * GiB - 64, keep.data(), 64);           // the second pair's A
+        uint64_t got = 0;
+        CHECK(detect_ch_capacity(16 * GiB, 1 * GiB, [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); },
+                                 [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); }, &got) == 0 && got == 8 * GiB, "pre-filled cells: 8 GiB");
+        std::vector<uint8_t> back(64);
+        m.rd(8 * GiB - 64, back.data(), 64);
+        CHECK(back == keep, "the first probed cell holds its old data");
+        m.rd(4 * GiB - 64, back.data(), 64);
+        CHECK(back == keep, "the second probed cell holds its old data");
+    }
+    // Memory that keeps nothing (a dead buffer): never reported larger than the floor.
+    {
+        wrap_mem m(16 * GiB);
+        m.dead = true;
+        uint64_t got = 0;
+        CHECK(detect_ch_capacity(16 * GiB, 1 * GiB, [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); },
+                                 [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); }, &got) == 0 && got == 1 * GiB,
+              "a buffer that holds nothing: the floor (%" PRIu64 ")", got);
+    }
+    // An access error fails the probe and leaves the result alone; what was written is undone.
+    for (int variant = 0; variant < 3; ++variant) {
+        const uint64_t fail = variant == 0 ? 8 * GiB - 64 : 16 * GiB - 64;   // block A of the first pair, then block B
+        wrap_mem m(8 * GiB);
+        m.fail_at = fail;
+        m.fail_writes_only = variant == 2;
+        uint64_t got = 777;
+        const int rc = detect_ch_capacity(16 * GiB, 1 * GiB, [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); },
+                                          [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); }, &got);
+        CHECK(rc != 0 && got == 777 && m.pristine(), "%s error at 0x%" PRIx64 ": rc %d, result untouched, memory restored",
+              variant == 2 ? "write" : "read", fail, rc);
+    }
+}
+
+// A kdev whose buffers are larger than the memory behind them: the mock with its host memory
+// path wrapped at `mem` bytes (what the xrt kdev sees on a card with 8 GiB DIMMs). It measures
+// the capacity with detect_ch_capacity, as the xrt kdev does.
+struct cap_kdev final : kdev {
+    std::unique_ptr<mock_kdev> in;
+    uint64_t mem;
+    std::vector<uint64_t> usable;
+    int  detect_calls = 0;
+    bool detect_probe = false;
+    uint64_t host_writes = 0;
+    bool fail_reads = false;
+    cap_kdev(const mock_options & mo, uint64_t memory) : in(new mock_kdev(mo)), mem(memory), usable(mo.num_ch, mo.ch_bytes) {}
+    const char * name() const override { return "capkdev"; }
+    uint32_t num_ch() const override { return in->num_ch(); }
+    uint64_t ch_bytes(uint32_t ch) const override { return usable[ch]; }
+    uint64_t buf_bytes(uint32_t ch) const override { return in->ch_bytes(ch); }
+    uint64_t ch_addr(uint32_t ch) const override { return in->ch_addr(ch); }
+    int detect_capacity(bool probe) override {
+        detect_calls++;
+        detect_probe = probe;
+        if (!probe) return 0;
+        for (uint32_t c = 0; c < in->num_ch(); ++c) {
+            uint64_t cap = 0;
+            if (detect_ch_capacity(buf_bytes(c), 1ull << 30, [this, c](uint64_t o, const void * p, size_t n) { return mem_write(c, o, p, n); },
+                                   [this, c](uint64_t o, void * p, size_t n) { return mem_read(c, o, p, n); }, &cap) != 0) return -1;
+            usable[c] = cap;
+        }
+        return 0;
+    }
+    int reg_read(uint32_t off, uint32_t * val) override { return in->reg_read(off, val); }
+    int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
+    int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override {
+        host_writes++;
+        for (size_t i = 0; i < n;) {
+            const size_t k = (size_t) std::min<uint64_t>(n - i, mem - (off + i) % mem);
+            if (in->mem_write(ch, (off + i) % mem, (const uint8_t *) src + i, k) != 0) return -1;
+            i += k;
+        }
+        return 0;
+    }
+    int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override {
+        if (fail_reads) return -1;
+        for (size_t i = 0; i < n;) {
+            const size_t k = (size_t) std::min<uint64_t>(n - i, mem - (off + i) % mem);
+            if (in->mem_read(ch, (off + i) % mem, (uint8_t *) dst + i, k) != 0) return -1;
+            i += k;
+        }
+        return 0;
+    }
+    uint64_t now_ns() override { return in->now_ns(); }
+    void idle(uint32_t it, uint64_t ns) override { in->idle(it, ns); }
+    tsr_sim * sim() override { return in->sim(); }
+    bool simulated() const override { return true; }
+};
+
+// The protocol layer asks the kdev for its capacity once at open, in owner mode only, and takes the
+// channel size from ch_bytes() afterward: the heap, the KV cache and every range check see it.
+static void test_capacity_open() {
+    printf("channel capacity: the open uses the measured size, TSR_ATTACH writes nothing\n");
+    constexpr uint64_t GiB = 1ull << 30;
+    const mock_options o = small_mock();
+    {
+        std::unique_ptr<cap_kdev> k(new cap_kdev(o, 8 * GiB));
+        CHECK(k->in->ok(), "mock created");
+        cap_kdev * kp = k.get();
+        // Known data in the cells the probes use (8 GiB - 64 and 4 GiB - 64 of channel 2).
+        std::vector<uint8_t> keep(64, 0x5E), back(64);
+        CHECK(kp->in->mem_write(2, 8 * GiB - 64, keep.data(), 64) == 0 && kp->in->mem_write(2, 4 * GiB - 64, keep.data(), 64) == 0, "fill");
+        tsr_transport * t = transport_open_kdev(std::move(k));
+        CHECK(t != nullptr, "open");
+        if (t) {
+            const tsr_config * c = tsr_transport_config(t);
+            CHECK(kp->detect_calls == 1 && kp->detect_probe, "detect_capacity called once, with probe = true (%d, %d)", kp->detect_calls, kp->detect_probe);
+            CHECK(c->ch_bytes == 8 * GiB, "channel size %" PRIu64 " = the 8 GiB of memory, not the 16 GiB buffer", (uint64_t) c->ch_bytes);
+            CHECK(kp->buf_bytes(0) == 16 * GiB && kp->ch_bytes(0) == 8 * GiB, "buffer 16 GiB, usable 8 GiB");
+            uint8_t b[64] = {};
+            CHECK(tsr_transport_write(t, 0, c->ch_bytes - 64, b, 64) == 0, "the last block of the memory is writable");
+            CHECK(tsr_transport_write(t, 0, c->ch_bytes - 63, b, 64) == TSR_TE_INVAL, "a write above the memory is refused");
+            CHECK(tsr_transport_read(t, 3, 8 * GiB, b, 1) == TSR_TE_INVAL, "a read above the memory is refused");
+            CHECK(kp->host_writes > 0, "the probes wrote");
+            CHECK(kp->in->mem_read(2, 8 * GiB - 64, back.data(), 64) == 0 && back == keep, "the probed cells hold their old data (first)");
+            CHECK(kp->in->mem_read(2, 4 * GiB - 64, back.data(), 64) == 0 && back == keep, "the probed cells hold their old data (second)");
+            tsr_transport_close(t);
+        }
+    }
+    {
+        // TSR_ATTACH=1: a diagnosis open must not write to the card's memory.
+        setenv("TSR_ATTACH", "1", 1);
+        std::unique_ptr<cap_kdev> k(new cap_kdev(o, 8 * GiB));
+        cap_kdev * kp = k.get();
+        tsr_transport * t = transport_open_kdev(std::move(k));
+        CHECK(t != nullptr, "attach open");
+        if (t) {
+            CHECK(kp->detect_calls == 1 && !kp->detect_probe, "attach: detect_capacity(false) (%d, %d)", kp->detect_calls, kp->detect_probe);
+            CHECK(kp->host_writes == 0, "attach: no memory write (%" PRIu64 ")", kp->host_writes);
+            CHECK(tsr_transport_config(t)->ch_bytes == 16 * GiB, "attach: the buffer size when nothing is recorded");
+            tsr_transport_close(t);
+        }
+        unsetenv("TSR_ATTACH");
+    }
+    {
+        // A probe that cannot read the buffer fails the open (nothing is placed on memory of unknown size).
+        std::unique_ptr<cap_kdev> k(new cap_kdev(o, 8 * GiB));
+        k->fail_reads = true;
+        CHECK(transport_open_kdev(std::move(k)) == nullptr, "a failed capacity probe fails the open");
+    }
+    {
+        // A card whose buffers are all memory keeps the buffer size.
+        std::unique_ptr<cap_kdev> k(new cap_kdev(o, 16 * GiB));
+        tsr_transport * t = transport_open_kdev(std::move(k));
+        CHECK(t != nullptr && tsr_transport_config(t)->ch_bytes == 16 * GiB, "16 GiB of memory: 16 GiB channels");
+        tsr_transport_close(t);
+    }
+}
+
 // The xrt kdev's hw_emu defaults (docs/xrt-host.md §9): only under XCL_EMULATION_MODE=hw_emu,
 // only for variables left unset or empty; a value the user set wins.
 static void test_xrt_env_defaults() {
@@ -1224,10 +1460,12 @@ static void test_xrt_env_defaults() {
 int main() {
     clear_env();
     test_xrt_env_defaults();
+    test_capacity_detect();
     test_dma_engine();
     test_mock_regs();
     test_protocol_basic();
     test_open_refusals();
+    test_capacity_open();
     test_adapter_log();
     if (access(TSR_FW_TEST_IMAGE_fw_rt, R_OK) == 0) {
         test_stale_core();

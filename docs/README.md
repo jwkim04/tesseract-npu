@@ -54,7 +54,7 @@ and their style guide are in [fig/src](fig/src/STYLE.md).
 
 ## Known limitations
 
-- Weights and KV cache are limited to 64 GiB: four DDR4 channels of 16 GiB.
+- Weights and KV cache are limited to 32 GiB on this U200: four DDR4 channels of 8 GiB. The design supports up to 16 GiB per channel (`CH_BYTES`, 64 GiB with four channels), and the transport detects the capacity of the card at open ([xrt-host.md](xrt-host.md) §4.4). A model that needs more than the card holds stops at load with the message `WEIGHT heap full`.
 - There is no native path for 5-bit and 6-bit formats, I-quants, Q4_0 or MXFP4. Their weights are converted to Q8_0 at load.
 - The KV cache is Q8_0. Other KV types run on the CPU with `-nkvo`. The attention rotation must be off (`LLAMA_ATTN_ROT_DISABLE=1`).
 - Attention with ALiBi, logit softcap, sinks or K-shift is not supported on the device. Context shift and defragmentation of the device KV cache are refused.

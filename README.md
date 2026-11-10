@@ -17,7 +17,7 @@ A full-stack, open-source NPU for LLM inference.
 - <img alt="Tesseract Basis" src="docs/logo/tesseract-basis-lockup-universal.png" height="20" align="absmiddle"> firmware: C++20 runtime, kernel library and kernel SDK.
 - Software: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
 
-Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
+Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA. The U200 card holds 32 GiB of DDR4, four channels of 8 GiB. The design supports up to 16 GiB per channel.
 
 ## Operators and features
 

@@ -76,8 +76,19 @@ public:
     virtual ~kdev() = default;
     virtual const char * name() const = 0;               // transport name ("xrt", "mock", ...)
     virtual uint32_t num_ch() const = 0;                 // m_axi_ch<c> ports with a buffer bound
-    virtual uint64_t ch_bytes(uint32_t ch) const = 0;    // usable bytes of the buffer of channel ch
+    virtual uint64_t ch_bytes(uint32_t ch) const = 0;    // usable bytes of the buffer of channel ch (real memory)
     virtual uint64_t ch_addr(uint32_t ch) const = 0;     // its device address (what ch<c>_base gets)
+    // The size of the buffer bound to channel ch. It can be more than ch_bytes(ch): an Alveo shell
+    // reports 16 GB per DDR bank in its memory topology, and a buffer of that size on a card with
+    // 8 GiB DIMMs wraps (offset + 8 GiB reads back what was written at offset). Default: ch_bytes.
+    virtual uint64_t buf_bytes(uint32_t ch) const { return ch_bytes(ch); }
+    // Finds how much of each buffer is real memory and lowers ch_bytes() to it. The protocol layer
+    // calls it once at open, before it reads ch_bytes(). probe true (owner mode): measures the
+    // capacity by writing and restoring probe patterns (detect_ch_capacity). false (TSR_ATTACH,
+    // which must not write): writes nothing, uses what an earlier owner recorded, else keeps
+    // ch_bytes(). 0 on success, else a message was printed. Default: the buffers are exact (the
+    // simulated kinds).
+    virtual int detect_capacity(bool probe) { (void) probe; return 0; }
     virtual std::string describe() const { return std::string(); }   // one line per item, for tools
     // false: the core CSR port only, no adapter registers (the "sim" kind, EX §10.2): the protocol
     // skips ADAPTER_STATUS and the bind; reg_* outside the CSR window fail.
@@ -153,6 +164,26 @@ private:
 
 // Valid dma_rules? Empty string if so, else the reason.
 std::string dma_rules_check(const dma_rules & r);
+
+// ---------------------------------------------------------------------------
+// Channel capacity: how much of a buffer is real memory
+// ---------------------------------------------------------------------------
+// Accessors of one channel buffer: byte offset, host pointer, size. 0 on success.
+using ch_write_fn = std::function<int(uint64_t off, const void * src, size_t n)>;
+using ch_read_fn  = std::function<int(uint64_t off, void * dst, size_t n)>;
+
+// The capacity of a channel buffer of `size` bytes whose memory may be smaller than the buffer and
+// wrap (alias). The capacity is a power of two (a DIMM address range). The test: from the largest
+// power of two P below the current size down, write two distinct 64-byte patterns at A and at
+// A + P (A = size - P - 64, so the pair ends at the last block of the range) and read both back.
+// If A + P returns the pattern of A, memory repeats every P bytes, the capacity is P, and the
+// test goes on inside it. The first P that does not wrap ends it, and the capacity is the size
+// then. Every byte it touches is saved first and restored afterward, so the buffer's content is
+// unchanged. A pair that does not read back as written (either pattern lost) counts as a wrap:
+// the result can only be smaller than the truth, never larger. It never goes below min_bytes
+// (the smallest size still tested). 0 on success with *bytes set, -1 if an access failed (a
+// message on stderr, *bytes untouched).
+int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes);
 
 // ---------------------------------------------------------------------------
 // The protocol layer as a transport

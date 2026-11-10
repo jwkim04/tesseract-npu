@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ### Fixed
 
+- The xrt transport measures the capacity of each channel at open. The U200 card holds 8 GiB per channel, but the shell's memory topology says 16 GB per bank, so addresses above 8 GiB wrapped and a model of more than about 8 GiB per channel overwrote its own weights. The heap, the KV placement, the range checks and the monitor record now use the measured size, `TSR_XRT_CH_GIB` above it is refused, and a model that does not fit stops with `WEIGHT heap full`. `TSR_ATTACH` writes nothing and takes the capacity that an owner open recorded in `tsr-cap-<bdf>`. `tsr-top` shows 32 GiB for the card also when no process owns it.
+- `tsr-selftest` checks the channel capacity: distinct patterns at 0 and at P for every power of two P below the buffer, and the transport's channel size must equal the capacity found. Its memory checks wrote and read back at the same address and could not see a wrap.
 - Models that share KV between layers (Gemma 4 E4B) no longer abort in prefill at a large ubatch: the backend copies the K indices that ggml-alloc overwrites before a sharing layer's FLASH_ATTN (SW-89).
 
 ## [1.0.0] - 2026-11-10

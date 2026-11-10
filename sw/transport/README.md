@@ -22,8 +22,9 @@ tsr_transport.h   C API: open, close, config, write, read, csr, image, boot, lau
 ```
 
 A new kind derives from `tsr::kdev` (`name`, `num_ch`, `ch_bytes`, `ch_addr`, `reg_read`, `reg_write`, `mem_write`,
-`mem_read`, and `now_ns` and `idle` when time is simulated) and registers with `tsr::register_kdev("mykind",
-factory)`, then `TSR_DEVICE=mykind` selects it. On `sim` the host triggers time (a read of the completion ring runs
+`mem_read`, `now_ns` and `idle` when time is simulated, and `detect_capacity` and `buf_bytes` when the buffer can be larger
+than the memory behind it, as on `xrt`: [`docs/xrt-host.md`](../../docs/xrt-host.md) §4.4) and registers with
+`tsr::register_kdev("mykind", factory)`, then `TSR_DEVICE=mykind` selects it. On `sim` the host triggers time (a read of the completion ring runs
 the model until something happens), so results are deterministic. `tsr_transport.h` is EX §10.1 plus the
 conveniences of SW §9.1. Every call returns 0 or a negative `TSR_TE_*` code (`INVAL`, `IO`, `TIMEOUT`, `LOST`,
 `DEVICE`, `IMAGE`, `STATE`) and prints a message on stderr. A minimal use:
@@ -58,9 +59,9 @@ Read at open. A malformed value makes the open fail with a message. The variable
 | `TSR_DEVICE`, `TSR_IMAGE` | `sim`, the build's `fw/tsr-fw.elf` | the kind (`sim`, `mock`, `vkernel`, `xrt` or a registered one) and the firmware image |
 | `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | 60000 (0 disables), 10000, 2000, 15000 | wait timeout per launch, wait for the answers of canceled launches, wait for HELLO, wait for `SOFT_RESET` |
 | `TSR_LOG`, `TSR_LOG_LEVEL` | off, 3 | decode the device log to `stderr` or a file. `LOG_CFG.LEVEL`, 0 (fatal) to 5 (trace). |
-| `TSR_ATTACH` | 0 | `1`: open without `SOFT_RESET` and bind, for diagnosis of a running device |
+| `TSR_ATTACH` | 0 | `1`: open without `SOFT_RESET`, bind or capacity probe (nothing is written), for diagnosis of a running device |
 | `TSR_STATS` | 0 | `1`: transport statistics and the PERF summary on stderr at close |
-| `TSR_MON`, `TSR_MON_DIR`, `TSR_MON_PERF_MS`, `TSR_MON_KEEP`, `TSR_MON_MODEL` | on | the live monitor record (SW-87): `0` turns it off, its directory (`/dev/shm`), the least ms between two PERF reads (100), keep the file at exit, the model name |
+| `TSR_MON`, `TSR_MON_DIR`, `TSR_MON_PERF_MS`, `TSR_MON_KEEP`, `TSR_MON_MODEL` | on | the live monitor record (SW-87): `0` turns it off, its directory (`/dev/shm`, also the one of the card's capacity record `tsr-cap-<bdf>`, [`docs/xrt-host.md`](../../docs/xrt-host.md) §4.4), the least ms between two PERF reads (100), keep the file at exit, the model name |
 | `TSR_DUMP_DIR` | off | directory for hang dumps (`hang-<pid>-<n>/state.json`) |
 | `TSR_GDB`, `TSR_DEBUGGER`, `TSR_GDB_WAIT` | off | the embedded debug service when the program links it, and `boot` or `launch` to halt there (a trap then leaves the device trapped instead of restarting it) ([`docs/prof-dbg.md`](../../docs/prof-dbg.md) §1) |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | unset | `0` or `1`: set or clear serial mode and the dispatch history in `DBG_CFG` at open |
@@ -76,7 +77,7 @@ Read at open. A malformed value makes the open fail with a message. The variable
 ## Test
 
 `ctest --test-dir build/dev -R 'transport_|tools_selftest|tools_log'` runs `transport_kdev`, `transport_protocol`,
-`transport_mon` (the monitor record and its seqlock), `transport_xrt_noop` (only with `-DTSR_WITH_XRT=ON`),
+`transport_mon` (the monitor record and its seqlock, the capacity record of a card), `transport_xrt_noop` (only with `-DTSR_WITH_XRT=ON`),
 `transport_ggml_e2e_mock*`, `tools_selftest_mock*` and `tools_log_selftest`
 ([`docs/xrt-host.md`](../../docs/xrt-host.md) §6 describes each). `transport_protocol` is skipped (77) when the
 firmware images are missing. `test_kdev.cpp` shows registration and the faults a kdev has to survive.

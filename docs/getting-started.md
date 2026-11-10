@@ -163,6 +163,8 @@ build/xrt/bin/klcheck all -m MODEL --device xrt --phase m7 -n 64 -o build/klchec
 ```
 
 The firmware is not in the xclbin. The host loads `tsr-fw.elf` (or `$TSR_IMAGE`) when the device opens. The
+card holds 32 GiB, four DDR4 channels of 8 GiB, and the transport measures that at open ([`docs/xrt-host.md`](xrt-host.md)
+§4.4). A model that needs more stops at load with `WEIGHT heap full`. The
 card runs one process at a time, since XRT opens the compute unit exclusively. For the PyTorch backend add
 `-DTSR_WITH_TORCH=ON` ([`docs/torch-backend.md`](torch-backend.md) §2.4). The host driver path, the card
 selftest and the bring-up steps are in [`docs/xrt-host.md`](xrt-host.md). `build/xrt/bin/tsr-top` in a second terminal

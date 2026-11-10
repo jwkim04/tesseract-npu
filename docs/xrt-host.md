@@ -134,8 +134,9 @@ Kernel, compute unit and arguments are discovered from the xclbin (§2).
 
 Each channel gets one `xrt::bo(device, size, xrt::bo::flags::device_only, group)`, where `group` is the memory
 index of the bank that argument `ch<c>` is connected to (`xrt::xclbin::arg::get_mems()`, EX §9.1). Size:
-`TSR_XRT_CH_GIB` (1 to 16), default the bank size from the xclbin memory topology (16 GiB on the U200 DDR4
-banks), shrunk in 256 MiB steps if the allocation fails (down to 1 GiB). From the XRT 2.18.179 sources
+`TSR_XRT_CH_GIB` (1 to 16), default the bank size from the xclbin memory topology (16 GiB on the U200 shell),
+shrunk in 256 MiB steps if the allocation fails (down to 1 GiB). The buffer is not the memory behind it: the
+transport measures the capacity at open (§4.4). From the XRT 2.18.179 sources
 (`core/pcie/driver/linux/xocl`):
 
 - A device-only BO has no host pages. `xocl_create_bo` reserves a `drm_mm` node in the bank (PAGE_SIZE
@@ -170,11 +171,42 @@ transport variables are in [`sw/transport/README.md`](../sw/transport/README.md)
 | `TSR_XCLBIN` | required | xclbin to load. Loading the one already on the card is cheap. |
 | `TSR_XRT_DEVICE` | `0` | device index or PCIe BDF |
 | `TSR_XRT_KERNEL` | `tsr_u200_k4`, else `tsr_u200_k1` | kernel name |
-| `TSR_XRT_CH_GIB` | bank size (16); 3 under `XCL_EMULATION_MODE=hw_emu` (§9) | channel buffer size in GiB |
+| `TSR_XRT_CH_GIB` | bank size (16), or the measured capacity if that is smaller (§4.4); 3 under `XCL_EMULATION_MODE=hw_emu` (§9) | channel buffer size in GiB. A value above the measured capacity is refused. |
 | `TSR_XRT_DMA`, `TSR_XRT_DMA_CHUNK_MIB`, `TSR_XRT_DMA_ALIGN` | `direct`, 64, 1; `staged`, 64, 4096 under hw_emu (§9) | §4.2 |
 
-With `TSR_XRT_CH_GIB` below 16 the core still range-checks against its `CH_BYTES` of 16 GiB, so a faulty launch
-could address memory past the buffer. The backend never does: its heap ends at `ch_bytes`.
+The core always range-checks against its `CH_BYTES` of 16 GiB, whatever the channel size, so a faulty launch could
+address memory past the channel (past the 8 GiB of this U200, where an address wraps). The backend never does: its
+heap ends at `ch_bytes`.
+
+### 4.4 Channel capacity
+
+The xclbin memory topology says what the shell was built for, not what the DIMMs hold. The U200 shell reports 16 GB
+per DDR4 bank, and `xbutil` shows the same. This U200 has four DDR4 channels of 8 GiB, 32 GiB in all. A buffer of
+16 GiB on such a channel wraps: a write at offset + 8 GiB lands on offset, and a read there returns it. The design
+supports up to 16 GiB per channel (`CH_BYTES`, 64 GiB with four channels), and the core range-checks against that.
+
+The transport therefore measures the capacity of every channel at open, in owner mode, before the protocol layer
+reads the channel size (`detect_capacity` of the kdev, `detect_ch_capacity` in `sw/transport/tsr_kdev.cpp`). From the
+largest power of two P below the buffer size it writes two distinct 64-byte patterns at A and at A + P, with A =
+size - P - 64, and reads both back. If the block at A returns the pattern written at A + P, the memory repeats every
+P bytes: the capacity is P, and the test goes on inside it. The first P that does not wrap ends it. Every byte it
+touches is saved first and restored afterward. A pair that does not read back as written counts as a wrap, so the
+result is never too large.
+
+The measured size is the channel size everywhere: the weight heap, the KV placement, the range checks of the host
+calls, the `ch_bytes` of `tsr_config` and the `mem_total` of the monitor record. The backend never places data above
+it. A model that needs more stops at load with the message `WEIGHT heap full`. `TSR_DEBUG=1` prints the measured
+size of each channel at open, and the kdev description (the first lines of `tsr-selftest`) shows the buffer and the
+memory behind it.
+
+`TSR_XRT_CH_GIB` still sets the buffer size. A value above the measured capacity is refused at open, with the
+measured size in the message. A smaller value is a limit, and the measurement does not look past it.
+
+`TSR_ATTACH=1` writes nothing, so it cannot measure. It takes the capacity that an owner open recorded for the card
+and keeps the buffer size when there is none. An owner open records the capacity in `tsr-cap-<bdf>` in `TSR_MON_DIR`
+(default `/dev/shm`; four text lines, `sw/transport/tsr_mon.h`). The file stays after the process exits, and
+`tsr-top` reads it to show an idle card against its real capacity ([prof-dbg.md](prof-dbg.md) §7.2). A run with
+`TSR_XRT_CH_GIB` or a shrunk buffer does not record it, because the measurement cannot see past the buffer.
 
 ## 5. tsr-selftest
 
@@ -186,8 +218,10 @@ could address memory past the buffer. The backend never does: its heap ends at `
 
 1. Identity: the kdev description and the identity, configuration and status registers, and the adapter (version,
    `ADAPTER_STATUS`, `MEM_EN`, bases equal to the buffers' device addresses) or "no adapter".
-2. Memory per channel: pattern write and read-back at aligned, unaligned, 4 KiB- and 4 GiB-crossing and
-   end-of-channel ranges with guard bytes, channel aliasing, and the bandwidth of an `--mem-mib` transfer.
+2. Memory per channel: the capacity of every channel (distinct patterns at 0 and at P for every power of two P from
+   1 MiB up to below the buffer, which must give the transport's channel size: 8 GiB per channel on this U200),
+   pattern write and read-back at aligned, unaligned, 4 KiB- and 4 GiB-crossing and end-of-channel ranges with
+   guard bytes, channel aliasing, and the bandwidth of an `--mem-mib` transfer.
 3. Boot: the image (id, base kernels `graph`, `selftest` and `replay` at 0, 1 and 2), a boot with the receive CRC,
    VERIFY and HELLO, and a second boot that must be a warm restart.
 4. PING: one round trip with the `ARG0` echo, then `--rate-n` sequential round trips and `--rate-n` pipelined
@@ -215,7 +249,11 @@ self-checks against the PERF deltas of the whole run. A failing `selftest` kerne
 - `transport_kdev` (`test-tsr-kdev`): the protocol layer on the `mock` kdev. Identity checks and adapter faults at
   open, bind (`MEM_EN`, misaligned base, `BASE_LOCKED`, held requests), timeouts, a stale core at open (with and
   without `TSR_ATTACH`), `PLAT_ERR` during a launch, a hung unit, the registry, `TSR_MOCK_*` parsing,
-  `xrt_env_defaults`, and the chunked and aligned transfer engine under DMA rules from align 1 to 4096.
+  `xrt_env_defaults`, the channel capacity (`detect_ch_capacity` over a fake wrapping memory, and an open with a kdev
+  that measures it: owner mode uses the measured size and restores the probed bytes, `TSR_ATTACH` writes nothing),
+  and the chunked and aligned transfer engine under DMA rules from align 1 to 4096.
+- `transport_mon` (`test-tsr-mon`): the live monitor record and its seqlock, and the capacity record of a card
+  (`tsr-cap-<bdf>`: write, read back, replace, refuse a bad address).
 - `transport_protocol` (`test-tsr-protocol`): one binary for every kind it can run (`sim`, `mock`, `vkernel` when a
   server is named). Cold and warm boot, image-id mismatch, `.note.tsr` refusal, VERIFY with an injected TCM fault,
   PING, 0-7 arguments, `BAD_DESC`, the credit rule, forced `LQ_OVERFLOW` and `RING_RD_BAD`, events, the log, cancel
@@ -254,8 +292,8 @@ development platform and the shell flashed with `xbmgmt`, and `xbutil validate` 
 ([`platform-u200.md`](platform-u200.md)). The card is used through `xrt::ip` as an ordinary user. In order:
 
 1. Load the release xclbin and run the card selftest: `TSR_XCLBIN=<tsr_u200_k4.xclbin> tsr-selftest --device xrt`.
-   It checks identity, bind, cold load with VERIFY, HELLO, the PING round trip, the `selftest` kernel against
-   the shadow, trace replays and the DMI smoke (§5).
+   It checks identity, bind, the channel capacity, cold load with VERIFY, HELLO, the PING round trip, the `selftest`
+   kernel against the shadow, trace replays and the DMI smoke (§5).
 2. Run the backend tests (`test-ggml-tesseract`, `test-backend-ops -o MUL_MAT -b Tesseract0`) with
    `TSR_DEVICE=xrt`. Then a model-level check: generate on the card with `klcheck run --device xrt` and replay
    the tokens on the simulator with `TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4`

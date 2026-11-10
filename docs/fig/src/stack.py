@@ -21,7 +21,7 @@ band per layer and a column of developer tools beside the middle layers. Top to 
    unit, the units DMA, QACT, MVM clusters and VU, and the SPM (docs/design/04-control-core.md §2.1,
    §7.4; docs/spec.md §2). The dashed bus from the issue path to the units stands for the unit
    queues (CC §7.4); the SPM bar under the units for their SPM clients (CC §10);
-6. the Alveo U200 card: XRT shell (PCIe), four DDR4 channels, 64 GB (docs/platform-u200.md §1).
+6. the Alveo U200 card: XRT shell (PCIe), four DDR4 channels, 32 GB (docs/platform-u200.md §1).
 Developer tools (docs/design/06-software-verification.md §9.5, §10; docs/prof-dbg.md §1):
 simulator (bit-exact oracle, cycle model, race detector; sw/sim), `tsr-selftest`, `klcheck` and
 `numcheck`, trace tools (`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`), `tsr-log`,
@@ -161,7 +161,7 @@ core_units = [T("io", "DMA", "LD · ST · KVST"), T("compute", "QACT", "f32 to Q
               T("compute", "MVM CLUSTERS", "4 × 128 MAC lanes"),
               T("compute", "VECTOR UNIT", "norms · RoPE")]
 card = [T("vendor", "ALVEO U200", "FPGA · VU9P"), T("vendor", "XRT SHELL", "PCIe · registers"),
-        T("memory", "DDR4 × 4", "64 GB · 4 channels")]
+        T("memory", "DDR4 × 4", "32 GB · 4 channels")]
 tools = [T("neutral", "KLCHECK\nNUMCHECK", "accuracy vs the CPU"),
          T("neutral", "TRACE TOOLS", "gen · replay · conv"),
          T("neutral", "TSR-SELFTEST", "device self-tests"),

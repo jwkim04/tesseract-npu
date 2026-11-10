@@ -50,7 +50,8 @@ weight stream and not around raw compute.
 
 - Formats. No hardware path for 5- and 6-bit formats (Q5_K, Q6_K) or I-quants; they are converted to
   Q8_0 at load. Q4_0 and MXFP4 are not implemented.
-- Model size. Models larger than 64 GB.
+- Model size. Models larger than the DRAM the design addresses: 64 GiB, four channels of 16 GiB (`CH_BYTES`). The U200 card
+  holds 32 GiB.
 - Scope. Training and multi-session serving. Multiple cards are not supported.
 
 ### Design principles
@@ -236,7 +237,7 @@ registers `CFG_*`. The U200 values are:
 | `VL` | f32 elements per SPM line, the vector unit's operand width | 16 |
 | `NSREG` | Number of f32 scalar registers | 16 |
 | `RD_OUTSTANDING` | Outstanding read requests per channel | 16 |
-| `CH_BYTES` | DRAM capacity per channel | 16 GiB |
+| `CH_BYTES` | Largest DRAM capacity per channel that the core addresses. The U200 card holds 8 GiB per channel, and the transport measures it at open | 16 GiB |
 | `ADDR_BEAT_W` | Width of a channel address in beats | 28 |
 | `ITCM_BYTES`, `DTCM_BYTES` | Instruction and data SRAM of the control core | 128 KiB, 64 KiB (CC-3) |
 | `Q_DEPTH_*` | Queue depth per unit (DMA, QACT, MVM, VU, unit 4, SYNC) | 8, 4, 4, 16, 0 (unit 4 absent), 4 (CC §7.4) |
@@ -266,7 +267,9 @@ cannot see the SPM. The control core has its own 32-bit address space (ITCM, DTC
 SPM window): it reads and writes the SPM byte by byte but cannot see DRAM (section 16). The ordering
 rules between the host, the control core and the units are in section 16 (Memory model).
 
-DRAM address: `(ch, addr_beat)`: a channel number and an offset in beats (64 B) inside that channel.
+DRAM address: `(ch, addr_beat)`: a channel number and an offset in beats (64 B) inside that channel. The channel size the
+host software uses (`ch_bytes` of the configuration) is the capacity that the transport measured at open, at most
+`CH_BYTES`; the host places nothing above it.
 
 Symmetric allocation: a quantized weight tensor is placed at the same offset `W_OFF` in every
 channel. Its N rows are split into C contiguous ranges.
@@ -301,8 +304,9 @@ channel uses the same map.
   the reserve graph ([SW](design/06-software-verification.md) §8, R6).
 - Low 512 MiB of ch1–3: compute chunks and other activations.
 
-A 32B Q4_K_M model (about 20 GB) needs about 5 GB per channel, and the same model in Q8_0 (about
-35 GB) about 9 GB per channel, so both fit.
+A 32B Q4_K_M model (about 20 GB) needs about 5 GB per channel and fits the 8 GiB channels of the U200 card.
+The same model in Q8_0 (about 35 GB) needs about 9 GB per channel, which fits channels of 16 GiB but not the 8 GiB of the
+U200 card.
 
 SPM rules
 
@@ -929,8 +933,8 @@ operands with a torch f32 GEMM ([torch-backend.md](torch-backend.md)).
 
 ## 13. MoE support
 
-MoE is the workload that fits the U200 best. All the parameters fit into 64 GB while the bytes read per
-token are small: a model with 25 B parameters and 4 B active per token reads about one sixth of the bytes
+MoE is the workload that fits the U200 best. All the parameters of a model of this class fit into the 32 GiB of the card
+(64 GiB by design) while the bytes read per token are small: a model with 25 B parameters and 4 B active per token reads about one sixth of the bytes
 per token of a dense 32B.
 
 The shape that ggml emits: router `MUL_MAT` (F32 in the GGUF, converted to Q8_0 at load) → softmax → top-k →
@@ -992,7 +996,8 @@ applies an RMS norm to the sum of the experts cannot put the residual into the A
 weight is multiplied before the down MVM, the accumulation order differs from ggml (which multiplies after
 down), so the model-level KL criterion verifies it.
 
-Limits: models of the gpt-oss-120b and GLM-4.5-Air class do not fit into 64 GB. gpt-oss-20b fits but needs
+Limits: models of the gpt-oss-120b and GLM-4.5-Air class do not fit into 64 GB, the most the design addresses, and not into the
+32 GiB of the U200 card. gpt-oss-20b fits but needs
 the MXFP4 format (a reserved fmt code).
 
 ## 14. Performance model

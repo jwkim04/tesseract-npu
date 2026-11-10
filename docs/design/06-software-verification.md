@@ -1457,8 +1457,8 @@ Protocol layer (`tsr_kdev.cpp`, SW-18). One implementation serves every kind and
 - Watermarks (EX §4.9): a watermark written since the last `SOFT_RESET` is rewritten just below the oldest
   unanswered launch 2^30 launches after its write, so it never wraps onto new launches (it would after 2^31).
 
-kdev (EX §10.2). Methods: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `ch_addr`,
-`describe`; `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's `advance`
+kdev (EX §10.2). Methods: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `buf_bytes`, `ch_addr`,
+`detect_capacity`, `describe`; `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's `advance`
 hint), with `now_ns()` (the time base), `simulated()`, `has_adapter()` and `sim()` (`sw/transport/tsr_kdev.h`).
 
 | kdev | `idle()` and specifics |
@@ -1466,7 +1466,7 @@ hint), with `now_ns()` (the time base), `simulated()`, `has_adapter()` and `sim(
 | `sim` | in-process simulator behind the core CSR port; `idle()` = `tsr_sim_advance(budget)`; a host read of `LCQ_WR`, `STATUS` or `LOG_WR` first runs the model to the next host-visible event (EX §10.2) |
 | `mock` | the `sim` kdev plus the `ap_ctrl_none` adapter register model (channel bases, `MEM_EN`, `ADAPTER_STATUS`, error injection) |
 | `vkernel` | the Verilated kernel server with two clocks; `idle()` runs the server's clocks |
-| `xrt` | `ap_ctrl_none` compute unit opened through `xrt::ip` with exclusive access; registers through `read_register` and `write_register`; one device-only BO per channel (memory topology from `xrt::xclbin`, EX §9.1); `idle()` sleeps (backoff) |
+| `xrt` | `ap_ctrl_none` compute unit opened through `xrt::ip` with exclusive access; registers through `read_register` and `write_register`; one device-only BO per channel (memory topology from `xrt::xclbin`, EX §9.1) whose usable size is the capacity measured at open; `idle()` sleeps (backoff) |
 
 The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
 

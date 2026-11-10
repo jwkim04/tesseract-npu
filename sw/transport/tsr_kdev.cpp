@@ -122,6 +122,59 @@ std::string dma_rules_check(const dma_rules & r) {
     return "";
 }
 
+// ---------------------------------------------------------------------------
+// Channel capacity (kdev.h): does memory at A + P hold what was written there, or is it A again?
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr size_t CAP_PROBE = 64;   // one beat
+
+// Distinct patterns for the pair at one test: pb is the complement of pa in every byte.
+void cap_patterns(unsigned k, uint8_t * pa, uint8_t * pb) {
+    for (size_t i = 0; i < CAP_PROBE; ++i) {
+        pa[i] = (uint8_t) (37u * i + 11u + 101u * k);
+        pb[i] = (uint8_t) ~pa[i];
+    }
+}
+
+} // namespace
+
+int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes) {
+    uint64_t cap = size & ~(uint64_t) (CAP_PROBE - 1);
+    min_bytes = std::max<uint64_t>(min_bytes, 2 * CAP_PROBE);
+    for (unsigned k = 0; cap > min_bytes; ++k) {
+        uint64_t P = 1;                          // the largest power of two below cap
+        while (2 * P < cap) P *= 2;
+        const uint64_t a = cap - P - CAP_PROBE, b = a + P;   // both blocks inside [0, cap), at least P apart
+        uint8_t sa[CAP_PROBE], sb[CAP_PROBE], pa[CAP_PROBE], pb[CAP_PROBE], ra[CAP_PROBE], rb[CAP_PROBE];
+        cap_patterns(k, pa, pb);
+        // Save, write both, read both, restore. When the two blocks are one cell, sa == sb (both
+        // were read before any write), so restoring in either order leaves the original there.
+        if (rd(a, sa, CAP_PROBE) != 0 || rd(b, sb, CAP_PROBE) != 0) {
+            fprintf(stderr, "tsr_transport: capacity probe at 0x%" PRIx64 " and 0x%" PRIx64 ": cannot read the buffer\n", a, b);
+            return -1;
+        }
+        const bool wrote = wr(a, pa, CAP_PROBE) == 0 && wr(b, pb, CAP_PROBE) == 0;
+        const bool read_back = wrote && rd(a, ra, CAP_PROBE) == 0 && rd(b, rb, CAP_PROBE) == 0;
+        // Restore after any write, also after a failed one (what was written is undone as far as possible).
+        const int rs_b = wr(b, sb, CAP_PROBE), rs_a = wr(a, sa, CAP_PROBE);
+        const bool restored = rs_a == 0 && rs_b == 0;
+        if (!wrote || !read_back) {
+            fprintf(stderr, "tsr_transport: capacity probe at 0x%" PRIx64 " and 0x%" PRIx64 ": access error\n", a, b);
+            return -1;
+        }
+        if (!restored) {
+            fprintf(stderr, "tsr_transport: capacity probe at 0x%" PRIx64 " and 0x%" PRIx64 ": cannot restore the saved bytes\n", a, b);
+            return -1;
+        }
+        const bool distinct = memcmp(ra, pa, CAP_PROBE) == 0 && memcmp(rb, pb, CAP_PROBE) == 0;
+        if (distinct) break;
+        cap = P;                                 // the memory repeats every P bytes
+    }
+    *bytes = cap;
+    return 0;
+}
+
 dma_engine::dma_engine(dma_raw & raw, const dma_rules & rules) : raw_(raw), r_(rules) {}
 
 dma_engine::~dma_engine() { free(buf_); }
@@ -1586,16 +1639,20 @@ struct tsr_transport {
             return TSR_TE_DEVICE;
         }
         has_dbg = r_dbg_id != 0;
-        // Usable bytes per channel: the smallest bound buffer (symmetric allocation), in beats, and
-        // never more than the core addresses (CH_BYTES, 2^ADDR_BEAT_W beats).
-        uint64_t chb = std::min<uint64_t>(KERNEL_CH_BYTES, (1ull << d.addr_beat_w) * TSR_BEAT_BYTES);
         for (uint32_t c = 0; c < d.num_ch; ++c) {
-            chb = std::min(chb, dev->ch_bytes(c));
             if (dev->has_adapter() && dev->ch_addr(c) % 4096 != 0) {
                 msg("channel %u buffer at device address 0x%" PRIx64 " is not 4 KiB aligned", c, dev->ch_addr(c));
                 return TSR_TE_DEVICE;
             }
         }
+        // How much of each buffer is real memory (a buffer can be larger than the DIMM behind it and
+        // wrap): measured here, in owner mode, so that nothing is placed above it. TSR_ATTACH writes
+        // nothing.
+        if (dev->detect_capacity(!attach) != 0) return TSR_TE_DEVICE;
+        // Usable bytes per channel: the smallest bound buffer (symmetric allocation), in beats, and
+        // never more than the core addresses (CH_BYTES, 2^ADDR_BEAT_W beats).
+        uint64_t chb = std::min<uint64_t>(KERNEL_CH_BYTES, (1ull << d.addr_beat_w) * TSR_BEAT_BYTES);
+        for (uint32_t c = 0; c < d.num_ch; ++c) chb = std::min(chb, dev->ch_bytes(c));
         d.ch_bytes = chb & ~(uint64_t) (TSR_BEAT_BYTES - 1);
         if (d.ch_bytes == 0) {
             msg("channel buffers are empty");

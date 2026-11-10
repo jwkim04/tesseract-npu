@@ -36,7 +36,7 @@ checks are CC §11.1. The request and its checks are in §8.3.
 | `tsr_u200_k4` | 4 | 4 | the release image: four channels, prefill up to 4 tokens |
 
 Both use the U200 parameters of [rtl-mvm.md](rtl-mvm.md) §14.2 (SPM 4 MiB with `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
-`MVM_MAC_LAT` 9, `RST_PIPE` 3), `CH_BYTES` 16 GiB, the other `tsr_core` parameters at the U200 defaults (`tsr_pkg::TSR_DEF_*`),
+`MVM_MAC_LAT` 9, `RST_PIPE` 3), `CH_BYTES` 16 GiB (the design's limit per channel, §11), the other `tsr_core` parameters at the U200 defaults (`tsr_pkg::TSR_DEF_*`),
 `AXI_SLICES` 2 and `RST_STAGES` 3 (`COMMON` in `gen_tops.py`). `ap_rst_n` must stay low for at least 4 cycles (§5). Synthesis
 sources are `rtl/filelist_xilinx.f` (the Xilinx technology wrappers, behavior identical to `rtl/filelist.f`) and
 `rtl/platform/alveo_xrt/filelist.f`.
@@ -309,8 +309,10 @@ copy for all write counters is too coarse: the counter groups are needed. The br
 equal. Phys_opt may move loads between equal `keep` copies. `DONT_TOUCH` would stop that and would also block replication.
 
 Link outputs. `xclbinutil --info` of an xclbin lists the memory topology: bank0 to bank3 at 0x4000000000 + 0x1000000000 * bank, 16
-GiB each, plus PLRAM[0..2] and HOST[0]. Bank 3 has type `MEM_DRAM` and banks 0 to 2 `MEM_DDR4`. The transport and `tsr_bw` take
-the size of the port's memory group and do not check the type. The metadata-only xclbins of the no-op tests
+GiB each, plus PLRAM[0..2] and HOST[0]. Bank 3 has type `MEM_DRAM` and banks 0 to 2 `MEM_DDR4`. The sizes are the static topology
+of the shell (`xbutil` shows the same), not what the DIMMs hold: this U200 has 8 GiB per channel. The transport takes the size of
+the port's memory group as the buffer size, measures the capacity at open and uses that as the channel size (§11). `tsr_bw`
+does not check the type. The metadata-only xclbins of the no-op tests
 (`sw/transport/tests/test_xrt_noop.cpp`, `tb/platform/bw/noop/mk_bw_xclbin.cpp`) use `MEM_DDR4` for every bank.
 
 Compute-unit placement. k4 has no `slr=`, so `v++` gives the compute unit `SLR_Affinity SLR0`. `ap_rst_n` then comes from the SLR0
@@ -633,6 +635,11 @@ bandwidth kernel. XSim 2024.2 (`xvlog` and `xelab`, the hw_emu simulator) compil
 - `ADAPTER_STATUS` is sticky and W1C. The protocol layer reads and clears it at open and reads it again when a launch answers
   `PLAT_ERR`. The adapter raises `plat_err_i` for bits 0 to 2 or a nonzero count (EX §9.3). Any bit set means the launch is not
   trustworthy. Clear with 0xFFFFFFFF.
+- Capacity. The card holds 32 GiB: four DDR4 channels of 8 GiB. The shell's memory topology says 16 GiB per bank, so a channel
+  buffer of that size wraps: an address above 8 GiB reads and writes the cell 8 GiB below. The design supports up to 16 GiB per
+  channel (`CH_BYTES`, 64 GiB with four channels). The transport measures each channel at open in owner mode and uses the
+  measured size for the heap, the KV placement and every range check ([xrt-host.md](xrt-host.md) §4.4). The core still checks
+  against `CH_BYTES`, so only the host side keeps data below the real capacity.
 - Access. `xrt::ip` with exclusive access to the compute unit, so one process owns the card at a time. The debugger runs inside it
   (EX §2.4). XRT 2.18's `xrt::kernel` refuses an `ap_ctrl_none` unit. The range check uses the kernel XML range 0x2000
   ([xrt-host.md](xrt-host.md) §2, §4.1).
@@ -695,11 +702,13 @@ validate, CMC, SC firmware 4.6.21), the XRT 2.18.179 deb (`build/xrt-driver/deb-
 8. Bandwidth ([bandwidth-kernel.md](bandwidth-kernel.md) §7). `TSR_XCLBIN=build/u200/bw/tsr_bw_k4.xclbin tsr_bw --dry-run`, then
    `tsr_bw --pcie --sweep-outstanding --ids 1 --csv ids1.csv` and `tsr_bw --ids 16 --csv ids16.csv`. The channel capacity and
    aliasing check is `tsr_bw --sizes 8G --ch-mib 16384 --bursts 64 --modes w,r --reps 1 --verify full`. An upper half that aliases
-   the lower half fails the read of the check. Pass: 0 failed checks and 16 GiB per channel. If a channel holds only 8 GiB,
-   `CH_BYTES` and the transport channel size become 8 GiB (`docs/spec.md` §20).
+   the lower half fails the read of the check. Pass for DIMMs of 16 GiB per channel: 0 failed checks. On this U200, with 8 GiB
+   per channel, the check fails by design, because the upper half wraps onto the lower half. The capacity is then measured by
+   `tsr-selftest` (step 9) and by the transport at open, which uses 8 GiB as the channel size. `CH_BYTES` of the core stays 16 GiB.
 9. Selftest. `TSR_XCLBIN=<xclbin> tsr-selftest --device xrt`, with `--traces DIR` for the trace sets that fit the image
    (`docs/xrt-host.md` §5). Pass: exit 0, with identity (`ADAPTER_VERSION` major 1, ID, capability 1.x, `CTL_ID`, `RV_FREQ` not
-   0), memory per channel, boot (cold, then a second boot that must be warm), the `PING` round trip and rate, the `selftest`
+   0), memory per channel and the channel capacity (8 GiB per channel on this U200, equal to the transport's channel size), boot
+   (cold, then a second boot that must be warm), the `PING` round trip and rate, the `selftest`
    kernel against the shadow simulator, trace replays through the `replay` kernel and the DMI smoke (`--debug`). On failures try
    `TSR_XRT_DMA=staged` and `TSR_XRT_DMA_ALIGN=64` for DMA alignment ([xrt-host.md](xrt-host.md) §8). The release image reads
    `CAPS` 0x121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
