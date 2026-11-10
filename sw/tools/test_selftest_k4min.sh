@@ -2,7 +2,8 @@
 # test_selftest_k4min.sh SELFTEST IMAGE OUT — ctest tools_selftest_sim_k4min: the checklist on the simulator
 # configured as the reduced card image tsr_u200_k4 (TSR_SIM_VU=0 TSR_SIM_TMAX=8, docs/platform-u200.md §8.7):
 # the core is built without the vector unit and attention, so CAPS reads 0, Q_DEPTH has no VU queue and T_MAX is 8.
-# The identity registers must say so, and the checklist must pass on the sim and on the mock kind.
+# The identity registers must say so, and the checklist must pass on the sim and on the mock kind. CAPS bit 16 (MVM_DUAL, the
+# MVM unit's dual weight stream) is not a VU feature: TSR_SIM_VU=0 leaves it as TSR_SIM_CARD=k4dual or TSR_SIM_MVM_DUAL set it.
 set -eu
 SELFTEST=$1
 IMAGE=$2
@@ -23,4 +24,15 @@ for kind in sim mock; do
     grep -q "VU 0, ATT 0" "$log" || fail "$kind: Q_DEPTH has a VU queue"
     grep -q " -> PASS" "$log" || fail "$kind: no PASS line"
     echo "$kind: CAPS 0, T_MAX 8, no VU queue, checklist passed"
+done
+
+for e in "TSR_SIM_CARD=k4dual:0x00010000" "TSR_SIM_MVM_DUAL=1:0x00010000" "TSR_SIM_CARD=k4dual TSR_SIM_MVM_DUAL=0:0x00000000"; do
+    log="$OUT/sim_dual.log"
+    rc=0
+    env ${e%:*} TSR_SIM_VU=0 TSR_SIM_TMAX=8 TSR_SIM_THREADS=4 "$SELFTEST" --device sim --image "$IMAGE" --no-mem --no-kernel \
+        --rate-n 0 -v >"$log" 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] || { tail -20 "$log" >&2; fail "sim ${e%:*} TSR_SIM_VU=0: tsr-selftest exit $rc"; }
+    grep -q "CAPS ${e##*:}" "$log" || fail "sim ${e%:*} TSR_SIM_VU=0: CAPS is not ${e##*:}"
+    grep -q "VU 0, ATT 0" "$log" || fail "sim ${e%:*} TSR_SIM_VU=0: Q_DEPTH has a VU queue"
+    echo "sim ${e%:*} TSR_SIM_VU=0: CAPS ${e##*:}, no VU queue"
 done

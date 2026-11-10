@@ -51,7 +51,7 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if (r && v == 1) cfg.caps |= TSR_CAPS_MVM_DUAL;    // a build with it (the image of tsr_u200_k4 with MVM_DUAL 1)
     if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
     if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
-        cfg.caps = 0;
+        cfg.caps &= TSR_CAPS_MVM_DUAL;   // the dual weight stream belongs to the MVM unit: it stays as TSR_SIM_CARD / TSR_SIM_MVM_DUAL set it
         o->no_vu = true;
     }
     if ((r = env_u64(who, "TSR_SIM_TMAX", 1, TSR_T_MAX_ARCH, &v)) < 0) return false;
