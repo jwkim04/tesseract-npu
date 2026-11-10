@@ -68,8 +68,8 @@ LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-i
 build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klcheck-05b --phase m7 -n 64
 ```
 
-The backend has two modes, M7 (the default) and M6, defined in [`docs/design/README.md`](design/README.md).
-The commands above run M7. The commands below run M6:
+The backend has two modes, full mode (the default) and matmul mode, defined in [`docs/design/README.md`](design/README.md).
+The commands above run full mode. The commands below run matmul mode:
 
 ```sh
 LLAMA_ATTN_ROT_DISABLE=1 TSR_KINDS=m6 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
@@ -78,7 +78,7 @@ build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klc
 ```
 
 - `-ngl 99` offloads every layer to `Tesseract0`.
-- M7 needs no `-nkvo`: the KV cache lives in Tesseract buffers. M6 needs `TSR_KINDS=m6` and `-nkvo`. A kind
+- Full mode needs no `-nkvo`: the KV cache lives in Tesseract buffers. Matmul mode needs `TSR_KINDS=m6` and `-nkvo`. A kind
   list such as `TSR_KINDS=all,-RMS_NORM` moves single kinds back to the CPU
   ([`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md)).
 - `-fa on -ctk q8_0 -ctv q8_0` are required with the KV cache on the device, because an f16 cache cannot live

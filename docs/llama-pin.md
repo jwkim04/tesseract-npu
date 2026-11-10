@@ -125,9 +125,9 @@ consulted for weights in host buffers. Inputs from other backends are copied wit
 prints every split and its inputs, `=2` also every node with its backend and cause (output through `GGML_LOG_DEBUG`,
 so llama.cpp tools need `-v`).
 
-With only the matrix products on the device (M6 mode), q, k, v and o are each followed by a CPU op (bias ADD, RoPE or
+With only the matrix products on the device (matmul mode), q, k, v and o are each followed by a CPU op (bias ADD, RoPE or
 attention, residual), but `ffn_gate` and `ffn_up` read the same input and share one split. A dense layer is 6
-Tesseract splits plus one for the output head, each split one launch. In M7 mode the whole decode graph is one
+Tesseract splits plus one for the output head, each split one launch. In full mode the whole decode graph is one
 Tesseract split.
 
 ## KV cache placement
@@ -136,19 +136,19 @@ Tesseract split.
 `offload` is set (`src/llama-kv-cache.cpp:212-221`), without asking `supports_op`, and clears the buffer right
 away (:293).
 
-M6 mode runs no attention ops on the device, so llama.cpp runs with `--no-kv-offload` (`-nkvo`,
+Matmul mode runs no attention ops on the device, so llama.cpp runs with `--no-kv-offload` (`-nkvo`,
 `common/arg.cpp:2419`, `offload_kqv = false`): attention, with the KV cache and its updates, stays on the CPU.
 Without it the KV buffer (an ANY buffer of leaf tensors) is kept in host memory, and the scheduler aborts as soon
 as it splits a graph that writes the cache, already at the context's graph reservation: `pre-allocated tensor
 (cache_k_l0 (view)) in a buffer (Tesseract0) that cannot run the operation (SET_ROWS)`.
 
-M7 mode moves the KV cache to the device: no `-nkvo` (`offload_kqv = true`), with `-ctk q8_0 -ctv q8_0 -fa on`,
+Full mode moves the KV cache to the device: no `-nkvo` (`offload_kqv = true`), with `-ctk q8_0 -ctv q8_0 -fa on`,
 because the pinned llama.cpp refuses a quantized V cache without flash attention (`src/llama-context.cpp:566-569`).
 The backend then supports SET_ROWS into KV tensors (and only those) and `FLASH_ATTN_EXT`, the device KV planes
 hold exactly llama.cpp's q8_0 values ([AT](design/03-attention-kv.md) §2, §4), and the scheduler does not abort,
 because the cache is a Tesseract buffer that can run its ops (SW §8 R1, R3). The settings `klcheck` and
 `numcheck` use are `-ngl 99 -fa on -ctk q8_0 -ctv q8_0` with `LLAMA_ATTN_ROT_DISABLE=1` (SW §10.4, SW-22), and
-`-nkvo` in M6 mode.
+`-nkvo` in matmul mode.
 
 With a quantized KV cache llama.cpp rotates Q and K/V with a Hadamard matrix (`src/llama-kv-cache.cpp:325-351`)
 unless `LLAMA_ATTN_ROT_DISABLE` is set (:317). `llama_mul_mat_hadamard` (`src/llama-impl.h:57`) emits

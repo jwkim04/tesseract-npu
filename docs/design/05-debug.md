@@ -976,7 +976,7 @@ simulator defines.
 4. GDB conformance: a subset of riscv-tests `debug/gdbserver.py` adapted to `tsr-dbg gdb` on `sim` per commit
    and on vkernel nightly, plus ctest GDB batch scripts (break at a kernel symbol, `bt`, `finish`, `watch` on a
    DTCM variable and an SPM vector, launch-break, a crash shown as SIGSEGV, `monitor tile step`).
-5. Non-interference: the M6-mode identity check (logits bit-identical to `sim`) repeated with TRW on, history
+5. Non-interference: the matmul-mode identity check (logits bit-identical to `sim`) repeated with TRW on, history
    on, log at TRACE, serial mode, and a GDB session that halts 100 times at random and continues. The profiler's
    §8.7 self-checks run on every profiled run, and TRW records equal simulator records (kinds, order per unit,
    push indices, tickets, codes; times not compared). `HAS_DBG` = 0 and 1 builds give identical results and

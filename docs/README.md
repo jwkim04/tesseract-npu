@@ -2,7 +2,7 @@
 
 Read [getting-started.md](getting-started.md) to build and run Tesseract. Read
 [design/README.md](design/README.md) for how the design documents fit together and for the two
-execution modes, M6 and M7.
+execution modes, full mode and matmul mode.
 
 When documents disagree, the order of authority is [spec.md](spec.md), the simulator in `sw/sim`,
 the design documents in [design/](design/README.md), then the other documents.
@@ -47,7 +47,7 @@ and their style guide are in [fig/src](fig/src/STYLE.md).
 - Multi-token prediction: the model's MTP head drafts and the device verifies a window of tokens in one launch, with rollback of the recurrent state.
 - Weights: GGUF as shipped. Q8_0 and Q4_K run natively. Every other type is converted to Q8_0 at load.
 - Attention: flash attention on the device with a Q8_0 KV cache, head dimensions 64, 128, 256 and 512.
-- Execution: one launch per decode token in M7. A prefill or verification pass takes up to `T_MAX` tokens per weight pass; the release image has `T_MAX` 4.
+- Execution: one launch per decode token in full mode. A prefill or verification pass takes up to `T_MAX` tokens per weight pass; the release image has `T_MAX` 4.
 - PyTorch: `torch.compile(model, backend="tesseract")` runs the weight matmuls on the device. `QuantLinear` takes ggml Q8_0 and Q4_K blocks.
 - Debugging and profiling: GDB over PCIe on the control core, `tsr-dbg`, `tsr-prof`, the profile report and `tsr-top`.
 - Verification: the C simulator is the bit-exact oracle for the RTL, the firmware and the host stack. `klcheck` and `numcheck` check whole models.

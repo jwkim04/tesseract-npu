@@ -99,7 +99,7 @@ Appendix A records the bit-exact FWHT definition, for a later VU function.
 
 | Op | Device accepts when | Otherwise |
 |---|---|---|
-| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (1 in M7 mode). k and v start at the plane's cell 0 with cells `row_size(E)` and heads `row_size(D)` apart (llama.cpp's `get_k` and `get_v`); T ≤ 680, so that the MSUM and the FA_NEW indices fit one list's 256 preload lines (SW-43; a longer ubatch's FA runs on the CPU) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
+| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (1 in full mode). k and v start at the plane's cell 0 with cells `row_size(E)` and heads `row_size(D)` apart (llama.cpp's `get_k` and `get_v`); T ≤ 680, so that the MSUM and the FA_NEW indices fit one list's 256 preload lines (SW-43; a longer ubatch's FA runs on the CPU) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
 | `SET_ROWS` | dst is a KV-cache tensor (q8_0, Tesseract KV buffer) viewed from cell 0 with rows of E values (`cpy_k` and `cpy_v`, one stream); src F32 with rows of E; idx I64 < 2^31 | false; the scheduler then stops on the pre-allocated cache tensor, after the backend names the cause (SW R10) |
 | Hadamard `MUL_MAT` | never (rotation is off, AT-17) | |
 | Other attention ops (`SOFT_MAX`, attention `MUL_MAT` on the cache) | never (D17: FA only) | |
@@ -911,9 +911,9 @@ D = 128, GS·T_q = 8, and the predicted gather-bound rate at D = 64.
   refuses its `FLASH_ATTN_EXT` and `SET_ROWS` cases by design (SW-52). `ggml_tesseract_attn` (SET_ROWS +
   FLASH_ATTN_EXT in llama.cpp's graph shape through KV buffers: bit-exact against `tsr_ref_fa`, NMSE vs CPU)
   and `ggml_tesseract_kvstate` (state save and load) carry these checks, on sim, vkernel and the card.
-- M6 mode runs with `offload_kqv` = false, so FA runs on the CPU, and the AT ops are verified by the
+- Matmul mode runs with `offload_kqv` = false, so FA runs on the CPU, and the AT ops are verified by the
   `selftest` kernel's test 5, `traces/at` and `ggml_tesseract_attn` (SW §10.4).
-- M7 mode (D17 baselines: `-fa on -ctk q8_0 -ctv q8_0`, rotation off, KV on the device): Qwen2.5-0.5B Q8_0
+- Full mode (D17 baselines: `-fa on -ctk q8_0 -ctv q8_0`, rotation off, KV on the device): Qwen2.5-0.5B Q8_0
   `--expect-identical` device vs sim; Qwen2.5-32B Q4_K_M mean KL ≤ 3 × floor and top-1 ≥ 80 %; Gemma 4 12B
   the KL criterion; long prompts (2K and 16K tokens) to exercise multiple chunks, prefill CAUSAL tiles and,
   for Gemma, SLIDE, the wrapped SWA ring and the multi-pass full layers.

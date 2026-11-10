@@ -836,7 +836,7 @@ launches the `graph` kernel once. The backend is pinned to one llama.cpp commit 
 [llama-pin.md](llama-pin.md)); the names and signatures of the backend interface are those of
 `ggml-backend-impl.h` of that commit.
 
-The backend runs in one of two execution modes, M6 and M7, defined in [design/README.md](design/README.md) §2.
+The backend runs in one of two execution modes, matmul mode and full mode, defined in [design/README.md](design/README.md) §2.
 
 <p align="center"><img src="fig/stack.svg" alt="Software stack from top to bottom: front ends (llama.cpp with llama-cli, llama-server and llama-completion; PyTorch with torch.compile and the tesseract backend); backends (ggml-tesseract with the device Tesseract0, weight repack and conversion, op-list builder and cache; tsr_rt); the transport tsr_transport with the kinds sim, mock and xrt; the firmware on the control core (runtime, graph executor, kernels, selftest and replay, header library); the NPU core (issue path and unit queues, DMA, QACT, MVM clusters, vector unit, SPM, DDR4). A tools column holds the simulator, tsr-selftest, klcheck and numcheck, the trace tools, tsr-log, tsr-dbg for GDB debugging, tsr-prof and tsr-top." width="100%"></p>
 
@@ -851,12 +851,12 @@ Components
 | graph_compute | Split → OPL, OPL cache looked up by content, `graph` launch, wait for the answer record. On TILE_ERR the first error is traced back to the ggml node (SW §9.3) |
 | transport | `tsr_transport` (the normative API is [EX](design/01-execution-model.md) §10) over the kdevs `sim` (the built-in simulator, which advances deterministically when the host reads), `mock` (adapter register model), `vkernel` (Verilated kernel) and `xrt` (`xrt::ip`); all share one protocol layer |
 
-<p align="center"><img src="fig/launch.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and the control core running firmware: model load (supports_op, set_tensor with conversion and repack, firmware image load, VERIFY, boot and HELLO), then for each launch the input writes, the op list written to OPL, the descriptor pushed with posted CSR writes, the control core running the graph kernel and issuing LD, QACT, MVM and ST tile ops to the unit queues, the answer record in the completion ring, the host polling, and the readback; a note names the execution modes, M7 with one launch per token and M6 with MUL_MAT only." width="100%"></p>
+<p align="center"><img src="fig/launch.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and the control core running firmware: model load (supports_op, set_tensor with conversion and repack, firmware image load, VERIFY, boot and HELLO), then for each launch the input writes, the op list written to OPL, the descriptor pushed with posted CSR writes, the control core running the graph kernel and issuing LD, QACT, MVM and ST tile ops to the unit queues, the answer record in the completion ring, the host polling, and the readback; a note names the execution modes, full mode with one launch per token and matmul mode with MUL_MAT only." width="100%"></p>
 
-The figure shows model load once and then one launch: a graph split in M6, one decode token in M7.
+The figure shows model load once and then one launch: a graph split in matmul mode, one decode token in full mode.
 
 supports_op for MUL_MAT. Only a `MUL_MAT` that meets all of the following is true. Every other op is sent to
-the CPU by the scheduler, except the kinds that M7 and the MoE path add (SW §9.3).
+the CPU by the scheduler, except the kinds that full mode and the MoE path add (SW §9.3).
 
 - src0 is a 2D weight that lives in a Tesseract buffer (not a COMPUTE buffer). Whatever its GGUF type, the
   device holds it as Q8_0 or Q4_K; the backend keeps its own table of the real device format per tensor. A
@@ -871,8 +871,8 @@ the CPU by the scheduler, except the kinds that M7 and the MoE path add (SW §9.
 
 Attention (D17; the normative definition is [AT](design/03-attention-kv.md) §2.6): attention is accepted only
 as llama.cpp's `FLASH_ATTN_EXT`. `SOFT_MAX`, the attention `MUL_MAT` on the KV cache and the Hadamard rotation
-`MUL_MAT` are never accepted (the rotation is turned off with `LLAMA_ATTN_ROT_DISABLE=1`). In M6 the backend
-runs with `offload_kqv` = false (`-nkvo`), which keeps the KV cache and attention on the CPU. In M7 the KV
+`MUL_MAT` are never accepted (the rotation is turned off with `LLAMA_ATTN_ROT_DISABLE=1`). In matmul mode the backend
+runs with `offload_kqv` = false (`-nkvo`), which keeps the KV cache and attention on the CPU. In full mode the KV
 cache is q8_0 for K and V (device layout in AT §4); `FLASH_ATTN_EXT` is accepted when k and v are q8_0 views
 of KV cache tensors in a Tesseract KV buffer, D = DK = DV ∈ {64, 128, 256, 512}, and ALiBi, logit softcap, sinks
 and `n_kv_max` are not used; `SET_ROWS` is accepted when its dst is such a KV cache tensor (the full
@@ -909,7 +909,7 @@ Lowering constraints (details in [sw/ggml-tesseract/README.md](../sw/ggml-tesser
   of the last line into the bytes after dst; `get_alloc_size` rounds the tensor size up to a multiple of 64 B,
   so the tail falls into the padding of the tensor itself.
 
-Number of splits: in M6 only `MUL_MAT` goes to the device, so there are hundreds of splits per token; the
+Number of splits: in matmul mode only `MUL_MAT` goes to the device, so there are hundreds of splits per token; the
 backend stays inside the scheduler's split and input limits at the pinned commit (`GGML_SCHED_DEBUG` shows the
 split structure). Verification hooks: `test-backend-ops` registers the Tesseract backend and compares it with
 the CPU; `TSR_DEVICE=sim|xrt|mock|vkernel` and `TSR_TRACE=<directory>` choose the device and dump traces
@@ -946,8 +946,8 @@ Execution
 
 | Path | Method | Needs |
 | --- | --- | --- |
-| Device selection (M7) | The device does the router, softmax, top-k and the expert MVMs by itself, one launch per token | Control core: reads the selection from the SPM window, computes the expert addresses, issues asynchronously. The top-k is integer compares on the RISC-V; the TOPK op is not needed. Firmware kinds MOE_ROUTE and MUL_MAT_ID (SW §7.9) |
-| Host selection (M6) | The host issues the matrix products; llama.cpp's own CPU ops select the experts | `TSR_KINDS=m6,+MUL_MAT_ID` |
+| Device selection (full mode) | The device does the router, softmax, top-k and the expert MVMs by itself, one launch per token | Control core: reads the selection from the SPM window, computes the expert addresses, issues asynchronously. The top-k is integer compares on the RISC-V; the TOPK op is not needed. Firmware kinds MOE_ROUTE and MUL_MAT_ID (SW §7.9) |
+| Host selection (matmul mode) | The host issues the matrix products; llama.cpp's own CPU ops select the experts | `TSR_KINDS=m6,+MUL_MAT_ID` |
 | Prefill | One MVM of T = 1 per (token, slot). Grouping the tokens per expert would need a sort of the (token, slot) pairs per ids chunk and is not implemented (SW-66) | none |
 
 Implementation (SW §7.9, SW-60 to SW-66). The expert tensors are placed with the `EXP_STRIDE` layout of
@@ -1039,7 +1039,7 @@ Host involvement can be reduced in three levels. The op-list cache of level A us
 
 | Level | What the host does per token | What the device needs | Status |
 | --- | --- | --- | --- |
-| A. Whole graph on the device | Write input tensors, one launch, read logits, sample | Attention and KV cache on the device, every other op, an op-list cache per graph shape | M7 |
+| A. Whole graph on the device | Write input tensors, one launch, read logits, sample | Attention and KV cache on the device, every other op, an op-list cache per graph shape | Full mode |
 | B. One-token decode in a control-core kernel | Write 2 arguments (token id, position), read the result | A C++ decode-step kernel, DQROW (embedding lookup), TOPK | Not implemented |
 | C. Resident decode loop on the device | Poll the output token ring, signal stop or a new prompt | A resident C++ decode loop in the control core, device sampling, the token ring | Not implemented |
 
@@ -1213,7 +1213,7 @@ prompt are fed to the CPU again, so every position is compared in the same conte
 seed is a random draw and can differ a lot from another seed's, so the floor KL is the mean over N = 3
 floor runs with the seeds 1, 2 and 3: the mean of each run's mean KL. The pass line is
 mean KL(CPU ‖ device) ≤ 3 × that floor KL and top-1 agreement ≥ 80 %. The baseline settings are FA on,
-q8_0 KV cache, rotation off, and `offload_kqv` false in M6 (true in M7; D17). Method and settings are
+q8_0 KV cache, rotation off, and `offload_kqv` false in matmul mode (true in full mode; D17). Method and settings are
 in [klcheck.md](klcheck.md).
 
 Model-level numeric check (numcheck): KL only measures the distance to the CPU, so a short prompt separately

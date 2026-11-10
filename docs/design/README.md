@@ -29,15 +29,18 @@ mention of a table is a pointer to that place.
 
 ## 2. Execution modes and standing decisions
 
-The backend runs a model in one of two execution modes. `tsr-top` shows the mode in its MODE column,
-and the backend names it in error messages. A third value, `rt`, marks the direct runtime `tsr_rt`
-without a ggml graph.
+The backend runs a model in one of two execution modes.
 
-- M6 runs `MUL_MAT` and `MUL_MAT_ID` on the device and everything else on the CPU, attention included
-  (`offload_kqv` is false, `-nkvo`). Each graph split is one launch. It is selected with
+- Full mode runs every supported kind on the device, with the KV cache and attention. One decode token
+  is one launch. It is the default: the device takes every kind of the booted image.
+- Matmul mode runs `MUL_MAT` and `MUL_MAT_ID` on the device and everything else on the CPU, attention
+  included (`offload_kqv` is false, `-nkvo`). Each graph split is one launch. It is selected with
   `TSR_KINDS=m6`, or `TSR_KINDS=m6,+MUL_MAT_ID` for a MoE model.
-- M7 runs every supported kind on the device, with the KV cache and attention. One decode token is one
-  launch. It is the default: the device takes every kind of the booted image.
+
+`tsr-top` shows the mode in its MODE column, and the backend names it in error messages: `M7` is full
+mode and `M6` is matmul mode. A third value, `rt`, marks the direct runtime `tsr_rt` without a ggml
+graph. `klcheck` and `numcheck` take the same two names as `--phase m7` (full mode) and `--phase m6`
+(matmul mode).
 
 Both modes use the `graph` kernel and the same op-list format (SW §7). The pass criteria that compare
 a mode with the CPU are in SW §10.4.

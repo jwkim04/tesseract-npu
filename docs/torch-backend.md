@@ -27,7 +27,7 @@ with torch.no_grad():                                # or torch.inference_mode()
 - What goes to the device. A matmul (`mm`, `addmm`, `linear`, `matmul`, `mv`) with one operand that is a
   parameter, buffer or graph constant, a float32, float16 or bfloat16 CPU tensor with K % 32 == 0 and a shape the
   device accepts. Attention, norms, activations, embeddings, bias adds and every other op run on the CPU, as in
-  the llama.cpp path's M6 mode. A model that provides Q8_0 or Q4_K blocks uses `tt.QuantLinear` instead of
+  the llama.cpp path's matmul mode. A model that provides Q8_0 or Q4_K blocks uses `tt.QuantLinear` instead of
   `nn.Linear` (§3.9).
 - Numerics. The llama.cpp path's. A float weight becomes Q8_0 at upload with ggml's `quantize_row_q8_0_ref`, so
   its blocks are byte-identical to llama.cpp's load-time conversion (`docs/spec.md` §5). Activations are

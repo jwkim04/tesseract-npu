@@ -40,7 +40,7 @@ Complete lists are in [getting-started.md](getting-started.md) and [prof-dbg.md]
 | `TSR_DEVICE` | `sim`, `mock` or `xrt` |
 | `TSR_XCLBIN` | the image the `xrt` transport loads |
 | `TSR_IMAGE` | the firmware ELF to boot (default: the build's `tsr-fw.elf`) |
-| `TSR_KINDS` | the op kinds the device takes. Unset runs every supported kind on the device (M7). `m6` with `-nkvo` runs only the matrix products on the device (M6). |
+| `TSR_KINDS` | the op kinds the device takes. Unset runs every supported kind on the device (full mode). `m6` with `-nkvo` runs only the matrix products on the device (matmul mode). |
 | `TSR_STATS=1` | at exit: transport statistics, the backend report (launches, op records per launch, plan cache, time in launches) and the PERF counter deltas |
 | `LLAMA_ATTN_ROT_DISABLE=1` | required with the device: the attention rotation is not supported |
 | `TSR_SIM_TMAX` | `T_MAX` of the simulated device, 1 to 8 (default 1) |
@@ -50,7 +50,7 @@ Complete lists are in [getting-started.md](getting-started.md) and [prof-dbg.md]
 | `TSR_MON=0` | turn off the record that `tsr-top` reads (on by default) |
 | `TSR_GDN_CELL=0`, `TSR_HEAD_SPLIT=0` | switch off a host lowering choice, for an A/B comparison |
 
-The modes M6 and M7 are defined in [design/README.md](design/README.md).
+Full mode and matmul mode are defined in [design/README.md](design/README.md).
 
 ## Procedure
 
@@ -94,8 +94,8 @@ The last two make t_host.
 tokens per second = 1 / (cycles per token / f_core + t_launch * launches per token + t_host)
 ```
 
-In M7 a decode token is one launch, so the device share of the wall time is the figure to check.
-In M6 a token has one launch per graph split, and the CPU ops add to `t_host`.
+In full mode a decode token is one launch, so the device share of the wall time is the figure to check.
+In matmul mode a token has one launch per graph split, and the CPU ops add to `t_host`.
 
 The weight stream sets a floor. A decode token reads every weight once. A cluster takes at most one
 64-byte beat per core clock from its channel, so the cycles per token cannot fall below the largest
@@ -116,7 +116,7 @@ at the same ratio.
   `tsr-selftest` (`CAPS`, `T_MAX`, `NUM_CH`, kind table, firmware image id).
 - Software: the commit of this repository, the build type and the pinned llama.cpp commit.
 - Model: file name, source, weight type and sha256.
-- Run: the command line with every `TSR_*` variable, the mode (M6 or M7), `-t`, `-c`, `-ub`, the KV
+- Run: the command line with every `TSR_*` variable, the mode (full mode or matmul mode), `-t`, `-c`, `-ub`, the KV
   types, and the prompt and generated token counts.
 - Numbers: the number of runs, the median and the range, the device cycles per token, the unit busy
   cycles, the device share of the wall time and the load average at the start.

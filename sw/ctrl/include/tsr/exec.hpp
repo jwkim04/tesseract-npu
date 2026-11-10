@@ -147,7 +147,7 @@ ticket kind_softplus(const volatile uint32_t * args, uint32_t n_args, uint32_t k
 ticket kind_ssm_conv(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_gated_delta_net(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
-// The decode fast paths of the short M7 kinds (SW §7.3 "M7 kinds in the executor"),
+// The decode fast paths of the short M7 kinds (SW §7.3 "Full-mode kinds in the executor"),
 // the executor's first call for a record of these kinds (graph.cpp's kind table): args, kflags and d
 // as for the kind_fn (n_args already checked by the executor). A fast function either takes the
 // record (pushes its tile ops, returns the op's ticket) or returns KIND_NOT_FAST having changed

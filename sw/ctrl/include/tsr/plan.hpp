@@ -77,7 +77,7 @@ constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_
 //   [pre_line - B, pre_line)    the one-tile block (B = one_block_lines(L), below)
 //   [0, pre_line - B)           scratch ring (spm_ring)
 //
-// The one-tile block (SW §7.3 "M7 kinds in the executor"): one fixed
+// The one-tile block (SW §7.3 "Full-mode kinds in the executor"): one fixed
 // block that every single-tile record of a kind whose tile is DMA-bracketed uses instead of a ring
 // block. A tile is DMA-bracketed when its first write to the block is a DMA op (LD), its last read
 // is a DMA op (ST, KVST), and every other op on the block lies between them by deps (the first non-

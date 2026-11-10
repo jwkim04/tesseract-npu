@@ -34,7 +34,7 @@ Any other op runs on the CPU through the ggml scheduler, and PyTorch keeps its e
 runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE and Qwen3.5 are examples.
 [docs/README.md](docs/README.md) lists the limits.
 
-- One launch per decode token. In M7 mode the whole token, KV cache and attention included, is one launch of the firmware's `graph` kernel. In M6 mode only the matrix products run on the device ([execution modes](docs/design/README.md)).
+- One launch per decode token. In full mode the whole token, KV cache and attention included, is one launch of the firmware's `graph` kernel. In matmul mode only the matrix products run on the device ([execution modes](docs/design/README.md)).
 - Multi-token prediction. The model's draft head proposes tokens and the device verifies a window of them in one launch, with rollback of the recurrent state. `tsr-mtp` drives and measures it.
 - Kernel SDK. Basis kernels are freestanding C++20 for the control core and build for the host as well.
 - Bit-exact simulator. `sw/sim` is the oracle for the RTL, the firmware and the host stack. The transports are `sim`, `mock` and `xrt` (the card).

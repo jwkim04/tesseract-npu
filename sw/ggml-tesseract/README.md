@@ -5,8 +5,8 @@ The ggml backend for Tesseract. It registers one backend `"Tesseract"` with one 
 [`docs/llama-pin.md`](../../docs/llama-pin.md). The design is [SW](../../docs/design/06-software-verification.md) §7
 to §9 and [`docs/spec.md`](../../docs/spec.md) §12.
 
-In M7 mode a whole decode token of a supported model runs as one launch of the firmware's `graph` kernel with the KV
-cache on the device (`-fa on -ctk q8_0 -ctv q8_0`, no `-nkvo`, `LLAMA_ATTN_ROT_DISABLE=1`). In M6 mode
+In full mode a whole decode token of a supported model runs as one launch of the firmware's `graph` kernel with the KV
+cache on the device (`-fa on -ctk q8_0 -ctv q8_0`, no `-nkvo`, `LLAMA_ATTN_ROT_DISABLE=1`). In matmul mode
 (`TSR_KINDS=m6`, `-nkvo`) only the matrix products run on the device. The modes are defined in
 [`docs/design/README.md`](../../docs/design/README.md). The backend lowers the nodes of a ggml graph into an op list of
 records (SW §7.2) with the builder in `tsr-build.{h,cpp}`: it fuses MUL_MAT + ADD and RMS_NORM + MUL, orders the
@@ -71,7 +71,7 @@ ctest --test-dir build/dev -R 'ggml_tesseract|transport_ggml'
 Configure only through the top-level CMakeLists, which defines `tsr_ref`, `tsr_transport` and `tsr_lower` before
 llama.cpp. The device ctests run with the simulator's race detector fatal (`TSR_SIM_RACE=fatal`). They cover the
 allocator, the OPL builder and cache, fusion, `supports_op` against the planners, the launcher on a device, the
-end-to-end tests in M6 mode (`ggml_tesseract_e2e*`, hosted and `T_MAX` 8 variants), `test-backend-ops` per op
+end-to-end tests in matmul mode (`ggml_tesseract_e2e*`, hosted and `T_MAX` 8 variants), `test-backend-ops` per op
 (`ggml_tesseract_backend_ops*`, `tests/m7_tests.py ops`; the single-output MUL_MAT case that fails its NMSE limit on
 some random draws is covered bit-exactly by `_scalar_nmse`, [`llama-pin.md`](../../docs/llama-pin.md)), KV buffers and
 attention (`_kvbuf`, `_attn*`, `_kvstate`), multi-token prediction (`_mtp_*`, `tsr-mtp`), mixture of experts
@@ -82,10 +82,10 @@ output it reads, so two builds can be compared byte for byte.
 `tests/gen_tiny_models.py` writes tiny GGUF models at build time (target `tsr_tiny_models`, into
 `build/<tree>/models/tiny/`): Qwen2 (Q8_0 and Q4_K), Gemma 4, and two Gated DeltaNet models, with random weights from
 numpy's legacy `RandomState` and valid tokenizer metadata (SW-21). The graph tests (`ggml_tesseract_graph_*`,
-`tests/m7_tests.py graph`) run klcheck on them in M7 mode and assert one Tesseract split in every decode graph, one
+`tests/m7_tests.py graph`) run klcheck on them in full mode and assert one Tesseract split in every decode graph, one
 launch per decode, the launch count of `TSR_STATS`, the embd-path identity and klcheck's KL criterion
 ([`docs/klcheck.md`](../../docs/klcheck.md)). `ggml_tesseract_gdn_logits_*` compares the logits of every step against
 the CPU, because klcheck's mean KL on a random tiny model does not see a convolution that returns zeros (SW-71).
 
-`llama-server` runs on the backend with the M7 settings (`-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -np 4 -kvu`, no
+`llama-server` runs on the backend with the full-mode settings (`-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -np 4 -kvu`, no
 `--context-shift`; [`docs/getting-started.md`](../../docs/getting-started.md#serving)).

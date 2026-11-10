@@ -19,9 +19,9 @@ lane for the units. Content follows docs/design/01-execution-model.md §2.1 (wha
   record {STATUS, first error} to the completion ring (R7, R8); the host polls the ring (EX §4.8,
   `ap_ctrl_none`, no interrupt) and reads the result back from IO; the CPU continues with the ops
   the device did not take (D17);
-- the note at the bottom names the two execution modes (docs/design/README.md §2): M7, the default,
-  runs every supported kind on the device and one decode token is one launch (SW §8); M6 runs
-  MUL_MAT on the device and one graph split is one launch.
+- the note at the bottom names the two execution modes (docs/design/README.md §2): full mode, the default,
+  runs every supported kind on the device and one decode token is one launch (SW §8); matmul mode
+  runs MUL_MAT on the device and one graph split is one launch.
 Every block is drawn solid. The control core runs the same flow on the card and, as the RV32
 interpreter, on the simulator (docs/design/06-software-verification.md §4.2).
 The loop panel is the per-record loop of the executor; its arrow back is the next record. The
@@ -133,8 +133,8 @@ f = Fig("launch", W, H,
              "issues the tile ops of every record to the unit queues; cluster c streams weights "
              "from channel c; one completion record with status and first error is posted; the "
              "host polls, reads the result back and the CPU continues with the ops the device "
-             "did not take. A note names the execution modes: M7 runs every supported kind on "
-             "the device, one launch per token; M6 runs MUL_MAT only.")
+             "did not take. A note names the execution modes: full mode runs every supported kind on "
+             "the device, one launch per token; matmul mode runs MUL_MAT only.")
 
 # ---- lanes and headers ---------------------------------------------------------------------------
 f.panel(PX0, PY0, PX1 - PX0, PY1 - PY0)
@@ -228,7 +228,7 @@ for a in (L, B, T):
 block(f, L, R_CPU, 104, "host", "CPU CONTINUES", "ops the device\ndoes not take")
 f.arrow([(LC[L], R_READ + 40 - 8), (LC[L], R_CPU - 52 + 8)])
 f.box(BX[B], R_NOTE - 60, BX[T] + BWS[T] - BX[B], 120, "host", "EXECUTION MODES",
-      sub="M7: every kind on the device,\none launch per token\nM6: MUL_MAT only, per split",
+      sub="Full mode: every kind on the device,\none launch per token\nMatmul mode: MUL_MAT only, per split",
       label_role="label_s")
 
 # ---- legend --------------------------------------------------------------------------------------

@@ -427,8 +427,8 @@ not by deleting code.
 queue, `T_MAX` 8 (the `sim` and `mock` transports). It still models the DB trace writer and the dispatch history, so `DBG_ID`
 reads `HIST` and `TRW` set where the hardware reads them clear. `tsr_build_supports` refuses every non-trivial op but MUL_MAT when
 the device's `CAPS` is 0, the planners refuse a VU kind without `CAPS.VU` (`BAD_RECORD`), and the checker refuses the AT and VU
-opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything else on the CPU, which is mode M6
-([design/README.md](design/README.md)). The logits in M6 do not depend on `T_MAX` or on the vector unit. `test_core_k4min` and
+opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything else on the CPU, which is the matmul mode
+([design/README.md](design/README.md)). The logits in matmul mode do not depend on `T_MAX` or on the vector unit. `test_core_k4min` and
 `test_core_m6_k4min` run this elaboration on the Verilated core.
 
 ### 8.8 Full-feature elaboration and the pipeline stages between SLRs
@@ -705,11 +705,11 @@ validate, CMC, SC firmware 4.6.21), the XRT 2.18.179 deb (`build/xrt-driver/deb-
    `CAPS` 0x121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
 10. Backend. `TSR_DEVICE=xrt TSR_XCLBIN=... test-ggml-tesseract` and `test-backend-ops test -o MUL_MAT -b Tesseract0`. Pass: every
     case OK.
-11. Model check, mode M6. Run `klcheck run --device sim --tokens <file> --out sim.klc` and the same with `--device xrt --out
+11. Model check, matmul mode. Run `klcheck run --device sim --tokens <file> --out sim.klc` and the same with `--device xrt --out
     xrt.klc`, then `klcheck compare --ref sim.klc --dev xrt.klc --expect-identical`. Pass: every row bit-identical. The device is
     deterministic, so any difference is a defect. Then run `klcheck all --device xrt -m <model> -n 64` for the KL criterion
     ([klcheck.md](klcheck.md)).
-12. Model check, mode M7. The same with `--phase m7` for the vector-unit kinds, attention and the KV cache on the device, one
+12. Model check, full mode. The same with `--phase m7` for the vector-unit kinds, attention and the KV cache on the device, one
     launch per token. Pass: every row bit-identical to the simulator configured like the card (`TSR_SIM_CARD`, `TSR_SIM_GDN`,
     `TSR_SIM_TMAX`, `TSR_SIM_RV_RATIO`).
 13. Debug. `riscv-none-elf-gdb` over `tsr-dbg gdb --stdio --device xrt --halt-on-boot` halts at `_start` (0x80), reads registers,

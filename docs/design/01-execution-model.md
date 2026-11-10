@@ -313,8 +313,8 @@ The SW base image provides these three kernels, because bring-up, the backend an
 on them (contracts in SW §7):
 
 - `graph`: the op-list executor (the op list format, SW §7.2–§7.3). It is the only offload path:
-  in M6 mode the backend emits op lists with MUL_MAT records only, one launch per graph split (SW-14);
-  in M7 mode it emits the other kinds as well, so a decode token is one launch.
+  in matmul mode the backend emits op lists with MUL_MAT records only, one launch per graph split (SW-14);
+  in full mode it emits the other kinds as well, so a decode token is one launch.
 - `replay`: replays a tile-only `push.bin` stream (SW §5.2, §7.7). ARG0 = its DRAM handle, ARG1 = the
   record count, ARG2 = flags. With flag bit0 SERIAL every op record depends on the previous op record
   instead of its recorded deps; because of I1 this gives strictly sequential semantics. Opcodes that
@@ -1006,7 +1006,7 @@ exists (D16).
 | EX-26 | DRAM map: OPL region (op lists, replay streams, argument blocks, overlays); TRW ring in the ch0 IO region; compute heap between weights and KV planes | The name follows the content |
 | EX-27 | Memory source 0 (`TSR_SRC_AUX`) is tied off; source ids are not renumbered | Avoids churn on timing-critical arbiter paths |
 | EX-28 | Build order: oracle, traces, host, RTL, platform (§12) | The software path runs end to end on the simulator before any RTL (D16); the platform needs the control core to be useful |
-| EX-29 | Offload path: the `graph` executor runs op lists, one launch per graph split in M6 mode; the `replay` kernel (SERIAL) serves traces and SPM dumps; there is no `tsr.oplist_seq` | One mechanism from M6 to M7 and no second offload path of about 1 µs per op |
+| EX-29 | Offload path: the `graph` executor runs op lists, one launch per graph split in matmul mode; the `replay` kernel (SERIAL) serves traces and SPM dumps; there is no `tsr.oplist_seq` | One mechanism from matmul mode to full mode and no second offload path of about 1 µs per op |
 | EX-30 | Table source: `sw/tables/tsr_tables.py` (plain Python) with SW's `gen_tables.py` emitting the SV package, the C header, `mmio/vu/at.hpp` and tb Python; `--check` in lint | One source for RTL, simulator, firmware and benches, with no PyYAML dependency |
 
 ---
@@ -1050,4 +1050,4 @@ The simulator is the oracle: it is bit-exact for everything EX defines, and the 
    omitted, watermark compare off by one, ACTIVE from the wrong counter, PERF gate inverted, `mutate_adapter.py`).
 6. Card: `tsr-selftest` (identity, bind, load and VERIFY, PING, launch round trip and pipelined rate against
    the §4.11 targets, the `selftest` kernel's tests, the trace corpus through `replay`), then llama.cpp end to
-   end in M6 mode (SW §10.4): logits bit-identical to `TSR_DEVICE=sim` and the KL criterion.
+   end in matmul mode (SW §10.4): logits bit-identical to `TSR_DEVICE=sim` and the KL criterion.

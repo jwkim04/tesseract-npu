@@ -42,7 +42,7 @@ Start with [docs/README.md](docs/README.md), the index of the documentation, and
   (`traces/*/` except scripts and `MANIFEST.sha256`).
 - Docs describe what the system is and how to use it, in plain short sentences. They carry no project
   history (dates outside `CHANGELOG.md`, commit hashes, branch names, work packages, milestones) and
-  no benchmark results. M6 and M7 are names of execution modes only; `docs/design/README.md` defines
+  no benchmark results. The execution modes are called full mode and matmul mode; `docs/design/README.md` defines
   them. There is one core design, the one with the RISC-V control core: no version labels for it.
 
 ## Gates before a commit

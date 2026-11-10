@@ -178,5 +178,5 @@ be bit-identical, rollbacks included. A window of `T` tokens is one launch
   (`test_tsr_kinds.sh`: `--phase m7` with `TSR_KINDS=all,-RMS_NORM` shows that list in the backend and in klcheck's
   `TSR_KINDS` line, `--phase m6` with `TSR_KINDS=all` shows `m6`, `--phase m7` without the variable shows
   `unset`), and generating 2 prompts of 8 tokens on `sim` and replaying them on `mock` with `--expect-identical`.
-- `ggml_tesseract_graph_*` (`sw/ggml-tesseract/tests/m7_tests.py`) run klcheck on tiny generated models in M7 mode
+- `ggml_tesseract_graph_*` (`sw/ggml-tesseract/tests/m7_tests.py`) run klcheck on tiny generated models in full mode
   with the criterion above.
