@@ -4,8 +4,9 @@ This document is the RTL contract of the MVM unit: one cluster per DDR4 channel,
 throughput, verification, and the structures that make it meet timing on the U200 (§14). The unit executes `MVM` (spec §8, "MVM
 cluster microarchitecture") for every legal K, N and T bit-exactly like the simulator: Q8_0 with A32 QA, Q4_K with A256 QA, ACC
 and `dst_stride`. It reads exactly `rows_c * ROW_BEATS` weight beats per channel and sustains one weight beat per cycle per
-cluster at T = 1 when the memory delivers it. The queue head of the issue path dispatches it ([CC](design/04-control-core.md) §8,
-§9) and it reads the SPM through the even and odd banks (CC §10). The oracle is `ex_mvm` in `tsr_sim.c` and `tsr_ref.c`.
+cluster at T = 1 when the memory delivers it. With the dual weight stream (§15) a cluster takes two. The queue head of the issue
+path dispatches it ([CC](design/04-control-core.md) §8, §9) and it reads the SPM through the even and odd banks (CC §10). The
+oracle is `ex_mvm` in `tsr_sim.c` and `tsr_ref.c`.
 
 The cluster also has the attention modes `ATTQK` (0x21) and `ATTPV` (0x22), whose contract is [AT](design/03-attention-kv.md)
 §5.2, §5.3 and §6 and whose structure is AT §8 (§6.5). Authority: `docs/spec.md` > simulator > `docs/design` > this file >

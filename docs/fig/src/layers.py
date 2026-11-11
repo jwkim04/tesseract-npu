@@ -12,8 +12,9 @@ provides the Alveo U200 pieces only, and the lane heads say so.
 - Transport (sw/transport, per target): xrt (U200), Zynq AXI, SoC driver (docs/xrt-host.md,
   docs/design/01-execution-model.md §10).
 - Platform adapter (rtl/platform/TARGET, per target): U200 alveo_xrt = AXI4-Lite to the CSR port and
-  one AXI4 bridge per DDR4 channel, `ap_ctrl_none` (EX §9); other targets: a control register
-  bridge and a memory port to AXI4 or similar (docs/spec.md §2).
+  AXI4 bridges per DDR4 channel (one for the memory port and, with the dual weight stream, a
+  read-only one for the second weight stream, docs/platform-u200.md §4), `ap_ctrl_none` (EX §9);
+  other targets: a control register bridge and a memory port to AXI4 or similar (docs/spec.md §2).
 - Core (rtl/core, shared, parameters only): control core with the issue path, DMA, QACT, SPM, MVM
   clusters x NUM_CH and the vector unit (docs/design/04-control-core.md §2.1,
   docs/design/02-vector-unit.md §7). Parameters: U200 NUM_CH 4, BEAT_BITS 512; Zynq NUM_CH 1-2,
@@ -123,7 +124,7 @@ for w, lab, sub in ((240, "GGML-TESSERACT", "backend\nop lists"),
 
 # ---- transport, platform adapter (per target) --------------------------------------------------------
 tr = [("XRT", "TSR_DEVICE=xrt"), ("ZYNQ AXI", ""), ("SOC DRIVER", "")]
-pa = [("ALVEO_XRT", "AXI4-Lite to CSR port,\none AXI4 bridge per\nDDR4 channel"),
+pa = [("ALVEO_XRT", "AXI4-Lite to CSR port,\nAXI4 bridges per\nDDR4 channel"),
       ("ADAPTER", "control register bridge,\nmemory port to AXI4\nor similar"),
       ("ADAPTER", "control register bridge,\nmemory port to AXI4\nor similar")]
 for i in range(3):

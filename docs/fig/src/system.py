@@ -2,8 +2,12 @@
 
 Content follows docs/platform-u200.md §1 (system structure, adapter, weight traffic) and
 docs/spec.md §2 (System structure): host stack, PCIe + XRT shell, platform adapter (control
-bridge, one AXI4 bridge per channel), tsr_core (control core and issue path, SPM, x broadcast /
-y gather, four MVM clusters, vector unit), DDR4 ch0..ch3 each feeding its own cluster.
+bridge, AXI4 bridges: per channel one for m_axi_ch<c> and a read-only one for m_axi_chb<c>, the
+port of the second weight stream; docs/platform-u200.md §4), tsr_core (control core and issue
+path, SPM, x broadcast / y gather, four MVM clusters, vector unit), DDR4 ch0..ch3 each feeding
+its own cluster. Both bridges of a channel connect to the same DDR4 bank and are drawn as one
+block (AXI4 BRIDGES, sub m_axi_ch<c> and m_axi_chb<c>); one fat arrow stands for the memory path
+of the channel, which carries up to two weight streams (docs/rtl-mvm.md §15).
 The host chain is llama.cpp -> ggml-tesseract -> tsr_transport; the firmware image
 (`tsr-fw.elf`, docs/design/01-execution-model.md §3) is loaded, booted and launched by the transport
 over the same PCIe path (EX §2.1, §4). The adapter is `ap_ctrl_none` (EX §9.1): the control
@@ -11,20 +15,23 @@ bridge maps `s_axi_control` to the core's CSR port and there is no done / ap_don
 SLR tags follow the Pblock plan of the release image tsr_u200_k4 (hw/u200/k4_major_blocks.tcl,
 docs/platform-u200.md §8.1, docs/design/04-control-core.md §14.2). DDR4 channels from platforminfo:
 bank0 SLR0, bank1 and bank2 SLR1, bank3 SLR2. Clusters 0 and 2 with their result assemblers in
-SLR0, 1 and 3 in SLR2; the DDR0 bridge and arbiter in SLR0 and the DDR3 bridge and arbiter in SLR2,
-beside their DDR controllers. The control plane (control core with TCMs and debug module, issue
-path with its checkers, CSR block) is in its own Pblock inside SLR0; the whole vector unit in its
-own Pblock inside SLR2; the SPM, the DMA, QACT and the arbiters of channels 1 and 2 in SLR1. The
-XRT shell, the control bridge (the adapter's control logic), the bridges of channels 1 and 2 and
-the x broadcast / y gather bus have no single region and carry no tag; the footnote says so.
+SLR0, 1 and 3 in SLR2; the DDR0 bridges and arbiter in SLR0 and the DDR3 bridges and arbiter in
+SLR2, beside their DDR controllers. The control plane (control core with TCMs and debug module,
+issue path with its checkers, CSR block) is in its own Pblock inside SLR0; the whole vector unit
+in its own Pblock inside SLR2; the SPM, the DMA, QACT, and the arbiters and bridges of channels 1
+and 2 (the read-only bridges with them) in SLR1, so every bridge carries the SLR of its DDR4
+channel. The XRT shell, the control bridge (the adapter's control logic) and the
+x broadcast / y gather bus have no single region and carry no tag; the footnote says so.
 Every crossing is a register pipe: per cluster the broadcast, weight-stream request / response and
 gather job / start pipes (MVM_BC_PIPE, MVM_RES_PIPE = 2 on the U200, docs/rtl-mvm.md §14.2), the
-reset copies, and the AXI slices of the outer channels. The weight-response pipe carries one beat
-per cycle without backpressure, so the crossing keeps the channel's full rate
-(docs/platform-u200.md §8.1).
+reset copies, and the AXI slices of the outer channels. The weight-response pipe of a weight
+stream carries one beat per cycle without backpressure, so the crossing keeps the stream's full
+rate (docs/platform-u200.md §8.1).
 Clocks: the core clock is 200 MHz and clk_rv 100 MHz, from ap_clk_2, the second platform clock
-(docs/platform-u200.md §8.3, CC §11.1). The weight stream is 64 B per cycle: 64 B x 200 MHz =
-12.8 GB/s per channel (docs/spec.md §1, design principles). DDR4 ch0 holds the op lists (OPL), the IO window and the
+(docs/platform-u200.md §8.3, CC §11.1). A weight stream is 64 B per cycle: 64 B x 200 MHz =
+12.8 GB/s. A channel has up to two weight streams, one through each bridge: two for an MVM with
+T <= T_MAX / 2, one otherwise (docs/spec.md §1, design principles; docs/rtl-mvm.md §15). With two
+streams the DDR4 channel is the limit. DDR4 ch0 holds the op lists (OPL), the IO window and the
 AUX tensors besides its quarter of the weights (EX §11).
 Layout: the arrows of each channel column run 32 left of its center, so the SLR tag on the right of
 a block's top edge stays clear of them.
@@ -48,7 +55,7 @@ LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centers in the left / right marg
 # SLR of each block under the Pblock plan (hw/u200/k4_major_blocks.tcl; DDR4 from platforminfo)
 SLR_CL = ["SLR0", "SLR2", "SLR0", "SLR2"]       # clusters 0 and 2 in SLR0, 1 and 3 in SLR2
 SLR_DDR = ["SLR0", "SLR1", "SLR1", "SLR2"]      # DDR[0] SLR0, DDR[1] / DDR[2] SLR1, DDR[3] SLR2
-SLR_BR = ["SLR0", "", "", "SLR2"]               # bridges of channels 0 and 3 beside their DDR
+SLR_BR = ["SLR0", "SLR1", "SLR1", "SLR2"]       # bridges: 0 and 3 beside their DDR, 1 and 2 in the SLR1 Pblock
 SLR_CTRL, SLR_HUB, SLR_VU = "SLR0", "SLR1", "SLR2"   # control Pblock, SPM + DMA + QACT, VU Pblock
 
 # rows (y)
@@ -62,21 +69,23 @@ MID_Y, MID_H = 696, 152               # control core + issue path, SPM, vector u
 BUS_Y, BUS_H = 928, 72
 CL_Y, CL_H = 1088, 112                # clusters
 CORE_B = CL_Y + CL_H + 24
-BR_Y, BR_H = 1296, 80                 # AXI4 bridges (72 below tsr_core: room for a leader)
-DDR_Y, DDR_H = 1440, 120
+BR_Y, BR_H = 1296, 112                # AXI4 bridges (72 below tsr_core: room for a leader)
+DDR_Y, DDR_H = 1472, 120
 BOARD_B = DDR_Y + DDR_H + 40
 LEG_Y = BOARD_B + 48
-H = LEG_Y + 96
+H = LEG_Y + 120                       # legend, then a three-line footnote
 
 f = Fig("system", W, H,
         title="Tesseract NPU core on the Alveo U200",
         desc="Host PC (llama.cpp, ggml-tesseract backend, tsr_transport, firmware image) talks "
              "over PCIe to the XRT shell of an Alveo U200. The platform adapter (control bridge "
-             "and one AXI4 bridge per DDR4 channel) connects the shell and DDR4 to tsr_core: "
+             "and, per DDR4 channel, an AXI4 bridge and a read-only second bridge for the second "
+             "weight stream) connects the shell and DDR4 to tsr_core: "
              "control core with issue path, 4 MiB SPM with DMA and QACT, x broadcast / y gather "
-             "bus, vector unit and four MVM clusters of 128 MACs. Cluster c streams weights "
-             "only from DDR4 channel c. Tags give each block's SLR under the Pblock plan of the "
-             "release image: DDR4 ch0 SLR0, ch1 and ch2 SLR1, ch3 SLR2; clusters 0 and 2 SLR0, "
+             "bus, vector unit and four MVM clusters of 128 MACs. Cluster c streams weights, up "
+             "to two streams at once, only from DDR4 channel c. Tags give each block's SLR under "
+             "the Pblock plan of the release image: DDR4 ch0 SLR0, ch1 and ch2 SLR1, ch3 SLR2; "
+             "the AXI4 bridges in the SLR of their channel; clusters 0 and 2 SLR0, "
              "clusters 1 and 3 SLR2; control core and issue path SLR0; SPM, DMA and QACT SLR1; "
              "vector unit SLR2. Every SLR crossing is a register pipe that keeps the full "
              "weight-stream rate. The core clock is 200 MHz and clk_rv 100 MHz.")
@@ -138,10 +147,11 @@ for c in range(4):
     x = COL[c] - BW / 2
     f.box(x, CL_Y, BW, CL_H, "compute", f"CLUSTER {c}", sub="128 MACs", tag=SLR_CL[c])
     f.box(x, DDR_Y, BW, DDR_H, "memory", f"DDR4 CH{c}", sub=ddr_sub[c], tag=SLR_DDR[c])
-    # weight stream: DDR4 ch c -> AXI4 bridge c -> cluster c (the bridge is drawn over it)
+    # weight streams: DDR4 ch c -> AXI4 bridges c (main port and read-only port) -> cluster c
+    # (the bridges are drawn over the arrow)
     f.arrow([(AX[c], DDR_Y + 8), (AX[c], CL_Y + CL_H - 12)], fat=True)
-    f.box(x, BR_Y, BW, BR_H, "adapter", "AXI4 BRIDGE", sub=f"m_axi_ch{c}", label_role="label_s",
-          tag=SLR_BR[c])
+    f.box(x, BR_Y, BW, BR_H, "adapter", "AXI4 BRIDGES", sub=f"m_axi_ch{c}\nm_axi_chb{c}",
+          label_role="label_s", tag=SLR_BR[c])
     # broadcast down, gather up
     f.arrow([(AX[c], BUS_Y + BUS_H - 8), (AX[c], CL_Y + 12)], tail=True)
 
@@ -166,7 +176,7 @@ xing_y = (BUS_Y + BUS_H + CL_Y) / 2   # on cluster 3's broadcast / gather arrow
 f.callout("EVERY SLR\nCROSSING IS A\nREGISTER PIPE:\nMVM_BC_PIPE,\nMVM_RES_PIPE\n= 2 STAGES",
           (RX, xing_y), target=(AX[3], xing_y))
 ws_y = (CORE_B + BR_Y) / 2 - 8        # on ch3's bridge -> cluster stretch (SLR2)
-f.callout("WEIGHT STREAM:\n64 B × 200 MHz\n= 12.8 GB/s\nPER CHANNEL;\nSLR CROSSINGS\nKEEP FULL RATE",
+f.callout("WEIGHT STREAMS:\nUP TO TWO PER\nCHANNEL, 64 B\nPER CYCLE EACH;\nSLR CROSSINGS\nKEEP FULL RATE",
           (RX, ws_y), target=(AX[3], ws_y))
 clk_y = MID_Y + MID_H / 2
 f.callout("CONTROL CORE:\nclk_rv 100 MHz\nFROM ap_clk_2;\nCORE CLOCK\n200 MHz", (LX, clk_y),
@@ -183,7 +193,9 @@ f.legend(800, LEG_Y, [("host", "HOST SOFTWARE"), ("vendor", "VENDOR-SPECIFIC"),
 f.text(800, LEG_Y + 38, wrap(
     "SLR tags follow the Pblock plan of the k4 image (hw/u200/k4_major_blocks.tcl): control "
     "core and issue path in the control Pblock of SLR0, vector unit in the VU Pblock of SLR2, "
-    "SPM with DMA, QACT and the arbiters of channels 1 and 2 in SLR1. No tag: left to Vivado.",
+    "SPM with DMA, QACT and the arbiters and bridges of channels 1 and 2 in SLR1. No tag: left "
+    "to Vivado. Each channel has a bridge for m_axi_ch<c> and a read-only one for m_axi_chb<c>, "
+    "the port of the second weight stream.",
     1440), "note", anchor="middle", color=INK_SOFT)
 
 f.save()

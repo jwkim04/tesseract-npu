@@ -10,7 +10,7 @@ Tesseract has five version numbers. Each answers a separate question and each ch
 | Basis ABI, one integer | Whether a host and a firmware image speak the same protocol. | driver ABI |
 | Kind numerics revision, one integer per op list kind | Whether a kind still produces the same bits. | none |
 
-The current releases are Tesseract Core 1.0.0, with capability 1.0, and Tesseract Basis 1.1.0, with Basis ABI 1.
+The current releases are Tesseract Core 1.1.0, with capability 1.0, and Tesseract Basis 1.2.0, with Basis ABI 1.
 Normative text: [SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4
 and §7.5.
 
@@ -34,9 +34,9 @@ The capability is the number in the `VERSION` register. Bits 15:8 are the major,
 at least n. It does not run on another major.
 
 The `CAPS` register (0x014) lists the optional features of a configuration: `VU`, `TOPK`, `ATT`, `DQROW`, `VMASK`,
-`GDN`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`. An optional feature is a `CAPS` bit, never a minor. The
-sizes of a configuration (channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3` and are not part of the
-capability. Results are defined per configuration. The number is set in `sw/tables/tsr_tables.py`, and the table
+`GDN`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`, `MVM_DUAL`. An optional feature is a `CAPS` bit, never a
+minor. The sizes of a configuration (channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3` and are not part of
+the capability. Results are defined per configuration. The number is set in `sw/tables/tsr_tables.py`, and the table
 generator writes it into the C, C++, SystemVerilog and Python headers. It changes in the same change that alters the
 RTL and the simulator.
 
@@ -46,7 +46,7 @@ RTL and the simulator.
 - Minor: a backward-compatible addition that every configuration of that minor has: a new opcode or unit, a new CSR
   field, a control-core ISA extension the compiler may target.
 
-It is shown as `Tesseract Core 1.0 (VU ATT GDN)`: the capability, then the `CAPS` features.
+It is shown as `Tesseract Core 1.0 (VU ATT GDN MVM_DUAL)`: the capability, then the `CAPS` features.
 
 ## Tesseract Core release
 
@@ -74,14 +74,14 @@ and the tools. Its version is MAJOR.MINOR.PATCH.
 - Patch: a small fix that leaves the inputs and outputs of every function unchanged: every output
   bit of every kind, every interface and every planner's acceptance.
 
-The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 1.1.0 is `0x0001_0100`.
+The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 1.2.0 is `0x0001_0200`.
 
 The number in `version.h` changes at release, not with each commit. A build between two releases
 carries the number of the last release, so it is told apart by its image id and its kind revisions.
 
 ## Basis ABI
 
-The ABI is one integer, `TSR_SDK_ABI`. It is 1 in Basis 1.1.0 and is defined in `sw/ctrl/include/tsr/version.h`
+The ABI is one integer, `TSR_SDK_ABI`. It is 1 in Basis 1.2.0 and is defined in `sw/ctrl/include/tsr/version.h`
 and nowhere else. It changes when an existing image and an existing host would stop working
 together. It covers:
 
@@ -140,7 +140,7 @@ the tool). The image id changes with every build.
 
 ```
   ID 0x54535231  Tesseract Core capability 1.0 (VERSION 0x00000100), CAPS 0x00007169 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP)
-  image build/dev/fw/tsr-fw.elf: id a5cbf3767c91cc4f, Tesseract Basis 1.1.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.1.0
+  image build/dev/fw/tsr-fw.elf: id a5cbf3767c91cc4f, Tesseract Basis 1.2.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.2.0
   kinds (21, signature 0x2381): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 ... GATED_DELTA_NET r2
 ```
 
@@ -150,7 +150,7 @@ the device with both versions:
 
 ```
 $ TSR_DEVICE=sim build/dev/bin/llama-cli --list-devices
-  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.1.0 (ABI 1, 21 kinds, image a5cbf3767c91cc4f) (63488 MiB, 63488 MiB free)
+  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.2.0 (ABI 1, 21 kinds, image a5cbf3767c91cc4f) (63488 MiB, 63488 MiB free)
 ```
 
 The text up to the semicolon is the capability and its `CAPS` features. After it come the configuration, the Basis
@@ -188,6 +188,8 @@ a backend that is newer than its image could send a shape the image refuses. The
 rule, so captured launch traces of other images still replay. An image that provides fewer kinds works: the ops it
 cannot run stay on the CPU, and `TSR_KINDS=m6` narrows the device to the matrix products the same way.
 
+Core 1.1.0 needs Basis 1.2.0 or later, and Basis 1.2.0 runs on Core 1.1.0 and on Core 1.0.0.
+
 ## Identifiers that are not versions
 
 These fields are never shown as a product version and are not compared with a release: `CTL_ID[7:0]`, the
@@ -196,7 +198,7 @@ control-core revision (1; 0 means no control core), the adapter version major (`
 the numbers of file formats (the op list header 1, trace metadata 2, the `.klc` header 2, numcheck metadata 2,
 `DBG_INFO` 1, the crash record 1, `MSUM` 1).
 
-## Kinds at Basis 1.1.0
+## Kinds at Basis 1.2.0
 
 Op list kinds with their revisions, as declared by `TSR_KIND` in the file that defines the handler.
 The argument words of each kind are in [SW](design/06-software-verification.md) §7.2.

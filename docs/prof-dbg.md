@@ -110,9 +110,9 @@ second over the DDR read bandwidth measured with `tsr_bw` ([`bandwidth-kernel.md
 | E | effective read bandwidth while the MVM reads weights, over the `tsr_bw` bandwidth | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
 
 The effective bandwidth of channel c is 64 B x `CH_RD_BEATS[c]` x f_kernel / `CYCLES`, and the channel imbalance is
-the maximum over the mean of the beats. The weight stream's limit is 64 B per core cycle and channel. The order of
-optimization follows the terms: host round trips (H), overlap of non-MVM ops with MVMs (G), fill and tail (F), DDR
-efficiency (E).
+the maximum over the mean of the beats. The limit of a weight stream is 64 B per core cycle, and a cluster has one
+stream, or two on a core with `CAPS` bit 16 ([rtl-mvm.md](rtl-mvm.md) §15). The order of optimization follows the
+terms: host round trips (H), overlap of non-MVM ops with MVMs (G), fill and tail (F), DDR efficiency (E).
 
 `TSR_STATS=1` prints, at close, the transport statistics (launches, launch wall time, CSR reads and writes, DRAM bytes,
 log words and drops, boot, timeouts, traps, restarts) and, from the ggml backend, graph_compute calls, launches, op
@@ -181,10 +181,13 @@ source for both themes.
 
 A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from
 LAUNCH_BEGIN) over its ops, so they add up to the launch with the setup and the tail. The ideal cycles of an MVM
-record are its weight bytes over 256 B per cycle. The report checks the record cycles against the launch span and
-`PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7), `RETIRED` against the ops, the markers against
-the records, the trace writer's drops and the simulator against the card. The dump and the publisher of `tsr-top`
-(§7) run in the same process and only read, so neither moves a counter, a record or an output bit.
+record are its weight bytes over 256 B per cycle. That counts one weight beat per cycle and cluster. On a core with
+the dual weight stream, an MVM with T ≤ T_MAX / 2 takes fewer cycles, so its efficiency can be above 100 % and the
+fill term F below zero. A profile taken with `TSR_MVM_DUAL=0` compares against the ideal. The report checks the record
+cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7), `RETIRED`
+against the ops, the markers against the records, the trace writer's drops and the simulator against the card. The
+dump and the publisher of `tsr-top` (§7) run in the same process and only read, so neither moves a counter, a record
+or an output bit.
 
 ### 3.2 Comparing a card run with the simulator
 
@@ -192,7 +195,7 @@ the records, the trace writer's drops and the simulator against the card. The du
    `TSR_OPL_PROF=1 TSR_OPL_KINDS=run.kinds` (the graph kernel pushes a `NODE_BEGIN` marker before every record, and
    the backend writes the kind of every record of every launch to `run.kinds`), then `tsr-dbg --device xrt --attach
    -ex "trw dump run.json run.raw" -ex "trw stop"`.
-2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_LOG=w,sim.log`
+2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4dual TSR_SIM_GDN=1 TSR_SIM_LOG=w,sim.log`
    (the release image's configuration; the prefix `w,` also writes the eight words of every push).
 3. `sw/tools/trw_vs_sim.py kinds --trw run.raw --sim sim.log --kinds run.kinds --launch 2` gives, per record kind, the
    cycles the record adds to the launch on both sides. `units`, `gaps` and `record` give the same by op class and for
@@ -346,7 +349,8 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
 - Setup panels (off by default): the image line (kernel name, id, `CAPS`, kind count and table signature, mode),
   unit meters `ACT` (active share of wall time, 1-H), `MVM VU DMA QACT ATT` (busy share of the active cycles),
   `EMPTY` (MVM idle, queue empty: issue-bound) and `WAIT` (MVM idle, queue entry cannot start: dependency-bound),
-  `CH0..CH3` bars with the read rate against the stream limit, and the utilization split of §3.
+  `CH0..CH3` bars with the read rate against the stream limit (64 B per core cycle for each weight stream, two on a
+  core with `CAPS` bit 16), and the utilization split of §3.
 
 Rates cover the newest PERF read and the newest one at least one refresh interval older. When no new PERF read came
 for more than 2.5 s and no launch is in flight, the rates are shown as idle.

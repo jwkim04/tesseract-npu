@@ -199,8 +199,7 @@ that is not in `rtl/` and in the release image is not drawn.
   SLR (SLR1), and the regions are not contiguous in the layout. Give each block a dark tag on the
   right of its top edge (`box(..., tag="SLR1")`). Run the arrows that meet that edge 32 left of the
   block's center, so the tag stays clear of them. Leave a block untagged when the plan leaves it
-  to Vivado (`system`: the XRT shell, the control bridge, the bridges of channels 1 and 2). Say in
-  the footnote what the tags show.
+  to Vivado (`system`: the XRT shell, the control bridge). Say in the footnote what the tags show.
 
 ## Legend
 

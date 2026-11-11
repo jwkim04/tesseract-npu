@@ -4,8 +4,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
-  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.0.0" src="https://img.shields.io/badge/core-1.0.0-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.1.0" src="https://img.shields.io/badge/basis-1.1.0-green?style=flat"></a>
+  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.1.0" src="https://img.shields.io/badge/core-1.1.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.2.0" src="https://img.shields.io/badge/basis-1.2.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -87,7 +87,8 @@ runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE an
 
 <p align="center"><img src="docs/fig/hero.png" alt="Stylized die of Tesseract Core: four MVM clusters of 128 MAC lanes, one per DDR4 channel, around a 4 MiB scratchpad, with DMA, QACT, the vector unit, the RISC-V control core and the debug block. One cluster is opened up to show its weight streamer, unpack stage, activation buffer, MAC lanes and accumulate tree." width="100%"></p>
 
-One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle into 128 MAC lanes.
+One MVM cluster per DDR4 channel streams weights into 128 MAC lanes. In decode it reads two weight
+streams at once, so the DDR4 channel and not the core clock bounds the weight rate.
 A 4 MiB scratchpad holds activations and results. The RISC-V control core runs the firmware and
 issues every tile op to the DMA, QACT, MVM and vector units. It has its own clock domain. Every
 crossing goes through a synchronizer, a gray-coded counter or FIFO, or a handshake

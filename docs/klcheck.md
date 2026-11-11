@@ -130,7 +130,7 @@ few positions. Compare the medians and the ratio against each seed there.
 - `--replay`. A CPU replay defaults to `batch`. A device replay (`--device sim|mock|vkernel|xrt --tokens FILE`)
   defaults to `step`, which repeats the generating run's prefill and single-token graphs, so that `compare
   --expect-identical` can require every row bit-identical across devices. To compare a card with the simulator,
-  generate on `xrt` and replay the tokens on `sim` (with `TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4`).
+  generate on `xrt` and replay the tokens on `sim` (with `TSR_SIM_CARD=k4dual TSR_SIM_GDN=1 TSR_SIM_TMAX=4`).
 - `--resume`. A phase keeps the complete records of an existing output file and continues after them, and a finished
   phase is skipped before its model is loaded, so `klcheck all --resume` restarts a long run where it stopped. A
   resumed device run is bit-identical to an uninterrupted one.

@@ -89,9 +89,9 @@ build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klc
   verdict ([`docs/klcheck.md`](klcheck.md)).
 - `TSR_SIM_THREADS` sets the MVM threads of the simulator (default min(CPUs, 8)). A model whose weights do not
   fit in RAM needs file-backed simulator DRAM: `TSR_SIM_DRAM_DIR=<dir>`.
-- `TSR_SIM_CARD=k4full TSR_SIM_GDN=1` configures the simulated core like the release image: `T_MAX` 4, the
-  vector unit's 8 / 8 / 4 lanes, the RISC-V clock at half the core clock, the Gated DeltaNet op and none of
-  the local-intermediate features. Use it to replay a card run on the simulator.
+- `TSR_SIM_CARD=k4dual TSR_SIM_GDN=1` configures the simulated core like the release image: `T_MAX` 4, the
+  vector unit's 8 / 8 / 4 lanes, the RISC-V clock at half the core clock, the Gated DeltaNet op, the dual
+  weight stream and none of the local-intermediate features. Use it to replay a card run on the simulator.
 - Without a GGUF file, `build/dev/bin/tsr-selftest --device sim` boots the firmware on the simulator and runs
   its self-checks.
 

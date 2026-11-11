@@ -319,7 +319,7 @@ development platform and the shell flashed with `xbmgmt`, and `xbutil validate` 
    kernel against the shadow, trace replays and the DMI smoke (§5).
 2. Run the backend tests (`test-ggml-tesseract`, `test-backend-ops -o MUL_MAT -b Tesseract0`) with
    `TSR_DEVICE=xrt`. Then a model-level check: generate on the card with `klcheck run --device xrt` and replay
-   the tokens on the simulator with `TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4`
+   the tokens on the simulator with `TSR_SIM_CARD=k4dual TSR_SIM_GDN=1 TSR_SIM_TMAX=4`
    ([`klcheck.md`](klcheck.md)). Every row must be bit-identical.
 3. A GDB smoke: halt, register read, breakpoint in a kernel, step, resume, the launch then completing
    (`tsr-dbg gdb --stdio --device xrt --elf build/xrt/fw/tsr-fw.elf --halt-on-boot`, [`prof-dbg.md`](prof-dbg.md) §1).

@@ -2,13 +2,14 @@
 
 This document describes the platform side of Tesseract on the Alveo U200: the XRT platform adapter (`rtl/platform/alveo_xrt`)
 around `tsr_core`, the packaged kernels `tsr_u200_k1` and `tsr_u200_k4`, the `v++` flow with its Pblock plan, and the runbook for
-bringing an image up on the card. The core sees only its CSR port and one memory port per channel ([rtl-core.md](rtl-core.md) §4,
-§6). The adapter turns them into `s_axi_control` and one AXI4 master per channel (`docs/spec.md` §2). The normative text for the
-adapter is [EX](design/01-execution-model.md) §9 and [CC](design/04-control-core.md) §13.3, §14.
+bringing an image up on the card. The core sees only its CSR port and its memory ports, one per channel and, with the dual weight
+stream, a read-only second one per channel ([rtl-core.md](rtl-core.md) §4, §6). The adapter turns them into `s_axi_control` and one
+AXI4 master per port (`docs/spec.md` §2). The normative text for the adapter is [EX](design/01-execution-model.md) §9 and
+[CC](design/04-control-core.md) §13.3, §14.
 
 | Path | Content |
 |---|---|
-| `rtl/platform/alveo_xrt/tsr_xrt_kernel.sv` | the kernel body: reset distribution, control bridge, `tsr_core`, one AXI4 bridge per channel |
+| `rtl/platform/alveo_xrt/tsr_xrt_kernel.sv` | the kernel body: reset distribution, control bridge, `tsr_core`, one AXI4 bridge per channel and, in a kernel with `MVM_DUAL`, a read-only second bridge per channel |
 | `rtl/platform/alveo_xrt/tsr_xrt_ctrl.sv` | `s_axi_control` (AXI4-Lite slave): `ch<c>_base`, `ADAPTER_CTRL`, `ADAPTER_STATUS`, `ADAPTER_VERSION`, the core CSR window |
 | `rtl/platform/alveo_xrt/tsr_xrt_axi_bridge.sv` | one channel: core memory port to AXI4 master, register slices, response ID filter, error events |
 | `rtl/platform/alveo_xrt/tsr_xrt_slices.sv`, `tsr_xrt_reset.sv` | N register slices in series (`tsr_rslice`); reset pipeline and replication |
@@ -24,7 +25,8 @@ adapter is [EX](design/01-execution-model.md) §9 and [CC](design/04-control-cor
 The kernels are Vitis RTL kernels; the module name is the kernel name. The control protocol is `ap_ctrl_none`
 (`hwControlProtocol="ap_ctrl_none"`, `interrupt="false"` in `kernel_k*.xml`). There is no `ap_start`, `ap_done` or interrupt. The
 host opens the compute unit with `xrt::ip`, reads and writes registers and polls (EX §9.1, [xrt-host.md](xrt-host.md) §2). The
-only kernel arguments are the channel buffers `ch<c>`.
+only kernel arguments are the channel buffers `ch<c>` and, in a kernel with the dual weight stream, the arguments `chb<c>` of
+the read-only ports.
 
 Clocks are `ap_clk` / `ap_rst_n` for the core and the adapter, and `ap_clk_2` / `ap_rst_n_2` for the control core. `tsr_u200_k4`
 runs the core at 200 MHz and the control core at 100 MHz. `tsr_u200_k1` requests 300 MHz and 166.667 MHz. Clock source and reset
@@ -253,7 +255,7 @@ host with less needs swap.
 | Config | Connectivity | Implementation |
 |---|---|---|
 | `k1.cfg` | `nk=tsr_u200_k1:1:tsr_k1`, `sp=tsr_k1.m_axi_ch0:DDR[1]`, `slr=tsr_k1:SLR1` | `kernel_frequency=0:300\|1:166.666667`; placer `AltSpreadLogic_high`; phys_opt and post-route phys_opt on |
-| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]`; no `slr=`, one compute unit spans three SLRs | `kernel_frequency=0:200\|1:100`; the Pblock hook `k4_major_blocks.tcl` before `place_design`; phys_opt and post-route phys_opt with `AggressiveExplore`; route with `AggressiveExplore` |
+| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]` and `sp=tsr_k4.m_axi_chb<c>:DDR[c]`; no `slr=`, one compute unit spans three SLRs | `kernel_frequency=0:200\|1:100`; the Pblock hook `k4_major_blocks.tcl` before `place_design`; phys_opt and post-route phys_opt with `AggressiveExplore`; route with `AggressiveExplore` |
 
 Platform facts come from `platforminfo` and the platform's `hw/hw.xsa`, `tcl_hooks/impl.xdc` and `preopt.tcl`. DDR bank 0 is in
 SLR0, banks 1 and 2 in SLR1 and bank 3 in SLR2, so `sp=...:DDR[c]` puts channel c on bank c. The dynamic region has one Pblock per
@@ -336,7 +338,8 @@ processor-system reset `ip_psr_aresetn_kernel_00_slr0`, with one flop on the net
 `s_axi_control` from `ict_axi_ctrl_user_00`. The memory paths are `m_axi_ch0` to memory subsystem `S04_AXI` to
 `interconnect_ddr4_mem00`, whose entry pipeline the subsystem's constraints pin into `pblock_dynamic_SLR0`, `ch1` to `S05` to
 `interconnect_m00_axi_mem00` in SLR1, `ch2` to `S06` to `interconnect_ddr4_mem01` in SLR1, and `ch3` to `S07` to
-`interconnect_ddr4_mem02` in SLR2. If the reset or control inputs limit timing, `slr=tsr_k4:SLR1` is the alternative, but it may
+`interconnect_ddr4_mem02` in SLR2. The read-only ports `m_axi_chb0` to `m_axi_chb3` enter the subsystem at `S08_AXI` to `S11_AXI`
+and reach the memory of their channel. If the reset or control inputs limit timing, `slr=tsr_k4:SLR1` is the alternative, but it may
 confine the compute unit to `pblock_dynamic_SLR1`.
 
 hw_emu. `hw/u200/build_xclbin.sh k1 hw_emu` builds the emulation xclbin ([xrt-host.md](xrt-host.md) §9). The 2024.2 simulator
@@ -416,8 +419,9 @@ of any of them:
 | RISC-V transport | `RV_LOCAL_TRANSPORT` 1 sends the SPM response (514 bits to 130, 4 payload cycles), the issue entry (389 to 131, 3 cycles) and the LQ and LCQ request (302 to 143, 1 cycle, 2 for POST) as segmented packets. The RV's 64-byte line buffer and all clock-domain crossings stay local to `u_ctrl` ([CC](design/04-control-core.md) §11.4) |
 | Debug writer | The trace writer's burst response and write mux sit in `XSLR_REG` stages (§8.8) |
 
-Each path keeps four independent 512-bit weight streams of one beat per cycle. A halved weight link would roughly double the time
-of an equal-row MVM, because an MVM completes when the slowest cluster does.
+Each path keeps independent 512-bit weight streams of one beat per cycle: one per cluster and, with the dual weight stream
+([rtl-mvm.md](rtl-mvm.md) §15), a second one per cluster through the read-only bridge of its channel. A halved weight link would
+roughly double the time of an equal-row MVM that reads one stream, because an MVM completes when the slowest cluster does.
 
 ### 8.7 Control plane Pblock and the reduced elaboration
 
@@ -455,11 +459,11 @@ opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything
 
 | Group | Parameters |
 |---|---|
-| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
+| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_DUAL` 1 ([rtl-mvm.md](rtl-mvm.md) §15), `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
 | Vector unit | `VU_FRONT_LANES` 8, `VU_EXP_LANES` 8, `VU_BACK_LANES` 4, `VU_LANE_PIPE` 2, `HAS_GDN` 1 (§8.9) |
 | U200 common | `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3, `AXI_SLICES` 2, `RST_STAGES` 3 |
 | Left at their defaults | `HAS_VU` 1, `HAS_ATT` 1 (KVST, ATTQK, ATTPV), `HAS_TRW` 1, `HIST_DEPTH` 512, `HAS_TOPK` 0, `HAS_DQROW` 0 |
-| Left out | `LOCAL_INTERMEDIATES`, `LOCAL_SCALE`, `LOCAL_SOFTCAP` 0: no local score or P banks, no local SCALE or softcap epilogues. `CAPS` reads 0x121 and the host keeps the legacy attention and epilogue paths |
+| Left out | `LOCAL_INTERMEDIATES`, `LOCAL_SCALE`, `LOCAL_SOFTCAP` 0: no local score or P banks, no local SCALE or softcap epilogues. `CAPS` reads 0x10121 and the host keeps the legacy attention and epilogue paths |
 
 `LOCAL_SCALE` and `LOCAL_SOFTCAP` stay off. They send each pair source's results through the vector unit's lane banks and back,
 which saves central traffic only when the bank sits in the cluster's SLR, and the whole VU is in SLR2.
@@ -512,8 +516,8 @@ The tests of this elaboration are `test_core_k4full`, `test_dbg_trw_xslr`, `test
 ### 8.9 The Gated DeltaNet op
 
 The vector unit has the fused Gated DeltaNet op (`HAS_GDN` 1 in `gen_tops.py`, [VU](design/02-vector-unit.md) §7.12). `CAPS` reads
-0x121 (VU, ATT, GDN). The engine is inside `g_vu.u_vu`, so `k4_major_blocks.tcl` puts it in `pblock_tsr_vu` and nothing goes to
-SLR1.
+0x10121 (VU, ATT, GDN, MVM_DUAL). The engine is inside `g_vu.u_vu`, so `k4_major_blocks.tcl` puts it in `pblock_tsr_vu` and nothing
+goes to SLR1.
 
 | `tsr_vu` out of context, K4 configuration, after route | `HAS_GDN` 0 | `HAS_GDN` 1 |
 |---|---|---|
@@ -558,37 +562,38 @@ to see the margin at the target period.
 
 ## 9. Timing and resources
 
-The image of Tesseract Core 1.0.0 is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
+The image of Tesseract Core 1.1.0 is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
 
 | Item | Value |
 |---|---|
-| sha256 | `944ea2b59a436c7e7a60b9915d499e6a501cbefd1673c5ac2ca6fdd6d0f7a5f9` |
-| UUID | `7f5e7240-e3e6-de7a-55aa-42fc777c128d` |
+| sha256 | `628559646594efde3dc04e40ef79db01f4bc2659d6c5242d3b80ac1b819eb9cc` |
+| UUID | `c2920184-1184-3844-f252-4c1789b48b2a` |
 | Clocks | core (`DATA_CLK`) 200 MHz, RISC-V (`KERNEL_CLK`) 100 MHz, `RV_FREQ` ratio 0.5 |
-| `CAPS` | 0x121 (VU, attention, Gated DeltaNet op) |
-| Timing | every constraint met at the link: setup WNS +0.017 ns, hold WHS +0.006 ns |
+| `CAPS` | 0x10121 (VU, attention, Gated DeltaNet op, dual weight stream) |
+| Timing | every constraint met at the link: setup WNS +0.017 ns, hold WHS +0.009 ns |
 
 Routed utilization of the kernel `tsr_k4`, from the link's kernel utilization report:
 
 | LUT | LUT as memory | FF | BRAM tiles | URAM | DSP |
 |---:|---:|---:|---:|---:|---:|
-| 385,137 (41.9 % of the budget) | 29,121 | 466,975 | 599 | 162 | 1,810 |
+| 405,371 (44.5 % of the budget) | 30,525 | 516,943 | 631 | 162 | 1,818 |
 
 The whole routed design with the shell, per SLR (SLR0 / SLR1 / SLR2):
 
 | Resource | SLR0 | SLR1 | SLR2 |
 |---|---:|---:|---:|
-| CLB sites in use | 39,385 (79.95 %) | 43,464 (88.23 %) | 43,849 (89.02 %) |
-| CLB LUTs | 195,279 | 228,729 | 223,373 |
-| CLB registers | 245,190 | 314,610 | 277,438 |
-| Block RAM tiles | 371 | 321 | 337 |
+| CLB sites in use | 42,991 (87.27 %) | 44,423 (90.18 %) | 45,345 (92.05 %) |
+| CLB LUTs | 207,999 | 232,737 | 235,524 |
+| CLB registers | 272,325 | 322,633 | 302,892 |
+| Block RAM tiles | 396 | 339 | 362 |
 | URAM | 0 | 148 | 34 |
-| DSP | 761 | 51 | 1,014 |
+| DSP | 770 | 46 | 1,018 |
 
-The design uses 15,505 SLLs: 7,210 between SLR0 and SLR1 and 8,295 between SLR1 and SLR2, of 17,280 on each boundary. The SLR1
+The design uses 16,560 SLLs: 7,794 between SLR0 and SLR1 and 8,766 between SLR1 and SLR2, of 17,280 on each boundary. The SLR1
 URAM is the SPM (128) and the shell. The SLR2 URAM is the Gated DeltaNet engine.
 
-The adapter costs about 3.6 K LUT and 6.3 K FF per channel, mostly the 512-bit R and W slices. The adapter adds no long path.
+Without the read-only bridge of the second weight stream, the adapter costs about 3.6 K LUT and 6.3 K FF per channel, mostly the
+512-bit R and W slices. The adapter adds no long path.
 `tb/platform/viv/kernel_ooc.tcl` runs synthesis of `tsr_u200_k1` out of context (3.333 ns `ap_clk`, every I/O budgeted 1.6 ns
 outside, `rtl/filelist_xilinx.f`). It is opt-in and needs Vivado.
 
@@ -736,7 +741,7 @@ validate, CMC, SC firmware 4.6.21), the XRT 2.18.179 deb (`build/xrt-driver/deb-
    (cold, then a second boot that must be warm), the `PING` round trip and rate, the `selftest`
    kernel against the shadow simulator, trace replays through the `replay` kernel and the DMI smoke (`--debug`). On failures try
    `TSR_XRT_DMA=staged` and `TSR_XRT_DMA_ALIGN=64` for DMA alignment ([xrt-host.md](xrt-host.md) §8). The release image reads
-   `CAPS` 0x121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
+   `CAPS` 0x10121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
 10. Backend. `TSR_DEVICE=xrt TSR_XCLBIN=... test-ggml-tesseract` and `test-backend-ops test -o MUL_MAT -b Tesseract0`. Pass: every
     case OK.
 11. Model check, matmul mode. Run `klcheck run --device sim --tokens <file> --out sim.klc` and the same with `--device xrt --out

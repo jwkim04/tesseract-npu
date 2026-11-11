@@ -798,7 +798,8 @@ interrupt with `mstatus.MIE` = 0.
 
 ### 13.1 Core boundary (`tsr_core`)
 
-Inputs `clk`, `rst_n`, `clk_rv`, `rst_rv_n`, `plat_err_i` (EX §9.3); the CSR port; one memory port per channel;
+Inputs `clk`, `rst_n`, `clk_rv`, `rst_rv_n`, `plat_err_i` (EX §9.3); the CSR port; one memory port per channel
+and, in a core with the dual weight stream (`CAPS` bit 16, EX §7.5), a read-only second one;
 output `host_irq_o` = `CTRL.IRQ_EN` ∧ (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200). The control core is
 mandatory (D14), so there is no `HAS_CTRL` parameter. Further parameters: `ITCM_BYTES`, `DTCM_BYTES`,
 `Q_DEPTH_*`, `ISSUE_FIFO_DEPTH`, `HAS_AT` (0: no unit 4), `HAS_SBA`, `CTRL_SYNC`, `LQ_DEPTH`, `LCQ_DEPTH`,
@@ -878,7 +879,7 @@ so the control plane and the VU do not fit there beside them: that is why both h
 
 The map of `tsr_u200_k4`:
 
-- SLR0: clusters 0 and 2 with their result assemblers, the pair source of clusters 0 and 2, the DDR0 bridge and
+- SLR0: clusters 0 and 2 with their result assemblers, the pair source of clusters 0 and 2, the DDR0 bridges and
   the DDR0 arbiter; and the control Pblock (`pblock_tsr_ctrl_plane`): the control core (Ibex, debug module,
   TCMs, bus, control window, every clock-domain crossing, the RV side of the DB block), the issue path with its
   two checker classes, the CSR block and the DB block's core side, with the issue and LCQ ends of the control
@@ -886,13 +887,16 @@ The map of `tsr_u200_k4`:
   without X2Y3. It leaves out the DDR0 controller's clock regions (X2Y1 to X2Y3) and the rows below, where
   cluster 0 has its home, and holds all of row Y4 at X0 to X2, under SLR1's dynamic Pblock where SPM, DMA and
   QACT are.
-- SLR2: clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge and
+- SLR2: clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridges and
   arbiter; and the VU Pblock (`pblock_tsr_vu`): the whole vector unit, front end and both lane banks, in clock
   regions X0Y10 to X2Y14, the three left columns of all five rows, next to the SPM across the SLR1 boundary and
   off the DDR3 controller.
 - SLR1, the data hub: the SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT, the
   DDR1 and DDR2 arbiters and bridges and the central gather receiver. The stages around the receiver, the
   DMA-side boundary slices of channels 0 and 3 and the adapter's control logic are left to Vivado.
+
+The bridges of a channel are the AXI4 bridge of its memory port and the read-only bridge of its second weight
+stream.
 
 The reasons. The control plane in SLR0: the SLR1 strip is nearly full with the shell, SPM, DMA and QACT, and the
 control plane is the difference between a placement that routes and one that does not. The vector unit in

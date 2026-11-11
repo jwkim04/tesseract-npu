@@ -24,7 +24,10 @@ Zoomed cluster (docs/rtl-mvm.md §2, §7; docs/spec.md §8): weight streamer tsr
 bursts, 512-beat FIFO), parse + unpack (tsr_mvm_front: chunk parser, meta, Q4_K scales, int8
 lanes), activation buffer tsr_mvm_actbuf (QS, D, BS per token, filled by the x broadcast), 128 MAC
 lanes (4 x tsr_mac_lane, int8 x int8), integer scale + fp term + accumulate (16 partials per row),
-tree16 (8 + 4 + 2 + 1 fadds), y gather back to the SPM. Weight beats: 64 B per cycle. The MAC lanes
+tree16 (8 + 4 + 2 + 1 fadds), y gather back to the SPM. Weight beats: 64 B per cycle on each weight
+stream. A cluster reads up to two weight streams at once, so the label of the weight arrow says UP TO
+2 × 64 B PER CYCLE (docs/rtl-mvm.md §15). The opened cluster keeps showing one stream: the weight
+streamer. The second stream has its own front end, which the figure does not draw. The MAC lanes
 also run the ATTQK and ATTPV modes (docs/design/03-attention-kv.md §8.1, §8.2).
 "FP ACCUMULATE" stands for the stages integer scale, fp term, accumulator of docs/rtl-mvm.md §7.
 Left out on purpose: the platform adapter and the XRT shell (the system figure shows them) and
@@ -187,10 +190,10 @@ ACC_H = ZY1 - 40 - ACC_Y
 AB_Y0, AB_Y1 = WS_Y, UN_Y + UN_H
 
 # external connections of the cluster (drawn before the panel: they cross its edge)
-f.arrow([(lcx, 112), (lcx, WS_Y + 12)], fat=True)
-f.arrow([(rcx, 112), (rcx, AB_Y0 + 12)])
-f.text(lcx, 80, "DDR4 CH1\n64 B PER CYCLE", "callout", anchor="middle", valign="middle")
-f.text(rcx, 80, "X BROADCAST\nFROM SPM", "callout", anchor="middle", valign="middle")
+f.arrow([(lcx, 144), (lcx, WS_Y + 12)], fat=True)
+f.arrow([(rcx, 144), (rcx, AB_Y0 + 12)])
+f.text(lcx, 96, "DDR4 CH1\nUP TO 2 × 64 B\nPER CYCLE", "callout", anchor="middle", valign="middle")
+f.text(rcx, 96, "X BROADCAST\nFROM SPM", "callout", anchor="middle", valign="middle")
 f.arrow([(rcx, ACC_Y + ACC_H - 12), (rcx, ZY1 + 72)])
 f.text(rcx, ZY1 + 104, "Y GATHER TO SPM", "callout", anchor="middle", valign="middle")
 

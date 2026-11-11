@@ -56,9 +56,10 @@ weight stream and not around raw compute.
 
 ### Design principles
 
-- Bandwidth-bound by design. A cluster consumes one beat of 64 B per cycle. The peak of a DDR4-2400
-  channel is 19.2 GB/s, which one beat per cycle matches at 300 MHz; at the 200 MHz core clock of the
-  release image a cluster consumes 12.8 GB/s. The goal is an unbroken beat supply, not more MACs.
+- Bandwidth-bound by design. One weight stream carries one beat of 64 B per cycle: 12.8 GB/s at the
+  200 MHz core clock of the release image. The peak of a DDR4-2400 channel is 19.2 GB/s, so a cluster
+  reads two weight streams from its channel for an MVM with T ≤ T_MAX / 2 (`CAPS` bit 16,
+  [rtl-mvm.md](rtl-mvm.md) §15). The goal is an unbroken beat supply, not more MACs.
 - Weight traffic stays per channel. Cluster c reads weights only from channel c, so the weight
   streams never share a memory port with each other. Where they cross SLRs they pass register pipes
   that carry one beat per cycle, so a crossing costs latency, not bandwidth (section 2).
@@ -73,8 +74,8 @@ weight stream and not around raw compute.
   (section 16, memory model). Execution may overlap further only when the result is provably the
   same.
 - Portability through layering. Vendor primitives appear only under `rtl/tech/`. The core exposes a
-  CSR port, one memory port per channel, a control-core clock and reset, and error and interrupt
-  levels; it contains no vendor AXI.
+  CSR port, one memory port per channel (and a read-only second one per channel with the dual weight
+  stream), a control-core clock and reset, and error and interrupt levels; it contains no vendor AXI.
 - The specification is the single source of truth. A change to the ISA, a layout or the numerics goes
   into the same commit as the matching edit of this document.
 - Reserved fields are zero. A tile op with a non-zero reserved field ends with `ILLEGAL_OP`.
@@ -132,7 +133,7 @@ platform adapter) plus a transport. The software and the core change only their 
 | Target-specific piece | Alveo U200 | Zynq / Kria | SoC |
 | --- | --- | --- | --- |
 | Transport | `xrt` | Zynq AXI | SoC driver |
-| Platform adapter | `rtl/platform/alveo_xrt`: AXI4-Lite to CSR port, one AXI4 bridge per DDR4 channel, kernel tops `tsr_u200_k1` and `tsr_u200_k4`, the bandwidth kernel. Register-only, `ap_ctrl_none` | Not provided | Not provided |
+| Platform adapter | `rtl/platform/alveo_xrt`: AXI4-Lite to CSR port, one AXI4 bridge per DDR4 channel and a read-only second bridge per channel in a kernel with the dual weight stream, kernel tops `tsr_u200_k1` and `tsr_u200_k4`, the bandwidth kernel. Register-only, `ap_ctrl_none` | Not provided | Not provided |
 | Tech wrappers | `rtl/tech/xilinx`: URAM, BRAM, DSP48E2 (two int8 tokens per DSP), inferred through attributes so that Verilator runs the same files | Not provided | SRAM macros |
 | Core parameters | `NUM_CH` 4, `BEAT_BITS` 512 | `NUM_CH` 1–2, `BEAT_BITS` about 128 | Open |
 
@@ -144,17 +145,18 @@ and `ST` name the channel in a 4-bit field (section 3). The RTL elaborates only 
 
 ### U200 configuration
 
-<p align="center"><img src="fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and the firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the control core and issue path, the 4 MiB SPM with the DMA and QACT, the vector unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge. Blocks are tagged with their SLR under the Pblock plan of the release image: the control core and issue path in SLR0, the SPM with DMA and QACT in SLR1, the vector unit in SLR2, clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2. The core clock is 200 MHz and clk_rv 100 MHz." width="100%"></p>
+<p align="center"><img src="fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and the firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the control core and issue path, the 4 MiB SPM with the DMA and QACT, the vector unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through AXI4 bridges, one for the memory port and a read-only one for the second weight stream. Blocks are tagged with their SLR under the Pblock plan of the release image: the control core and issue path in SLR0, the SPM with DMA and QACT in SLR1, the vector unit in SLR2, clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the AXI4 bridges in the SLR of their DDR4 channel. The core clock is 200 MHz and clk_rv 100 MHz." width="100%"></p>
 
 Fat arrows in the figure are the per-channel memory paths that carry the weight streams: the weight
-stream of a channel flows only into the cluster of that channel.
+streams of a channel flow only into the cluster of that channel.
 
 - Host (llama.cpp with `ggml-tesseract`, or PyTorch with `tsr_rt`): turns the graph into an op list
   (OPL), repacks the weights, loads the firmware image and launches kernels through the transport
   (XRT or the simulator). Over PCIe it moves op lists, weights and activations into card DRAM.
 - Platform adapter (Alveo XRT): the control bridge (`s_axi_control` to CSR; `ap_ctrl_none` and
-  `ADAPTER_CTRL.MEM_EN`, section 10) and one AXI4 memory bridge per channel. It reaches the core
-  through the CSR port and the platform error input `plat_err_i` (Core boundary interface below).
+  `ADAPTER_CTRL.MEM_EN`, section 10) and one AXI4 memory bridge per channel, with a read-only second
+  bridge per channel in a kernel with the dual weight stream. It reaches the core through the CSR
+  port and the platform error input `plat_err_i` (Core boundary interface below).
 - Core (vendor-independent SystemVerilog): the issue path, the SPM (activations, intermediate
   values, QA; 64 B lines; 4 MiB; even and odd line banks with two read paths), the vector unit
   (element ops, reductions, RoPE, the softmax steps of attention; s0–s15) and clusters 0–3 (stream
@@ -162,14 +164,14 @@ stream of a channel flows only into the cluster of that channel.
   y gather bus connect the SPM and the clusters.
 - Control core: RISC-V (Ibex RV32IMC), ITCM 128 KiB and DTCM 64 KiB, issue port, SPM window and debug
   module, on its own clock `clk_rv` (derived from `ap_clk_2`; section 16, [CC](design/04-control-core.md)).
-- DDR4 ch0–ch3: cluster c receives its weight stream from channel c only (up to 19.2 GB/s per
+- DDR4 ch0–ch3: cluster c receives its weight streams from channel c only (up to 19.2 GB/s per
   channel). Channel 0 also holds the OPL, IO and AUX regions (section 4) and a quarter of the weight
   rows; channels 1–3 hold a quarter each.
 
 The release image is `tsr_u200_k4`: four channels, `T_MAX` 4, the vector unit with 8 front, 8 EXP and
-4 back lanes, the attention modes, the fused Gated DeltaNet op, the debug block with trace writer and
-dispatch history. The core runs at 200 MHz and `clk_rv` at 100 MHz. `CAPS` reads 0x121 (VU, ATT,
-GDN). TOPK, DQROW and VMASK are not in the image.
+4 back lanes, the attention modes, the fused Gated DeltaNet op, the dual weight stream, the debug block
+with trace writer and dispatch history. The core runs at 200 MHz and `clk_rv` at 100 MHz. `CAPS` reads
+0x10121 (VU, ATT, GDN, MVM_DUAL). TOPK, DQROW and VMASK are not in the image.
 
 Heavy weight traffic flows only between a channel and that channel's cluster. The U200 platform
 places the DDR controllers in SLR0 (ch0), SLR1 (ch1, ch2) and SLR2 (ch3). Clusters 0 and 2 are
@@ -197,7 +199,9 @@ The normative definition is EX §9.3. The core does not use AXI directly. It exp
   adapter converts it to `s_axi_control` or similar. Image load, launches and debug access all go
   through this port.
 - Memory ports × C: one per channel. Read request `{addr_beat, len_beats, id}`, read response
-  `{data[511:0], id, last}`, and write request, data and response channels; all valid/ready.
+  `{data[511:0], id, last}`, and write request, data and response channels; all valid/ready. A core
+  with the dual weight stream has a second, read-only port per channel, with the read request and
+  response only ([rtl-core.md](rtl-core.md) §4).
 - Control-core clock: inputs `clk_rv` and `rst_rv_n`, treated as asynchronous to the core clock.
   `rst_rv_n` is only added to the reset of Ibex and the debug module and is not used at CDC
   endpoints (section 16, Clock domains).
@@ -218,7 +222,8 @@ Memory port rules:
   requests per channel outstanding.
 - The cluster's weight stream and the DMA share one channel port, split by the core's internal
   arbiter (the trace writer of the debug block joins as a write source on channel 0). Memory source 0
-  (FETCH) is tied off (EX §11).
+  (FETCH) is tied off (EX §11). The second weight stream of the dual weight stream uses the read-only
+  port and does not go through the arbiter.
 
 ## 3. Configuration parameters
 
@@ -491,9 +496,10 @@ covered by the KL criterion (section 17).
 
 ## 8. MVM cluster microarchitecture
 
-A cluster is a straight pipeline that consumes the weight range of its channel at one beat per cycle.
-Matching the beat rate to the channel bandwidth means the aim is not compute but an unbroken supply of
-beats.
+A cluster is a straight pipeline that consumes the weight range of its channel at one beat per cycle
+for each weight stream: one stream, or two for an MVM with T ≤ T_MAX / 2 on a core with `CAPS` bit 16
+([rtl-mvm.md](rtl-mvm.md) §15). Matching the beat rate to the channel bandwidth means the aim is not
+compute but an unbroken supply of beats.
 
 <p align="center"><img src="fig/cluster.svg" alt="MVM datapath of one cluster: the broadcast reader, gather and ACC of tsr_mvm; the cluster's broadcast tsr_vpipe and result tsr_rpipe; the front end (stream requester, chunk parser, meta and unpack) fed by DDR4 channel c; the back end (activation buffer, 128 MAC lanes, integer scale, i2f, fmul, block term, accumulate, tree16); the attention modes ATTQK and ATTPV on the MAC lanes." width="100%"></p>
 
