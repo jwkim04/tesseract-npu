@@ -56,10 +56,11 @@ KERNELS = {
     # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
     # control core in SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1: the registered unit done
     # strobes, the DB memory taps and the cluster reset copies). The local-intermediate banks and the local
-    # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x121 (VU, ATT,
-    # GDN), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused Gated DeltaNet state
-    # update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). The place_design hook is
-    # hw/u200/k4_major_blocks.tcl.
+    # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x10121 (VU,
+    # ATT, GDN, MVM_DUAL), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused Gated
+    # DeltaNet state update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). MVM_DUAL 1 adds
+    # the second weight stream of every cluster with its read-only port m_axi_chb<c> (docs/rtl-mvm.md §15). The
+    # place_design hook is hw/u200/k4_major_blocks.tcl.
     # FAST_CLK 1 (docs/platform-u200.md §8.10) selects the 250 MHz form: the PERF counters, the row-vector emitters, the PV convert pipeline,
     # the KVST placer and the slice pointer copies in their registered forms. Remove it for the netlist of the 200 MHz images.
     # Two other elaborations of tsr_u200_k4, as kernel entries:
