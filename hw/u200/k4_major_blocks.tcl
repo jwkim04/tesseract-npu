@@ -24,10 +24,20 @@
 #         the read-only bridge of the second weight stream of channel 3 and the DDR3 arbiter
 #   SLR2  vector unit Pblock (pblock_tsr_vu, below): the whole vector unit, front end and both lane banks
 #         (TSR_K4_VU, below)
-#   SLR1  the data hub: SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT and the
-#         DDR1 / DDR2 arbiters; the central gather receiver, the DDR1 / DDR2 bridges (with the read-only bridges
-#         of channels 1 and 2), the DMA-side boundary slices of channels 0 and 3, the request and response
-#         stages of the second weight stream in the core's data path and the adapter's control logic are left to Vivado
+#   SLR1  the data hub: SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT, the
+#         DDR1 / DDR2 arbiters and bridges (with the read-only bridges of the second weight stream of channels 1
+#         and 2) and the central gather receiver (the receivers of the two pair links, the row-maximum emitter and
+#         the accumulate adders); the stages around the receiver, the DMA-side boundary slices of channels 0 and
+#         3, the request and response stages of the second weight stream in the core's data path and the
+#         adapter's control logic are left to Vivado
+#
+# Why the DDR1 / DDR2 bridges and the central gather receiver are named: a link that left them free placed both
+# bridges and the receiver in SLR2. Each bridge then crossed the SLR1 / SLR2 boundary about 2,300 times (toward
+# its arbiter and toward the memory subsystem, both in SLR1) and the receiver about 1,300 times (the SPM read
+# line into the adders and the SPM write line out of them). The boundary needed 15,863 of its 17,280 SLLs and
+# the router could not resolve the demand. In SLR1 these blocks reach the SPM, the arbiters and the DDR1 /
+# DDR2 banks without a crossing; the pair links (two flits) and the weight streams of clusters 1 and 2 are
+# what crosses.
 #
 # Why the control plane is in SLR0: the placed out-of-context core puts 9,292 CLB sites
 # in SLR1 with issue / CSR / DB there (estimated SLR1 occupancy with the shell 94.7 % or more; an earlier
@@ -190,14 +200,14 @@ proc tsr_k4_major_block {where path} {
 }
 
 # The blocks of the dual weight stream (MVM_DUAL, docs/rtl-mvm.md §15): the row assembler of stream B of every cluster and,
-# in the kernel, the read-only bridge of every outer DDR channel. A netlist without the stream has none of them and the
+# in the kernel, the read-only bridge of every DDR channel. A netlist without the stream has none of them and the
 # hook says so. A netlist with some of them and not all of them stops it.
 set tsr_k4_dual_paths [list]
 foreach cluster {0 1 2 3} {
   lappend tsr_k4_dual_paths "$tsr_k4_mvm/u_gather/g_asm\[$cluster\].g_b.u_asm_b"
 }
 if {$tsr_k4_kernel} {
-  foreach channel {0 3} { lappend tsr_k4_dual_paths "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br" }
+  foreach channel {0 1 2 3} { lappend tsr_k4_dual_paths "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br" }
 }
 set tsr_k4_dual_have 0
 foreach path $tsr_k4_dual_paths {
@@ -220,10 +230,11 @@ foreach {pair slr} {0 0 1 2} {
   tsr_k4_major_block $slr "$tsr_k4_mvm/u_gather/g_pairs.g_pair\[$pair\].u_source"
 }
 
-# The AXI bridges of the outer DDR banks (the kernel body only; the bare core ends at the memory ports): the
-# bridge of the read-write port and the read-only bridge of the second weight stream (MVM_DUAL) of the channel.
+# The AXI bridges of the DDR banks (the kernel body only; the bare core ends at the memory ports): the bridge of
+# the read-write port and the read-only bridge of the second weight stream (MVM_DUAL) of the channel, in the SLR
+# of the channel's bank and arbiter.
 if {$tsr_k4_kernel} {
-  foreach {channel slr} {0 0 3 2} {
+  foreach {channel slr} {0 0 1 1 2 1 3 2} {
     tsr_k4_major_block $slr "$tsr_k4_body/g_ch\[$channel\].u_br"
     if {$tsr_k4_has_dual} { tsr_k4_major_block $slr "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br" }
   }
@@ -253,6 +264,16 @@ foreach {channel slr} {0 0 1 1 2 1 3 2} {
   tsr_k4_major_block $slr "$tsr_k4_dp/g_ch\[$channel\].u_arb"
 }
 
+# The central gather receiver beside the SPM it reads and writes: the receivers of the two pair links, the
+# row-maximum emitter and the 16 accumulate adders. Its issue slice, pipes and line registers are not named.
+foreach pair {0 1} {
+  tsr_k4_major_block 1 "$tsr_k4_mvm/u_gather/g_pairs.g_pair\[$pair\].g_narrow.u_remote"
+}
+tsr_k4_major_block 1 "$tsr_k4_mvm/u_gather/g_mx.u_rv"
+for {set tsr_k4_lane 0} {$tsr_k4_lane < 16} {incr tsr_k4_lane} {
+  tsr_k4_major_block 1 "$tsr_k4_mvm/u_gather/g_add\[$tsr_k4_lane\].u_add"
+}
+
 # Issue path with its checker classes, CSR block and the DB block's core side.
 if {$tsr_k4_ctrl_plane ne "free"} {
   foreach block {u_issue u_csr g_db.u_dbg g_xc.u_xc g_xc.g_at.u_chk_at} {
@@ -268,4 +289,4 @@ if {$tsr_k4_vu_where eq "pblock"} {
   tsr_k4_pblock_check [tsr_k4_vu_pblock_name] $tsr_k4_vu_min_ramb36 "vector unit"
 }
 puts "K4 major blocks: dual weight stream blocks in the netlist: $tsr_k4_has_dual"
-puts "K4 major blocks: clusters, assemblers and pair sources 0/2 in SLR0 and 1/3 in SLR2; control core, issue path with checkers, CSR and DB in the control Pblock ($tsr_k4_ctrl_plane); whole vector unit in SLR2 ($tsr_k4_vu_where); SPM, DMA, QACT and the arbiters of channels 1 and 2 in SLR1; central gather receiver and individual stages free"
+puts "K4 major blocks: clusters, assemblers and pair sources 0/2 in SLR0 and 1/3 in SLR2; control core, issue path with checkers, CSR and DB in the control Pblock ($tsr_k4_ctrl_plane); whole vector unit in SLR2 ($tsr_k4_vu_where); SPM, DMA, QACT, the arbiters and bridges of channels 1 and 2 and the central gather receiver in SLR1; individual stages free"

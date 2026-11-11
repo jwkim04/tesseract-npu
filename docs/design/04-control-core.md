@@ -890,9 +890,9 @@ The map of `tsr_u200_k4`:
   arbiter; and the VU Pblock (`pblock_tsr_vu`): the whole vector unit, front end and both lane banks, in clock
   regions X0Y10 to X2Y14, the three left columns of all five rows, next to the SPM across the SLR1 boundary and
   off the DDR3 controller.
-- SLR1, the data hub: the SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT and the
-  DDR1 and DDR2 arbiters. The central gather receiver, the DDR1 and DDR2 bridges, the DMA-side boundary slices
-  of channels 0 and 3 and the adapter's control logic are left to Vivado.
+- SLR1, the data hub: the SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT, the
+  DDR1 and DDR2 arbiters and bridges and the central gather receiver. The stages around the receiver, the
+  DMA-side boundary slices of channels 0 and 3 and the adapter's control logic are left to Vivado.
 
 The reasons. The control plane in SLR0: the SLR1 strip is nearly full with the shell, SPM, DMA and QACT, and the
 control plane is the difference between a placement that routes and one that does not. The vector unit in

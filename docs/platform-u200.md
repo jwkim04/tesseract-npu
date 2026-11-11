@@ -287,8 +287,8 @@ it when the block assignments or the platform change, and look at it before a bu
 | `pblock_tsr_ctrl_plane`, child of SLR0 | the control core (Ibex, TCMs, debug module, bus, control window, every clock-domain crossing), the RV debug logic, the RV-side link ends, `u_issue` with its two checker classes (VU and AT), `u_csr`, the core side of the DB block, the issue and LCQ link ends |
 | SLR2 platform Pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge, the read-only bridge of channel 3, the DDR3 arbiter |
 | `pblock_tsr_vu`, child of SLR2 | the whole vector unit: front end and both lane banks |
-| SLR1 platform Pblock | SPM, the RISC-V SPM bridge and the SPM end of its link, DMA with KVST, QACT, the arbiters of channels 1 and 2 |
-| unassigned | the central gather receiver, the DDR1 and DDR2 bridges and the read-only bridges of channels 1 and 2, the request and response stages of the second weight stream in the core's data path, the DMA-side DDR boundary slices of channels 0 and 3, the `XSLR_REG` glue, the adapter's control logic |
+| SLR1 platform Pblock | SPM, the RISC-V SPM bridge and the SPM end of its link, DMA with KVST, QACT, the arbiters of channels 1 and 2, the DDR1 and DDR2 bridges, the read-only bridges of channels 1 and 2, the central gather receiver (the receivers of the two pair links, the row-maximum emitter, the 16 accumulate adders) |
+| unassigned | the issue slice, pipes and line registers of the central gather receiver, the request and response stages of the second weight stream in the core's data path, the DMA-side DDR boundary slices of channels 0 and 3, the `XSLR_REG` glue, the adapter's control logic |
 
 The control Pblock is `CLOCKREGION_X0Y3:CLOCKREGION_X1Y4`, `CLOCKREGION_X2Y4` and `CLOCKREGION_X3Y3:CLOCKREGION_X5Y4`. It has
 16,300 CLBs, 252 RAMB36 and 840 DSP. It spans the two rows at the SLR1 boundary and leaves out the clock regions of the DDR0

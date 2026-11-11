@@ -124,11 +124,16 @@ def expected(prefix, kernel, ctrl_where, vu_where="vu", dual=True):
     for pair, n in ((0, 0), (1, 2)):
         want[f"{mvm}u_gather/g_pairs.g_pair[{pair}].u_source"] = slr(n)
     if kernel:
-        want[f"{prefix}g_ch[0].u_br"] = slr(0)
-        want[f"{prefix}g_ch[3].u_br"] = slr(2)
-        if dual:
-            want[f"{prefix}g_dual.g_chb[0].u_br"] = slr(0)
-            want[f"{prefix}g_dual.g_chb[3].u_br"] = slr(2)
+        for c, n in ((0, 0), (1, 1), (2, 1), (3, 2)):
+            want[f"{prefix}g_ch[{c}].u_br"] = slr(n)
+            if dual:
+                want[f"{prefix}g_dual.g_chb[{c}].u_br"] = slr(n)
+    # the central gather receiver: the receivers of the two pair links, the row-maximum emitter, the accumulate adders
+    for pair in (0, 1):
+        want[f"{mvm}u_gather/g_pairs.g_pair[{pair}].g_narrow.u_remote"] = slr(1)
+    want[f"{mvm}u_gather/g_mx.u_rv"] = slr(1)
+    for lane in range(16):
+        want[f"{mvm}u_gather/g_add[{lane}].u_add"] = slr(1)
     want[core + "u_ctrl"] = CTRL
     want[core + "g_db.u_dbg_rv"] = CTRL
     for e in ("u_spm_rx", "u_issue_tx", "u_lq_tx"):
@@ -208,9 +213,10 @@ def test_only_whole_blocks_are_named():
     assert [p for p in got if p.endswith("g_vu.u_vu")]
 
 
-@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "g_asm[2].g_b.u_asm_b", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "g_dual.g_chb[0].u_br",
-                                     "g_dual.g_chb[3].u_br", "u_gather/g_asm[1]",
-                                     "g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source"])
+@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "g_asm[2].g_b.u_asm_b", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "g_ch[1].u_br",
+                                     "g_dual.g_chb[0].u_br", "g_dual.g_chb[2].u_br", "g_dual.g_chb[3].u_br", "u_gather/g_asm[1]",
+                                     "g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source",
+                                     "g_pairs.g_pair[0].g_narrow.u_remote", "g_mx.u_rv", "g_add[15].u_add"])
 def test_missing_block_stops_the_hook(missing):
     r, got, _ = run_hook(missing=missing)
     assert r.returncode != 0
@@ -222,7 +228,7 @@ def test_missing_block_stops_the_hook(missing):
 def test_partial_dual_weight_stream_stops_the_hook():
     r, got, _ = run_hook(missing="g_dual.g_chb[3]")
     assert r.returncode != 0
-    assert "K4 major blocks: 5 of 6 blocks of the dual weight stream are in the netlist" in r.stderr
+    assert "K4 major blocks: 7 of 8 blocks of the dual weight stream are in the netlist" in r.stderr
 
 
 @pytest.mark.parametrize("missing", ["g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source"])

@@ -104,6 +104,10 @@ def labels(paths, reduced=False):
             pair = re.fullmatch(r'g_(?:local_att|pairs)\.g_pair\[(\d+)\]\.(u_local_asmax|u_source)', tail)
             if pair:
                 classes[pair[2]].append(pair[1])
+            elif re.fullmatch(r'g_pairs\.g_pair\[\d+\]\.g_narrow\.u_remote', tail):
+                classes["u_remote"].append("")
+            elif re.fullmatch(r'g_add\[\d+\]\.u_add', tail):
+                classes["u_add"].append("")
             else:
                 classes[tail].append("")
     frontend = ("u_gen", "u_rd", "u_ang", "u_inj", "u_lma", "u_lmb")
@@ -112,7 +116,8 @@ def labels(paths, reduced=False):
             del classes[block]
         classes["vu_frontend"] = [""]
     for key, blocks in (("rv_link", ("g_rv_local.u_spm_rx", "g_rv_local.u_issue_tx", "g_rv_local.u_lq_tx")),
-                        ("core_link", ("g_rv_local.u_spm_tx", "g_rv_local.u_issue_rx", "g_rv_local.u_lq_rx"))):
+                        ("core_link", ("g_rv_local.u_spm_tx", "g_rv_local.u_issue_rx", "g_rv_local.u_lq_rx")),
+                        ("gather_rx", ("u_remote", "g_mx.u_rv", "u_add"))):
         if all(block in classes for block in blocks):
             for block in blocks:
                 del classes[block]
@@ -120,6 +125,8 @@ def labels(paths, reduced=False):
     names = (("u_cl", "클러스터"), ("u_asm", "결과 조립기"), ("u_asm_b", "결과 조립기(둘째 가중치 스트림)"), ("u_bank", "VU·계수 bank"),
              ("u_local_asmax", "로컬 어텐션"), ("u_source", "결과 수집·후처리"),
              ("u_br", "DDR 브리지"), ("u_br_b", "DDR 읽기 전용 브리지(둘째 가중치 스트림)"), ("u_arb", "DDR 중재기"), ("u_spm", "SPM"),
+             ("gather_rx", "중앙 gather 수신부(쌍 링크 수신기·행 최댓값 방출기·누산 가산기)"),
+             ("u_remote", "gather 쌍 링크 수신기"), ("g_mx.u_rv", "gather 행 최댓값 방출기"), ("u_add", "gather 누산 가산기"),
              ("u_bridge", "RV↔SPM 접속부"),
              ("u_ctrl", "RV·TCM·CDC"), ("g_db.u_dbg_rv", "RV 디버그"),
              ("rv_link", "제어 전송 RV측"), ("core_link", "제어 전송 중앙측"),
@@ -341,7 +348,13 @@ def render(hook, report, output):
     placed_dma = any(path.endswith("/u_dma") for path in placed)
     placed_issue = any(path.endswith("/u_issue") for path in placed)
     if full:
-        word(61, box_y + 39, "중앙 gather 수신부, DDR1·2 브리지, DMA 측 DDR 경계 슬라이스, 어댑터 제어, 기타 연결 로직 등", 16, GRAY)
+        placed_gather_rx = any(path.endswith("/g_mx.u_rv") for path in placed)
+        placed_inner_br = any(path.endswith("/g_ch[1].u_br") for path in placed)
+        placed_dual = any("g_dual.g_chb" in path for path in placed)
+        free = ("gather 수신부 주변 파이프·슬라이스, " if placed_gather_rx else "중앙 gather 수신부, ")
+        free += "" if placed_inner_br else "DDR1·2 브리지, "
+        free += "둘째 가중치 스트림의 요청·응답 단, " if placed_dual else ""
+        word(61, box_y + 39, free + "DMA 측 DDR 경계 슬라이스, 어댑터 제어, 기타 연결 로직 등", 16, GRAY)
     elif reduced:
         free = "중앙 gather, DDR1·2 브리지, 어댑터 제어, " + ("" if placed_issue else "issue·CSR·중앙 debug, ")
         word(61, box_y + 39, free + "기타 연결 로직 등", 16, GRAY)
