@@ -6,7 +6,7 @@
 #
 #   TSR_BUILD     build tree with the XRT backend (default build/xrt)
 #   TSR_XCLBIN    the card image (default: build/u200/k4/tsr_u200_k4.xclbin, what hw/u200/build_xclbin.sh k4 writes)
-#   WARM_TRACE    trace directory of the first-ATTPV replay (default traces/at/errors/at_s53_0009, else the tesseract-sw checkout's)
+#   WARM_TRACE    trace directory of the first-ATTPV replay (default traces/at/errors/at_s53_0009 of this checkout)
 #   WARM=1        replay the first-ATTPV trace first (for an image with that defect; off by default)
 #   NO_DUMP=1     no TSR_DUMP_PLAN: the speed of the same run without the profiler
 #   PROMPT, CTX, EXTRA, TIMEOUT as in capture_sim.sh
