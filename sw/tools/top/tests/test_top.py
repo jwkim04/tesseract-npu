@@ -676,7 +676,10 @@ def test_identity(klcheck, model, prompts):
             for mon in ("0", "1"):
                 md = os.path.join(d, "mon-" + phase)
                 os.makedirs(md, exist_ok=True)
-                env = dict(os.environ, TSR_DEVICE="sim", TSR_MON=mon, TSR_MON_DIR=md, TSR_MON_KEEP="1", TSR_SIM_THREADS="2")
+                # TSR_MON_PERF_MS=0: a PERF read after every launch. With the default interval the run of a quiet host ends
+                # before the first read after the attach is due (100 ms), and the record it leaves holds no PERF counts.
+                env = dict(os.environ, TSR_DEVICE="sim", TSR_MON=mon, TSR_MON_DIR=md, TSR_MON_KEEP="1", TSR_SIM_THREADS="2",
+                           TSR_MON_PERF_MS="0")
                 out = os.path.join(d, "%s-mon%s.klc" % (phase, mon))
                 cmd = [klcheck, "run", "-m", model, "--device", "sim", "--phase", phase, "--n-prompts", "1", "-n", "16", "--out", out]
                 if prompts:
@@ -687,7 +690,8 @@ def test_identity(klcheck, model, prompts):
             r = subprocess.run([klcheck, "compare", "--ref", outs["0"], "--dev", outs["1"], "--expect-identical"], capture_output=True, text=True, timeout=300)
             check(r.returncode == 0, "%s: TSR_MON on / off, every logits row identical: %s" % (phase, (r.stdout + r.stderr)[-300:]))
             recs = tsr_top.scan_records(os.path.join(d, "mon-" + phase), include_dead=True)
-            check(len(recs) == 1 and recs[0]["launches"] > 0 and recs[0]["perf"][0] > 0, "%s: the TSR_MON=1 run published (%d records)" % (phase, len(recs)))
+            check(len(recs) == 1 and recs[0]["launches"] > 0 and recs[0]["perf_launches"] == recs[0]["launches"] and recs[0]["perf"][0] > 0,
+                  "%s: the TSR_MON=1 run published, with a PERF read after every launch (%d records)" % (phase, len(recs)))
             check(recs and recs[0]["mode"] == ("M6" if phase == "m6" else "M7"), "%s: mode %s" % (phase, recs[0]["mode"] if recs else "-"))
             a = open(outs["0"], "rb").read()
             b = open(outs["1"], "rb").read()
