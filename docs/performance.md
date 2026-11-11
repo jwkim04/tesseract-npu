@@ -119,11 +119,15 @@ tokens per second = 1 / (cycles per token / f_core + t_launch * launches per tok
 In full mode a decode token is one launch, so the device share of the wall time is the figure to check.
 In matmul mode a token has one launch per graph split, and the CPU ops add to `t_host`.
 
-The weight stream sets a floor. A decode token reads every weight once. A cluster takes at most one
-64-byte beat per core clock from its channel, so the cycles per token cannot fall below the largest
-per-channel weight volume divided by 64 bytes. At 200 MHz that is 12.8 GB/s per channel. The DDR
-utilization U, which is the bytes read per token times tokens per second over the measured
-bandwidth of the channels, compares a run with that floor ([spec](spec.md) §14, [prof-dbg.md](prof-dbg.md) §3).
+The weight traffic sets a floor. A decode token reads every weight once. With the dual weight
+stream (`CAPS` bit 16, [rtl-mvm.md](rtl-mvm.md) §15) a cluster can take two 64-byte beats per core
+clock for an MVM with T ≤ T_MAX / 2, which covers every weight MVM of a one-token decode launch. At
+200 MHz that requests 25.6 GB/s per channel, more than a DDR4-2400 channel gives (19.2 GB/s peak,
+[spec](spec.md) §1, Design principles). So the memory channel, not the core clock, sets the floor:
+the cycles per token cannot fall below the largest per-channel weight volume divided by the bytes
+per core clock that the channel delivers. The DDR utilization U, which is the bytes read per token
+times tokens per second over the measured bandwidth of the channels, compares a run with that floor
+([spec](spec.md) §14, [prof-dbg.md](prof-dbg.md) §3).
 
 Cycle counts are the portable figure. They do not depend on host load, and they carry to another
 core clock as long as the DDR channels keep up. Two things move them with the clocks. The gaps where
