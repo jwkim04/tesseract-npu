@@ -6,9 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-12
+
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).
+It runs on Tesseract Core 1.1.0 and 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)). Core 1.1.0 needs this release or a later one.
+
 ### Added
 
+- `TSR_MVM_DUAL` (default 1) controls the dual weight stream of a core with `CAPS` bit 16 `MVM_DUAL`, the feature of Tesseract Core 1.1.0. `TSR_MVM_DUAL=0` turns it off: the xrt transport writes `ADAPTER_CTRL` bit 1 `DUAL_DIS` at bind (`sw/transport/tsr_kdev.cpp`), and the `sim` transport runs its cycle model with one stream. Output bits do not change, only timing.
+- The xrt transport accepts the kernel arguments `chb<c>` (offset 0x100 + 8c), the read-only port of the second weight stream of channel c. It checks that a kernel has one for every channel or none, and that each uses the memory bank of `ch<c>` (`chb_by_slot` in `sw/transport/tsr_transport_xrt.cpp`). A Basis before 1.2.0 refuses a kernel that has them.
+- The simulator models `CAPS` bit 16: with the run-time enable on, a weight MVM with T ≤ T_MAX / 2 reads two weight streams per channel (`docs/rtl-mvm.md` §15.7). `TSR_SIM_CARD=k4dual` is the card image (`k4full`) with the feature, `TSR_SIM_MVM_DUAL` sets (1) or clears (0) the bit, and `TSR_SIM_MEM_RATE` bounds the memory rate in weight beats per cycle and channel. The `sim` transport has the bit only with `TSR_SIM_CARD=k4dual` or `TSR_SIM_MVM_DUAL=1`, and `TSR_SIM_VU=0` keeps it. Results do not change.
+- `tsr_versions_str` prints `MVM_DUAL` among the `CAPS` names (`Tesseract Core 1.0 (VU ATT GDN MVM_DUAL)` for the release image), and so do `tsr-selftest` and the llama.cpp device list. The generated headers have `CAPS_MVM_DUAL` and `ADAPTER_CTRL_DUAL_DIS` (`sw/ctrl/include/tsr/mmio.hpp`).
+- `tsr_bw --cu NAME[,NAME]` drives one named compute unit of a bandwidth image that has several (`hw/u200/bw/bw2x200.cfg`), or two at once. Two units read the same banks at the same time, in read mode only, and the tool reports per bank the read rate of each unit and their sum (`sw/tools/tsr_bw.cpp`).
 - `tsr-top` shows the `MEM BW` meter, the read rate of all DDR channels as a share of what the DRAM gives, and a second line in the time series box for the device memory in use. The three meters share one row from 96 columns and take two rows on a narrower terminal.
+
+### Changed
+
+- `tsr-top` takes the stream limit of its DDR panel and of `--json` (`rates.ddr.stream_limit_gbs`, `pct_stream`) as two beats of 64 B per core cycle and channel on a core with `CAPS` bit 16, the dual weight stream. The new key `rates.ddr.streams` gives the number of weight streams of a cluster. Counted with one beat, the read rate of such a core came out above 100 % of the limit.
+- Matching a launch trace to a device ignores `CAPS.MVM_DUAL`, since the bit changes timing only: traces made on a core without the bit replay on a core with it and the reverse (`tsr-trace-replay --device`, `tsr-selftest --traces`).
+- The profile report page (`sw/tools/prof`) is a profiler window: toolbar, launch tree, timeline with a row per unit, and a bottom pane with Summary, Records, Graph and Details tabs. `capture_card.sh` defaults to `build/u200/k4/tsr_u200_k4.xclbin`, the image that `hw/u200/build_xclbin.sh k4` writes, and no longer replays the first-ATTPV trace unless `WARM=1`.
 
 ### Fixed
 
@@ -16,11 +32,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 - `tsr_mon_read` tries for 200 ms and gives the CPU away while the writer stays stopped inside an update. It made 100,000 tries without a pause and returned -3 when none found the page consistent. The ctest `transport_mon`, whose writer never pauses, failed now and then for that reason. The test now counts a give-up (-3) apart from a torn page and ends on a number of consistent reads.
 - The capacity probe of the xrt transport and the capacity check of `tsr-selftest` no longer fail on a block that cannot be read. The shell's DDR4 controllers use ECC, and a block that was not written since the xclbin was loaded can hold no valid ECC word: its read fails until it is written. The probe read both blocks of a pair before it wrote them, so the open stopped with `capacity probe ... cannot read the buffer`, and the failed read moved the transport to `staged` DMA. The new `kdev::mem_try_read` reads bytes that may never have been written. A block it cannot read is taken as never written: the test writes it, it holds zeros afterward, and one line on stderr names it. The DMA mode stays as it was.
 - The ctest `tools_top_identity` reads PERF after every launch (`TSR_MON_PERF_MS=0`). With the default interval of 100 ms it failed on a quiet host: the run of the tiny model ended before the first read after the attach was due, and the record it left held no PERF counts.
-
-### Changed
-
-- `tsr-top` takes the stream limit of its DDR panel and of `--json` (`rates.ddr.stream_limit_gbs`, `pct_stream`) as two beats of 64 B per core cycle and channel on a core with `CAPS` bit 16, the dual weight stream. The new key `rates.ddr.streams` gives the number of weight streams of a cluster. Counted with one beat, the read rate of such a core came out above 100 % of the limit.
-- The profile report page (`sw/tools/prof`) is a profiler window: toolbar, launch tree, timeline with a row per unit, and a bottom pane with Summary, Records, Graph and Details tabs. `capture_card.sh` defaults to the k4f250 release image and no longer replays the first-ATTPV trace unless `WARM=1`.
 
 ## [1.1.0] - 2026-11-10
 
@@ -86,7 +97,8 @@ Basis ABI 1. Targets Tesseract Core capability 1.0.
 - ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
 - Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.1.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.2.0...HEAD
+[1.2.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.1.0...basis-v1.2.0
 [1.1.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.0.0...basis-v1.1.0
 [1.0.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v0.1.0...basis-v1.0.0
 [0.1.0]: https://github.com/jwkim04/tesseract-npu/releases/tag/basis-v0.1.0
