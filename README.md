@@ -35,27 +35,27 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 
 ## Performance
 
-Decode and prefill rates on one Alveo U200 card, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
+Decode and prefill rates on one Alveo U200 card with the Tesseract Core 1.1.0 image, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
 and decode is 64 tokens, both from `llama-bench`. The last column is the decode rate per watt of card
 board power.
 
 | Model | Quantization | Prefill tok/s | Decode tok/s | tok/s/W |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q8_0 | 5.08 | 1.59 | 0.028 |
-| Qwen3.5 9B | Q8_0 | 16.62 | 4.99 | 0.090 |
-| Gemma 4 31B | Q4_K_M | 9.29 | 2.44 | 0.042 |
-| Gemma 4 26B-A4B | Q8_0 | 20.94 | 10.18 | 0.182 |
-| Gemma 4 12B | Q8_0 | 15.54 | 3.74 | 0.065 |
-| Gemma 4 E4B | Q8_0 | 39.40 | 9.03 | 0.163 |
-| Gemma 4 E2B | Q8_0 | 75.96 | 17.44 | 0.318 |
+| Qwen3.8 27B | Q8_0 | 5.08 | 2.11 | 0.036 |
+| Qwen3.5 9B | Q8_0 | 16.63 | 6.57 | 0.114 |
+| Gemma 4 31B | Q4_K_M | 9.30 | 3.35 | 0.055 |
+| Gemma 4 26B-A4B | Q8_0 | 25.33 | 13.32 | 0.235 |
+| Gemma 4 12B | Q8_0 | 15.54 | 5.13 | 0.085 |
+| Gemma 4 E4B | Q8_0 | 39.41 | 12.26 | 0.207 |
+| Gemma 4 E2B | Q8_0 | 76.05 | 23.12 | 0.393 |
 
 With multi-token prediction the draft head proposes tokens and the device verifies them in one launch. The output is identical to plain greedy decoding.
 
 | Model | Quantization | Plain tok/s | MTP tok/s | Speedup |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q4_K_M | 2.19 | 3.59 | 1.64x |
-| Qwen3.8 2B | Q4_K_M | 23.06 | 25.45 | 1.10x |
-| Gemma 4 26B-A4B | Q8_0 | 10.15 | 11.77 | 1.16x |
+| Qwen3.8 27B | Q4_K_M | 2.84 | 3.89 | 1.37x |
+| Qwen3.8 2B | Q4_K_M | 28.41 | 30.37 | 1.07x |
+| Gemma 4 26B-A4B | Q8_0 | 13.23 | 15.15 | 1.15x |
 
 The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
 
