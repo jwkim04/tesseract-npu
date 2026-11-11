@@ -1457,7 +1457,7 @@ Protocol layer (`tsr_kdev.cpp`, SW-18). One implementation serves every kind and
 - Watermarks (EX §4.9): a watermark written since the last `SOFT_RESET` is rewritten just below the oldest
   unanswered launch 2^30 launches after its write, so it never wraps onto new launches (it would after 2^31).
 
-kdev (EX §10.2). Methods: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `buf_bytes`, `ch_addr`,
+kdev (EX §10.2). Methods: `reg_read`, `reg_write`, `mem_read`, `mem_try_read`, `mem_write`, `num_ch`, `ch_bytes`, `buf_bytes`, `ch_addr`,
 `detect_capacity`, `describe`; `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's `advance`
 hint), with `now_ns()` (the time base), `simulated()`, `has_adapter()` and `sim()` (`sw/transport/tsr_kdev.h`).
 

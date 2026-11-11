@@ -23,8 +23,8 @@ tsr_transport.h   C API: open, close, config, write, read, csr, image, boot, lau
 
 A new kind derives from `tsr::kdev` (`name`, `num_ch`, `ch_bytes`, `ch_addr`, `reg_read`, `reg_write`, `mem_write`,
 `mem_read`, `now_ns` and `idle` when time is simulated, and `detect_capacity` and `buf_bytes` when the buffer can be larger
-than the memory behind it, as on `xrt`: [`docs/xrt-host.md`](../../docs/xrt-host.md) §4.4, and `core_clock_hz` when the platform reports the
-core clock) and registers with
+than the memory behind it, as on `xrt`: [`docs/xrt-host.md`](../../docs/xrt-host.md) §4.4, `mem_try_read` when a read of memory that was
+never written can fail, and `core_clock_hz` when the platform reports the core clock) and registers with
 `tsr::register_kdev("mykind", factory)`, then `TSR_DEVICE=mykind` selects it. On `sim` the host triggers time (a read of the completion ring runs
 the model until something happens), so results are deterministic. `tsr_transport.h` is EX §10.1 plus the
 conveniences of SW §9.1. Every call returns 0 or a negative `TSR_TE_*` code (`INVAL`, `IO`, `TIMEOUT`, `LOST`,

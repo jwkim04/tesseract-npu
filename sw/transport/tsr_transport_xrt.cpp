@@ -35,7 +35,10 @@
 // TSR_XRT_DMA_ALIGN=4096 for each of them left unset (xrt_env_defaults, docs/xrt-host.md §9; one
 // line on stderr names those applied).
 // A failed direct transfer is retried once through the staged path; if that succeeds the
-// transport stays on staged (one warning).
+// transport stays on staged (one warning). A failed mem_try_read is tried once through the staged
+// path too, without a message. If that reads the bytes, the direct path was the reason and the
+// transport stays on staged in the same way. If not, the memory holds no valid ECC word there and
+// nothing changes.
 
 #include "tsr_kdev.h"
 #include "tsr_mon.h"
@@ -125,6 +128,7 @@ public:
     int reg_write(uint32_t off, uint32_t val) override;
     int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override;
     int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override;
+    int mem_try_read(uint32_t ch, uint64_t off, void * dst, size_t n) override;
 
 private:
     int raw_write(uint32_t ch, uint64_t off, const void * src, size_t n) override;
@@ -151,6 +155,7 @@ private:
     dma_rules staged_rules_;
     std::unique_ptr<dma_engine> eng_;
     bool fell_back_ = false;
+    bool quiet_ = false;                  // raw_read prints nothing when it fails (inside mem_try_read)
 };
 
 xrt_kdev::xrt_kdev() {
@@ -385,6 +390,10 @@ std::string xrt_kdev::describe() const {
 // 8 GiB below). Owner mode measures it with detect_ch_capacity and makes it the channel size, so
 // that no heap, KV cache or tensor is placed above it. TSR_ATTACH writes nothing: it takes the
 // value an earlier owner recorded for this card (tsr_mon_cap_write), else keeps the buffer size.
+// The shell's DDR4 controllers use ECC, and a block that was not written since the xclbin was
+// loaded can hold no valid ECC word: its read fails until it is written. The probe saves its
+// blocks through mem_try_read, so such a block does not fail the open. It is written by the test,
+// holds zeros afterward, and one line on stderr names it.
 int xrt_kdev::detect_capacity(bool probe) {
     constexpr uint64_t MIN_CAP = 1 * GiB;   // smaller sizes are not tested (the channel buffer is at least 1 GiB)
     if (bo_.empty()) return 0;
@@ -398,25 +407,37 @@ int xrt_kdev::detect_capacity(bool probe) {
         return 0;
     }
     uint64_t smallest = UINT64_MAX;
+    std::string unread;   // "ch0 + 0x..., ch3 + 0x...": the blocks the probe could not read before it wrote them
+    const auto note_unread = [&unread]() {
+        if (unread.empty()) return;
+        fprintf(stderr, "tsr_transport(xrt): capacity probe: %s could not be read before the test (no valid ECC word is stored "
+                        "there); the probe wrote there, and these blocks hold zeros now\n", unread.c_str());
+    };
     for (size_t c = 0; c < bo_.size(); ++c) {
         const uint32_t ch = (uint32_t) c;
         uint64_t cap = 0;
+        std::vector<uint64_t> blank;
         const int rc = detect_ch_capacity(
             buf_[c], MIN_CAP, [this, ch](uint64_t off, const void * p, size_t n) { return mem_write(ch, off, p, n); },
-            [this, ch](uint64_t off, void * p, size_t n) { return mem_read(ch, off, p, n); }, &cap);
+            [this, ch](uint64_t off, void * p, size_t n) { return mem_read(ch, off, p, n); }, &cap,
+            [this, ch](uint64_t off, void * p, size_t n) { return mem_try_read(ch, off, p, n); }, &blank);
         if (rc != 0) {
+            note_unread();
             fprintf(stderr, "tsr_transport(xrt): cannot measure the capacity of channel %zu\n", c);
             return -1;
         }
+        for (uint64_t off : blank) unread += fmt("%sch%zu + 0x%" PRIx64, unread.empty() ? "" : ", ", c, off);
         if (gib_override_ != 0 && cap < buf_[c]) {
             fprintf(stderr, "tsr_transport(xrt): TSR_XRT_CH_GIB=%" PRIu64 " is more than channel %zu holds: its memory is %.2f GiB (measured at open; "
                             "the xclbin memory topology says %.2f GiB). Use TSR_XRT_CH_GIB=%" PRIu64 " or less, or leave it unset\n",
                     gib_override_, c, (double) cap / GiB, (double) buf_[c] / GiB, std::max<uint64_t>(cap / GiB, 1));
+            note_unread();
             return -1;
         }
         size_[c] = cap;
         smallest = std::min(smallest, cap);
     }
+    note_unread();
     cap_how_ = "measured";
     const char * dbg = getenv("TSR_DEBUG");
     if (dbg != nullptr && atoi(dbg) >= 1) {
@@ -484,8 +505,10 @@ int xrt_kdev::raw_read(uint32_t ch, uint64_t off, void * dst, size_t n) {
         }
         return 0;
     } catch (const std::exception & e) {
-        fprintf(stderr, "tsr_transport(xrt): %s DMA from ch%u + 0x%" PRIx64 " (%zu bytes) failed: %s\n", dma_mode_name(dma_), ch, off,
-                n, e.what());
+        if (!quiet_) {
+            fprintf(stderr, "tsr_transport(xrt): %s DMA from ch%u + 0x%" PRIx64 " (%zu bytes) failed: %s\n", dma_mode_name(dma_), ch,
+                    off, n, e.what());
+        }
         return -1;
     }
 }
@@ -510,6 +533,24 @@ int xrt_kdev::mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) {
 int xrt_kdev::mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) {
     int r = eng_->read(ch, off, dst, n);
     if (r != 0 && fall_back("read")) r = eng_->read(ch, off, dst, n);
+    return r;
+}
+
+// kdev.h: a failure means that the bytes were never written, so it has no message and changes
+// nothing. A direct read can also fail because of the path, so the staged path reads once more:
+// where it gets the bytes, the path was the reason and the transport falls back as mem_read does.
+// The transport's mutex makes kdev calls serial, so the flag needs no lock.
+int xrt_kdev::mem_try_read(uint32_t ch, uint64_t off, void * dst, size_t n) {
+    quiet_ = true;
+    int r = eng_->read(ch, off, dst, n);
+    if (r != 0 && dma_ == dma_mode::direct && !fell_back_) {
+        dma_engine staged(*this, staged_rules_);
+        if (staged.read(ch, off, dst, n) == 0) {
+            fall_back("read");
+            r = 0;
+        }
+    }
+    quiet_ = false;
     return r;
 }
 

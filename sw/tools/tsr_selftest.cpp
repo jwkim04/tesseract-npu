@@ -268,8 +268,10 @@ void identity(tsr_transport * t) {
 // 1 MiB up to below the buffer, and reads both back: the first P at which 0 returns the second
 // pattern is the capacity (memory repeats every P bytes), and none means the whole buffer is
 // memory. It uses the kdev's own access to the whole buffer, not the transport's (which refuses
-// offsets above its channel size), and restores the bytes it touches. The transport's channel size
-// must equal the capacity found: larger, and it would place data on wrapped memory.
+// offsets above its channel size), and restores the bytes it touches. A block that cannot be read
+// before its test was never written (memory with ECC, kdev::mem_try_read): it is counted, tested
+// like any other and holds zeros afterward. The transport's channel size must equal the capacity
+// found: larger, and it would place data on wrapped memory.
 void capacity(tsr_transport * t, rng & r) {
     tsr::kdev * kd = tsr::transport_kdev(t);
     if (kd == nullptr) return;
@@ -281,12 +283,21 @@ void capacity(tsr_transport * t, rng & r) {
         const uint64_t buf = kd->buf_bytes(ch);
         uint64_t cap = buf & ~(uint64_t) 63;
         std::string bad;
+        unsigned unread = 0;   // blocks that could not be read before their test
         for (uint64_t P = 1ull << 20; P + 64 <= buf && bad.empty(); P <<= 1) {
             uint8_t sa[64], sb[64], pa[64], pb[64], ra[64], rb[64];
             r.fill(pa, 64);
             for (int i = 0; i < 64; ++i) pb[i] = (uint8_t) ~pa[i];
-            const bool ok = kd->mem_read(ch, 0, sa, 64) == 0 && kd->mem_read(ch, P, sb, 64) == 0 && kd->mem_write(ch, 0, pa, 64) == 0 &&
-                            kd->mem_write(ch, P, pb, 64) == 0 && kd->mem_read(ch, 0, ra, 64) == 0 && kd->mem_read(ch, P, rb, 64) == 0;
+            if (kd->mem_try_read(ch, 0, sa, 64) != 0) {
+                memset(sa, 0, 64);
+                unread++;
+            }
+            if (kd->mem_try_read(ch, P, sb, 64) != 0) {
+                memset(sb, 0, 64);
+                unread++;
+            }
+            const bool ok = kd->mem_write(ch, 0, pa, 64) == 0 && kd->mem_write(ch, P, pb, 64) == 0 && kd->mem_read(ch, 0, ra, 64) == 0 &&
+                            kd->mem_read(ch, P, rb, 64) == 0;
             const bool restored = kd->mem_write(ch, P, sb, 64) == 0 && kd->mem_write(ch, 0, sa, 64) == 0;
             if (!ok || !restored) {
                 bad = strf("access failed at 0 / 0x%" PRIx64, P);
@@ -302,6 +313,10 @@ void capacity(tsr_transport * t, rng & r) {
         smallest = std::min(smallest, cap);
         printf("  ch%u: %.2f GiB of memory in a %.2f GiB buffer%s, transport channel size %.2f GiB\n", ch, (double) cap / G, (double) buf / G,
                cap < buf ? strf(" (wraps at 0x%" PRIx64 ")", cap).c_str() : "", (double) kd->ch_bytes(ch) / G);
+        if (unread != 0) {
+            printf("  ch%u: %u block%s could not be read before the test (never written); zeros are there now\n", ch, unread,
+                   unread == 1 ? "" : "s");
+        }
         result(bad.empty() && kd->ch_bytes(ch) == cap, strf("ch%u capacity: the transport's channel size equals the measured memory", ch),
                bad.empty() ? strf("%.3f GiB vs %.3f GiB", (double) kd->ch_bytes(ch) / G, (double) cap / G) : bad);
     }

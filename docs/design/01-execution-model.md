@@ -929,7 +929,10 @@ top of it (default image, statistics), not a second protocol.
   `num_ch`, `ch_bytes`, `ch_addr` and `describe`. `ch_bytes` is the usable size of a channel. A kind whose buffer can be
   larger than the memory behind it (`xrt`: the shell's memory topology says 16 GB per bank, a card can hold 8 GiB)
   implements `detect_capacity`, which the protocol layer calls once at open, in owner mode only, and which lowers
-  `ch_bytes` to the measured capacity. `buf_bytes` stays the buffer size. `KREG_ADAPTER_CTRL` (0x0E0) names the adapter control
+  `ch_bytes` to the measured capacity. `buf_bytes` stays the buffer size. `mem_try_read` is `mem_read` for bytes that
+  may never have been written: memory with ECC fails such a read until the bytes are written, and the kind then
+  returns the failure without a message and without a change of its transfer path (default: `mem_read`).
+  `KREG_ADAPTER_CTRL` (0x0E0) names the adapter control
   register. An optional `advance(ns)` hint lets the sim and vkernel kinds run device time while the host
   polls.
 - One protocol layer (`tsr_kdev.cpp`) implements open, bind, load, boot, launch, wait, cancel, stop,

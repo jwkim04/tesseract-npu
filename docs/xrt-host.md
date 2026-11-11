@@ -162,7 +162,8 @@ transport measures the capacity at open (§4.4). From the XRT 2.18.179 sources
 | `m2m` | host-backed staging BO per channel, `sync`, then `bo.copy` into the device-only BO | one chunk per channel | shells without unmanaged DMA; needs M2M or KDMA. The staging BO is allocated at open, before the channel BO. |
 
 A failed `direct` transfer is retried once through `staged`. If that works the transport stays on `staged`
-(one warning). The chunk, alignment and read-modify-write logic is `tsr::dma_engine`, tested on the mock (§6).
+(one warning). A read of a block that may never have been written is the exception (§4.4). The chunk, alignment
+and read-modify-write logic is `tsr::dma_engine`, tested on the mock (§6).
 
 ### 4.3 Environment
 
@@ -196,6 +197,18 @@ P bytes: the capacity is P, and the test goes on inside it. The first P that doe
 touches is saved first and restored afterward. A pair that does not read back as written counts as a wrap, so the
 result is never too large.
 
+The shell's DDR4 controllers use ECC. A block whose stored bits are not a valid ECC word cannot be read: the read
+fails, and it fails until the block is written. Memory that was not written since the xclbin was loaded can hold
+such blocks. The probe therefore saves its blocks with `mem_try_read` of the kdev, a read of bytes that may never
+have been written. A block that this read does not get is taken as never written. There is nothing to save, the
+test writes the block like any other, and it holds zeros afterward. One line on stderr names these blocks. The
+failed read prints no DMA message, and the DMA mode stays as it was: the xrt kdev tries the read once more through
+`staged` and falls back only when that gets the bytes (§4.2).
+
+`direct` does not read before it writes. In `staged` and `m2m` mode a write that is not aligned to
+`TSR_XRT_DMA_ALIGN` reads the units at its two ends first. Where such a unit holds no valid ECC word, that read
+fails and so does the write.
+
 The measured size is the channel size everywhere: the weight heap, the KV placement, the range checks of the host
 calls, the `ch_bytes` of `tsr_config` and the `mem_total` of the monitor record. The backend never places data above
 it. A model that needs more stops at load with the message `WEIGHT heap full`. `TSR_DEBUG=1` prints the measured
@@ -224,7 +237,9 @@ and keeps the buffer size when there is none. An owner open records the capacity
 2. Memory per channel: the capacity of every channel (distinct patterns at 0 and at P for every power of two P from
    1 MiB up to below the buffer, which must give the transport's channel size: 8 GiB per channel on this U200),
    pattern write and read-back at aligned, unaligned, 4 KiB- and 4 GiB-crossing and end-of-channel ranges with
-   guard bytes, channel aliasing, and the bandwidth of an `--mem-mib` transfer.
+   guard bytes, channel aliasing, and the bandwidth of an `--mem-mib` transfer. The capacity check takes a block
+   that cannot be read before its test as never written (§4.4): it reports the number of such blocks per channel
+   and does not fail on them.
 3. Boot: the image (id, base kernels `graph`, `selftest` and `replay` at 0, 1 and 2), a boot with the receive CRC,
    VERIFY and HELLO, and a second boot that must be a warm restart.
 4. PING: one round trip with the `ARG0` echo, then `--rate-n` sequential round trips and `--rate-n` pipelined
@@ -253,8 +268,9 @@ self-checks against the PERF deltas of the whole run. A failing `selftest` kerne
   open, bind (`MEM_EN`, misaligned base, `BASE_LOCKED`, held requests), timeouts, a stale core at open (with and
   without `TSR_ATTACH`), `PLAT_ERR` during a launch, a hung unit, the registry, `TSR_MOCK_*` parsing,
   `xrt_env_defaults`, the channel capacity (`detect_ch_capacity` over a fake wrapping memory, and an open with a kdev
-  that measures it: owner mode uses the measured size and restores the probed bytes, `TSR_ATTACH` writes nothing),
-  and the chunked and aligned transfer engine under DMA rules from align 1 to 4096.
+  that measures it: owner mode uses the measured size and restores the probed bytes, `TSR_ATTACH` writes nothing,
+  and a block that cannot be read until it is written does not fail the probe), and the chunked and aligned
+  transfer engine under DMA rules from align 1 to 4096.
 - `transport_mon` (`test-tsr-mon`): the live monitor record and its seqlock, and the capacity record of a card
   (`tsr-cap-<bdf>`: write, read back, replace, refuse a bad address).
 - `transport_protocol` (`test-tsr-protocol`): one binary for every kind it can run (`sim`, `mock`, `vkernel` when a
@@ -265,7 +281,8 @@ self-checks against the PERF deltas of the whole run. A failing `selftest` kerne
   (`XCL_EMULATION_MODE=noop`, `libxrt_noop`; no card, no driver) and generated metadata-only xclbins of
   `tsr_u200_k4`. Xclbin load, kernel pick, arguments by offset, the memory bank of each channel argument,
   device-only buffers, the compute unit opened through `xrt::ip` for `ap_ctrl_none` and for the `ap_ctrl_hs` fallback,
-  refusals with a reason, and register access and unmanaged DMA failing cleanly (the shim implements neither). It
+  refusals with a reason, and register access and unmanaged DMA failing cleanly (the shim implements neither; a
+  failed `mem_try_read` prints nothing and does not use up the fall back to `staged`). It
   builds with `-DTSR_WITH_XRT=ON -DTSR_XRT_ROOT=build/xrt-local/opt/xilinx/xrt` and `--target test-tsr-xrt-noop`.
 - `transport_ggml_e2e_mock*`, `tools_selftest_mock*`, `tools_log_selftest`, `tools_trace_replay_device`: the ggml
   backend and `tsr-selftest` on the `mock` kdev (DMA rules that force the bounce path, `T_MAX` 8, one channel, the

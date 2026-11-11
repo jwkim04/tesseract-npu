@@ -38,6 +38,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -1213,12 +1214,17 @@ struct wrap_mem {
     uint64_t fail_at = UINT64_MAX;             // an access that starts at this offset fails
     bool dead = false;                         // writes are dropped, reads return zeros
     bool fail_writes_only = false;             // fail_at fails writes only
+    std::set<uint64_t> blank;                  // 64-byte cells (offsets below cap) whose read fails until they are written
+    bool stuck = false;                        // a write does not make a blank cell readable
     explicit wrap_mem(uint64_t c) : cap(c) {}
     int wr(uint64_t off, const void * s, size_t n) {
         writes++;
         top = std::max(top, off + n);
         if (off == fail_at) return -1;
         if (dead) return 0;
+        if (!stuck) {
+            for (uint64_t o = off / 64 * 64; o < off + n; o += 64) blank.erase(o % cap);
+        }
         const uint8_t * p = (const uint8_t *) s;
         for (size_t i = 0; i < n;) {
             const size_t k = (size_t) std::min<uint64_t>(n - i, cap - (off + i) % cap);
@@ -1231,6 +1237,9 @@ struct wrap_mem {
         reads++;
         top = std::max(top, off + n);
         if (off == fail_at && !fail_writes_only) return -1;
+        for (uint64_t o = off / 64 * 64; o < off + n; o += 64) {
+            if (blank.count(o % cap) != 0) return -1;
+        }
         uint8_t * p = (uint8_t *) d;
         for (size_t i = 0; i < n;) {
             const size_t k = (size_t) std::min<uint64_t>(n - i, cap - (off + i) % cap);
@@ -1296,6 +1305,77 @@ static void test_capacity_detect() {
         m.rd(4 * GiB - 64, back.data(), 64);
         CHECK(back == keep, "the second probed cell holds its old data");
     }
+    // Blocks whose read fails until they are written (memory with ECC that holds no valid word there). With the try
+    // accessor the probe takes them as never written: it writes them, reports them, and they hold zeros afterward.
+    {
+        wrap_mem m(8 * GiB);
+        const auto wr = [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); };
+        const auto rd = [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); };
+        std::vector<uint8_t> keep(64, 0xC3), back(64), zero(64, 0);
+        m.wr(4 * GiB - 128, keep.data(), 64);          // a readable block below the second pair's A
+        m.blank = { 8 * GiB - 64, 4 * GiB - 64 };      // the first pair's cell and the second pair's A
+        uint64_t got = 0;
+        std::vector<uint64_t> blank;
+        CHECK(detect_ch_capacity(16 * GiB, 1 * GiB, wr, rd, &got, rd, &blank) == 0 && got == 8 * GiB, "unreadable blocks: 8 GiB (%" PRIu64 ")", got);
+        CHECK(blank == std::vector<uint64_t>({ 4 * GiB - 64, 8 * GiB - 64 }), "both blocks reported once, as offsets inside the memory (%zu)",
+              blank.size());
+        CHECK(m.blank.empty(), "the probe wrote both blocks");
+        CHECK(m.rd(8 * GiB - 64, back.data(), 64) == 0 && back == zero, "the first unreadable block holds zeros");
+        CHECK(m.rd(4 * GiB - 64, back.data(), 64) == 0 && back == zero, "the second unreadable block holds zeros");
+        CHECK(m.rd(4 * GiB - 128, back.data(), 64) == 0 && back == keep, "the block below it holds its old data");
+        blank.assign(1, 1);
+        CHECK(detect_ch_capacity(16 * GiB, 1 * GiB, wr, rd, &got, rd, &blank) == 0 && got == 8 * GiB && blank.empty(),
+              "a second probe finds every block readable");
+    }
+    // An offset above the capacity found is reported as the cell it names (two wraps below it here).
+    {
+        wrap_mem m(4 * GiB);
+        const auto wr = [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); };
+        const auto rd = [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); };
+        m.blank = { 4 * GiB - 64 };                    // the first pair (8 GiB - 64 and 16 GiB - 64) is this cell
+        uint64_t got = 0;
+        std::vector<uint64_t> blank;
+        const int rc = detect_ch_capacity(16 * GiB, 1 * GiB, wr, rd, &got, rd, &blank);
+        CHECK(rc == 0 && got == 4 * GiB && blank == std::vector<uint64_t>(1, 4 * GiB - 64),
+              "unreadable block of a 4 GiB memory in a 16 GiB buffer: reported at 4 GiB - 64 (%zu)", blank.size());
+    }
+    // The upper block of a pair that does not wrap: zeros there afterward, and the lower block keeps its data.
+    {
+        wrap_mem m(16 * GiB);
+        const auto wr = [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); };
+        const auto rd = [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); };
+        std::vector<uint8_t> keep(64, 0xC3), back(64), zero(64, 0);
+        m.wr(8 * GiB - 64, keep.data(), 64);
+        m.blank = { 16 * GiB - 64 };
+        uint64_t got = 0;
+        std::vector<uint64_t> blank;
+        const int rc = detect_ch_capacity(16 * GiB, 1 * GiB, wr, rd, &got, rd, &blank);
+        CHECK(rc == 0 && got == 16 * GiB && blank == std::vector<uint64_t>(1, 16 * GiB - 64), "unreadable last block of a 16 GiB memory (%zu)",
+              blank.size());
+        CHECK(m.rd(16 * GiB - 64, back.data(), 64) == 0 && back == zero, "the last block holds zeros");
+        CHECK(m.rd(8 * GiB - 64, back.data(), 64) == 0 && back == keep, "the lower block of the pair holds its old data");
+    }
+    // Without the try accessor such a block fails the probe, as any read error does, and nothing is written there.
+    {
+        wrap_mem m(8 * GiB);
+        m.blank = { 4 * GiB - 64 };
+        uint64_t got = 777;
+        const int rc = detect_ch_capacity(16 * GiB, 1 * GiB, [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); },
+                                          [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); }, &got);
+        CHECK(rc != 0 && got == 777 && m.blank.size() == 1 && m.pristine(), "unreadable block, no try accessor: rc %d, result untouched", rc);
+    }
+    // A block that still cannot be read after the probe wrote it is an access error, also with the try accessor.
+    {
+        wrap_mem m(8 * GiB);
+        const auto wr = [&](uint64_t o, const void * p, size_t n) { return m.wr(o, p, n); };
+        const auto rd = [&](uint64_t o, void * p, size_t n) { return m.rd(o, p, n); };
+        m.blank = { 4 * GiB - 64 };
+        m.stuck = true;
+        uint64_t got = 777;
+        std::vector<uint64_t> blank(1, 1);
+        const int rc = detect_ch_capacity(16 * GiB, 1 * GiB, wr, rd, &got, rd, &blank);
+        CHECK(rc != 0 && got == 777 && blank == std::vector<uint64_t>(1, 1), "a block that stays unreadable: rc %d, results untouched", rc);
+    }
     // Memory that keeps nothing (a dead buffer): never reported larger than the floor.
     {
         wrap_mem m(16 * GiB);
@@ -1321,7 +1401,8 @@ static void test_capacity_detect() {
 
 // A kdev whose buffers are larger than the memory behind them: the mock with its host memory
 // path wrapped at `mem` bytes (what the xrt kdev sees on a card with 8 GiB DIMMs). It measures
-// the capacity with detect_ch_capacity, as the xrt kdev does.
+// the capacity with detect_ch_capacity, as the xrt kdev does. `blank` names 64-byte cells whose
+// read fails until they are written (memory with ECC that holds no valid word there).
 struct cap_kdev final : kdev {
     std::unique_ptr<mock_kdev> in;
     uint64_t mem;
@@ -1330,6 +1411,8 @@ struct cap_kdev final : kdev {
     bool detect_probe = false;
     uint64_t host_writes = 0;
     bool fail_reads = false;
+    std::set<std::pair<uint32_t, uint64_t>> blank;        // (channel, cell offset below mem)
+    std::vector<std::pair<uint32_t, uint64_t>> reported;  // what the probes reported as unreadable
     cap_kdev(const mock_options & mo, uint64_t memory) : in(new mock_kdev(mo)), mem(memory), usable(mo.num_ch, mo.ch_bytes) {}
     const char * name() const override { return "capkdev"; }
     uint32_t num_ch() const override { return in->num_ch(); }
@@ -1342,9 +1425,12 @@ struct cap_kdev final : kdev {
         if (!probe) return 0;
         for (uint32_t c = 0; c < in->num_ch(); ++c) {
             uint64_t cap = 0;
+            std::vector<uint64_t> unread;
             if (detect_ch_capacity(buf_bytes(c), 1ull << 30, [this, c](uint64_t o, const void * p, size_t n) { return mem_write(c, o, p, n); },
-                                   [this, c](uint64_t o, void * p, size_t n) { return mem_read(c, o, p, n); }, &cap) != 0) return -1;
+                                   [this, c](uint64_t o, void * p, size_t n) { return mem_read(c, o, p, n); }, &cap,
+                                   [this, c](uint64_t o, void * p, size_t n) { return mem_try_read(c, o, p, n); }, &unread) != 0) return -1;
             usable[c] = cap;
+            for (uint64_t off : unread) reported.emplace_back(c, off);
         }
         return 0;
     }
@@ -1352,6 +1438,7 @@ struct cap_kdev final : kdev {
     int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
     int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override {
         host_writes++;
+        for (uint64_t o = off / 64 * 64; o < off + n; o += 64) blank.erase({ ch, o % mem });
         for (size_t i = 0; i < n;) {
             const size_t k = (size_t) std::min<uint64_t>(n - i, mem - (off + i) % mem);
             if (in->mem_write(ch, (off + i) % mem, (const uint8_t *) src + i, k) != 0) return -1;
@@ -1361,6 +1448,9 @@ struct cap_kdev final : kdev {
     }
     int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override {
         if (fail_reads) return -1;
+        for (uint64_t o = off / 64 * 64; o < off + n; o += 64) {
+            if (blank.count({ ch, o % mem }) != 0) return -1;
+        }
         for (size_t i = 0; i < n;) {
             const size_t k = (size_t) std::min<uint64_t>(n - i, mem - (off + i) % mem);
             if (in->mem_read(ch, (off + i) % mem, (uint8_t *) dst + i, k) != 0) return -1;
@@ -1424,6 +1514,24 @@ static void test_capacity_open() {
         std::unique_ptr<cap_kdev> k(new cap_kdev(o, 8 * GiB));
         k->fail_reads = true;
         CHECK(transport_open_kdev(std::move(k)) == nullptr, "a failed capacity probe fails the open");
+    }
+    {
+        // A probe block whose read fails until it is written does not fail the open: the probe writes it, and it holds
+        // zeros afterward.
+        std::unique_ptr<cap_kdev> k(new cap_kdev(o, 8 * GiB));
+        cap_kdev * kp = k.get();
+        kp->blank = { { 0, 4 * GiB - 64 }, { 3, 8 * GiB - 64 } };
+        tsr_transport * t = transport_open_kdev(std::move(k));
+        CHECK(t != nullptr, "open with probe blocks that cannot be read");
+        if (t) {
+            std::vector<uint8_t> back(64, 0xFF), zero(64, 0);
+            const std::vector<std::pair<uint32_t, uint64_t>> want = { { 0, 4 * GiB - 64 }, { 3, 8 * GiB - 64 } };
+            CHECK(tsr_transport_config(t)->ch_bytes == 8 * GiB, "unreadable probe blocks: 8 GiB channels");
+            CHECK(kp->blank.empty() && kp->reported == want, "the probe wrote both blocks and reported them (%zu)", kp->reported.size());
+            CHECK(kp->in->mem_read(0, 4 * GiB - 64, back.data(), 64) == 0 && back == zero, "the block of channel 0 holds zeros");
+            CHECK(kp->in->mem_read(3, 8 * GiB - 64, back.data(), 64) == 0 && back == zero, "the block of channel 3 holds zeros");
+            tsr_transport_close(t);
+        }
     }
     {
         // A card whose buffers are all memory keeps the buffer size.

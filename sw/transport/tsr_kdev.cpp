@@ -139,9 +139,11 @@ void cap_patterns(unsigned k, uint8_t * pa, uint8_t * pb) {
 
 } // namespace
 
-int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes) {
+int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes,
+                       const ch_read_fn & try_rd, std::vector<uint64_t> * blank) {
     uint64_t cap = size & ~(uint64_t) (CAP_PROBE - 1);
     min_bytes = std::max<uint64_t>(min_bytes, 2 * CAP_PROBE);
+    std::vector<uint64_t> unread;                // blocks that try_rd could not read before their test
     for (unsigned k = 0; cap > min_bytes; ++k) {
         uint64_t P = 1;                          // the largest power of two below cap
         while (2 * P < cap) P *= 2;
@@ -149,8 +151,19 @@ int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr
         uint8_t sa[CAP_PROBE], sb[CAP_PROBE], pa[CAP_PROBE], pb[CAP_PROBE], ra[CAP_PROBE], rb[CAP_PROBE];
         cap_patterns(k, pa, pb);
         // Save, write both, read both, restore. When the two blocks are one cell, sa == sb (both
-        // were read before any write), so restoring in either order leaves the original there.
-        if (rd(a, sa, CAP_PROBE) != 0 || rd(b, sb, CAP_PROBE) != 0) {
+        // were read, or both could not be read, before any write), so restoring in either order
+        // leaves the original there.
+        if (try_rd) {
+            // A block that cannot be read holds nothing to save: zeros take the place of its bytes.
+            if (try_rd(a, sa, CAP_PROBE) != 0) {
+                memset(sa, 0, CAP_PROBE);
+                unread.push_back(a);
+            }
+            if (try_rd(b, sb, CAP_PROBE) != 0) {
+                memset(sb, 0, CAP_PROBE);
+                unread.push_back(b);
+            }
+        } else if (rd(a, sa, CAP_PROBE) != 0 || rd(b, sb, CAP_PROBE) != 0) {
             fprintf(stderr, "tsr_transport: capacity probe at 0x%" PRIx64 " and 0x%" PRIx64 ": cannot read the buffer\n", a, b);
             return -1;
         }
@@ -170,6 +183,13 @@ int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr
         const bool distinct = memcmp(ra, pa, CAP_PROBE) == 0 && memcmp(rb, pb, CAP_PROBE) == 0;
         if (distinct) break;
         cap = P;                                 // the memory repeats every P bytes
+    }
+    if (blank != nullptr) {
+        // An offset at or above the capacity found names the cell that many wraps below it.
+        for (uint64_t & o : unread) o %= cap;
+        std::sort(unread.begin(), unread.end());
+        unread.erase(std::unique(unread.begin(), unread.end()), unread.end());
+        *blank = unread;
     }
     *bytes = cap;
     return 0;

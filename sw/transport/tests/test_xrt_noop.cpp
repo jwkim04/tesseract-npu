@@ -10,7 +10,8 @@
 // contract's ap_ctrl_none kernel (what rtl/platform/alveo_xrt/kernel_k*.xml declare) and for EX
 // §9.1's fallback form (ap_ctrl_hs without an interrupt). The noop shim implements neither
 // register access nor unmanaged DMA, so those calls must fail cleanly (and tsr_transport_open("xrt")
-// stops at the first register read, ADAPTER_VERSION). Broken xclbins (s_axi_control range 0x1000,
+// stops at the first register read, ADAPTER_VERSION). A mem_try_read fails without a message and
+// without using up the fall back to the staged path. Broken xclbins (s_axi_control range 0x1000,
 // a foreign argument, cmd_addr / cmd_count / arg0-7 arguments, no Tesseract kernel) must be
 // refused with a reason. Whether XRT refuses a second exclusive open of the compute unit depends
 // on the shim (the noop shim's context bookkeeping); it is printed, not asserted (*confirm* on the
@@ -25,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -54,15 +56,15 @@ struct variant {
     uint64_t    bank_kb     = 64 * 1024;   // 64 MiB banks: the noop shim memsets every buffer
 };
 
-// open_xrt_kdev() with stderr captured into *msg (the refusal reason); true if it opened.
-static bool open_capture(const std::string & dir, std::string * msg) {
+// fn() with stderr captured into *msg; false if the capture file cannot be made (fn is not called).
+static bool capture(const std::string & dir, std::string * msg, const std::function<void()> & fn) {
     const std::string path = dir + "/open_stderr.txt";
     FILE * f = fopen(path.c_str(), "w+");
     if (f == nullptr) return false;
     fflush(stderr);
     const int saved = dup(2);
     dup2(fileno(f), 2);
-    const bool opened = open_xrt_kdev() != nullptr;
+    fn();
     fflush(stderr);
     dup2(saved, 2);
     close(saved);
@@ -72,7 +74,13 @@ static bool open_capture(const std::string & dir, std::string * msg) {
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0) msg->append(buf, n);
     fclose(f);
-    return opened;
+    return true;
+}
+
+// open_xrt_kdev() with stderr captured into *msg (the refusal reason); true if it opened.
+static bool open_capture(const std::string & dir, std::string * msg) {
+    bool opened = false;
+    return capture(dir, msg, [&opened]() { opened = open_xrt_kdev() != nullptr; }) && opened;
 }
 
 static std::string kernel_xml(const variant & v) {
@@ -227,7 +235,16 @@ int main(int argc, char ** argv) {
             CHECK(d->reg_read(KREG_CSR_WINDOW, &v) != 0, "noop shim: register read fails cleanly");
             CHECK(d->reg_write(KREG_CSR_WINDOW + TSR_CSR_LOG_CFG, 0) != 0, "noop shim: register write fails cleanly");
             uint8_t b[100] = {};
-            CHECK(d->mem_write(0, 3, b, sizeof(b)) != 0, "noop shim: unmanaged DMA fails cleanly (after the staged retry)");
+            // A read of bytes that may never have been written: no message, and the path stays as it is, so the
+            // write after it is the first transfer that falls back.
+            std::string err;
+            int r_try = 0, r_wr = 0;
+            CHECK(capture(dir, &err, [&]() { r_try = d->mem_try_read(0, 0, b, 64); }) && r_try != 0,
+                  "noop shim: mem_try_read fails cleanly");
+            CHECK(err.find("tsr_transport") == std::string::npos, "mem_try_read: no message (%s)", err.c_str());
+            CHECK(capture(dir, &err, [&]() { r_wr = d->mem_write(0, 3, b, sizeof(b)); }) && r_wr != 0,
+                  "noop shim: unmanaged DMA fails cleanly (after the staged retry)");
+            CHECK(err.find("retrying through") != std::string::npos, "the failed mem_try_read did not use up the fall back (%s)", err.c_str());
             // A second exclusive open of the same compute unit (another process would get the same answer
             // from the driver on the card).
             std::unique_ptr<kdev> d2 = open_xrt_kdev();

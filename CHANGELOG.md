@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 - `tsr-mtp` runs targets without recurrent layers (Gemma 4): it asks for rollback snapshots only when the target is recurrent or hybrid.
 - `tsr_mon_read` tries for 200 ms and gives the CPU away while the writer stays stopped inside an update. It made 100,000 tries without a pause and returned -3 when none found the page consistent. The ctest `transport_mon`, whose writer never pauses, failed now and then for that reason. The test now counts a give-up (-3) apart from a torn page and ends on a number of consistent reads.
+- The capacity probe of the xrt transport and the capacity check of `tsr-selftest` no longer fail on a block that cannot be read. The shell's DDR4 controllers use ECC, and a block that was not written since the xclbin was loaded can hold no valid ECC word: its read fails until it is written. The probe read both blocks of a pair before it wrote them, so the open stopped with `capacity probe ... cannot read the buffer`, and the failed read moved the transport to `staged` DMA. The new `kdev::mem_try_read` reads bytes that may never have been written. A block it cannot read is taken as never written: the test writes it, it holds zeros afterward, and one line on stderr names it. The DMA mode stays as it was.
 
 ### Changed
 

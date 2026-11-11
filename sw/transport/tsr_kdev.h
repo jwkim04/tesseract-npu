@@ -106,6 +106,11 @@ public:
     // has checked off + n <= ch_bytes(ch). 0 on success.
     virtual int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) = 0;
     virtual int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) = 0;
+    // mem_read for bytes that may never have been written. Memory with ECC (the DDR4 of an Alveo
+    // shell) answers a read with an error where a cell holds no valid ECC word, and it does so until
+    // the cell is written. A failure here is taken as that answer: nothing is printed and the kdev
+    // stays as it was (no change of the transfer path). Default: mem_read.
+    virtual int mem_try_read(uint32_t ch, uint64_t off, void * dst, size_t n) { return mem_read(ch, off, dst, n); }
 
     // The time base of the protocol's timeouts and poll policy, in ns (monotonic). Default: the
     // host clock. The simulator kinds count device time (MTIME at CORE_HZ_NOMINAL).
@@ -190,7 +195,13 @@ using ch_read_fn  = std::function<int(uint64_t off, void * dst, size_t n)>;
 // the result can only be smaller than the truth, never larger. It never goes below min_bytes
 // (the smallest size still tested). 0 on success with *bytes set, -1 if an access failed (a
 // message on stderr, *bytes untouched).
-int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes);
+// try_rd, when given, saves the blocks instead of rd: a read of bytes that may never have been
+// written (kdev::mem_try_read). A block it cannot read is taken as never written. The test writes
+// it like any other, and it holds zeros afterward. *blank, when given, gets the offsets of those
+// blocks inside the capacity found, in ascending order (on success only). Without try_rd a block
+// that cannot be read fails the probe.
+int detect_ch_capacity(uint64_t size, uint64_t min_bytes, const ch_write_fn & wr, const ch_read_fn & rd, uint64_t * bytes,
+                       const ch_read_fn & try_rd = nullptr, std::vector<uint64_t> * blank = nullptr);
 
 // ---------------------------------------------------------------------------
 // The protocol layer as a transport
