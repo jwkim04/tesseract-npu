@@ -10,7 +10,7 @@
 # Tests (ctest -R tools_top; prefix tools_top_):
 #   tools_top_layout   the field table of tsr_top.py equals the one tsr_mon.h prints (test-tsr-mon layout)
 #   tools_top_synth    a record written by the test: the reader, the rates and the U split against
-#                      hand-computed numbers, the text frame at five sizes, stale, torn and foreign records,
+#                      hand-computed numbers, the text frame at several sizes, stale, torn and foreign records,
 #                      a record that changes while tsr-top samples it
 #   tools_top_live     a tiny model on the simulator with the publisher on: the record while it runs and the
 #                      one it leaves (TSR_MON_KEEP), tokens, model, the JSON snapshot, TSR_MON=0, the probe

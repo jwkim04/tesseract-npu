@@ -710,7 +710,8 @@ class Monitor:
         self.bg.publishers_alive = lambda: bool(self.live_publishers)
         self.live_publishers = []
         self.trk = {}
-        self.hist = collections.defaultdict(lambda: collections.deque(maxlen=720))   # device id -> (compute, memory, DDR GB/s)
+        # device id -> samples (compute, busiest channel, DDR GB/s, memory in use); the last is None when the use is unknown
+        self.hist = collections.defaultdict(lambda: collections.deque(maxlen=720))
         self.procs = {}
         self.snap = None
         self.interval = max(0.1, opts.delay) if opts.delay else 1.0
@@ -748,10 +749,13 @@ class Monitor:
             dev["rates"] = rr
             dev["state"] = self.device_state(dev)
             h = self.hist[dev["id"]]
+            # The memory in use is recorded whether or not the rates are fresh: a model load has no launches, so the compute
+            # value is 0 while the memory line rises.
+            mem = device_mem_use(dev)[2]
             if rr is not None and not rr["stale"]:
-                h.append((rr["compute"]["pct"], rr["memory"]["pct"], rr["ddr"]["total_gbs"]))
+                h.append((rr["compute"]["pct"], rr["memory"]["pct"], rr["ddr"]["total_gbs"], mem))
             else:
-                h.append((0.0, 0.0, 0.0))
+                h.append((0.0, 0.0, 0.0, mem))
         self.snap = {
             "tsr_top": VERSION, "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "interval_s": self.interval, "mon_dir": self.dir, "devices": devices, "processes": procs,
@@ -1071,8 +1075,8 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
 # ---------------------------------------------------------------------------------------------
 SORT_KEYS = [("PID", "pid"), ("USER", "user"), ("MODEL", "model"), ("MODE", "mode"), ("TOK/S", "tok_s"),
              ("LAUNCH/s", "launch_s"), ("CPU", "cpu_pct"), ("HOST MEM", "rss"), ("COMMAND", "cmd")]
-PANELS = [("summary", "Compute and memory meters"), ("graph", "Utilization time series"), ("table", "Process table"),
-          ("others", "Card users without tsr-mon"), ("image", "Image line (IMG, ID, CAPS, kinds, mode)"),
+PANELS = [("summary", "Compute, memory and memory bandwidth meters"), ("graph", "Compute and memory use time series"),
+          ("table", "Process table"), ("others", "Card users without tsr-mon"), ("image", "Image line (IMG, ID, CAPS, kinds, mode)"),
           ("meters", "Unit meters (MVM VU DMA QACT ATT EMPTY WAIT)"), ("ddr", "DDR channel bars and read rate"),
           ("util", "Utilization split U")]
 PANELS_OFF = ("image", "meters", "ddr", "util")            # what --json has and the screen shows only when asked
@@ -1162,9 +1166,9 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
 
 
 def device_mem_total(dev):
-    """The memory the MEMORY meter measures against, in bytes: the owner's record (num_ch * ch_bytes, the size its
-    transport measured), else the capacity recorded for the card (tsr-cap-<bdf>), else what the idle probe read
-    (the xclbin memory topology when no record exists). None when none of them is known."""
+    """The memory that the MEMORY meter and the memory line of the time series measure against, in bytes: the owner's record
+    (num_ch * ch_bytes, the size its transport measured), else the capacity recorded for the card (tsr-cap-<bdf>), else what
+    the idle probe read (the xclbin memory topology when no record exists). None when none of them is known."""
     r = dev.get("rec")
     if r and r["mem_total"]:
         return r["mem_total"]
@@ -1176,25 +1180,38 @@ def device_mem_total(dev):
     return None
 
 
-def summary_meters(f, y, w, dev):
-    """COMPUTE (the busiest compute unit) and MEMORY (device memory in use against the card's DDR), side by side: one row."""
-    rr = dev.get("rates")
-    bw = (w - 3) // 2
-    if rr is not None and not rr.get("stale"):
-        c = rr["compute"]
-        draw_bar(f, y, 1, bw, "COMPUTE", c["pct"], "%3.0f%% %s" % (100 * c["pct"], c["unit"]), S_BAR)
-    else:
-        draw_bar(f, y, 1, bw, "COMPUTE", None, "", na=True)
+def device_mem_use(dev):
+    """(used, total, share) of the device memory: the bytes in use, the bytes of the card it is measured against, and their
+    ratio (1 at most); None for what is not known. The one rule behind the MEMORY meter and the memory line of the time
+    series with its legend. The owner's record has the use. No process owns an idle card, so nothing of Tesseract is in
+    its memory; a process that holds the card without publishing leaves the use unknown."""
     r = dev.get("rec")
     total = device_mem_total(dev)
-    # No process owns an idle card, so nothing of Tesseract is in its memory; a process that holds the card
-    # without publishing leaves the use unknown.
     used = r["mem_used"] if r else (0 if dev.get("state") == "idle" else None)
-    if total is None or used is None:
+    return used, total, (None if total is None or used is None else min(1.0, used / total))
+
+
+def summary_meters(f, y, w, dev):
+    """COMPUTE (the busiest compute unit), MEMORY (device memory in use against the card's DDR) and MEM BW (the read rate of
+    all DDR channels against what the DRAM gives). From 96 columns the three meters of one width share a row. Narrower,
+    COMPUTE and MEMORY share the first row and MEM BW has a second one, as wide as the two together. Returns the rows used."""
+    rr = dev.get("rates")
+    wide = w >= 96
+    bw = (w - 4) // 3 if wide else (w - 3) // 2
+    y3, x3, w3 = (y, 3 + 2 * bw, bw) if wide else (y + 1, 1, 2 * bw + 1)        # the third meter: beside the others, or below them
+    if rr is not None and not rr.get("stale"):
+        c, d = rr["compute"], rr["ddr"]
+        draw_bar(f, y, 1, bw, "COMPUTE", c["pct"], "%3.0f%% %s" % (100 * c["pct"], c["unit"]), S_BAR)
+        draw_bar(f, y3, x3, w3, "MEM BW", min(1.0, d["pct_dram"]), "%3.0f%% %.1fGB/s" % (100 * d["pct_dram"], d["total_gbs"]), S_BAR)
+    else:
+        draw_bar(f, y, 1, bw, "COMPUTE", None, "", na=True)
+        draw_bar(f, y3, x3, w3, "MEM BW", None, "", na=True)
+    used, total, share = device_mem_use(dev)
+    if share is None:
         draw_bar(f, y, 2 + bw, bw, "MEMORY", None, "", S_BAR, na=True)
     else:
-        draw_bar(f, y, 2 + bw, bw, "MEMORY", min(1.0, used / total), "%s/%s" % (fmt_gib(used), fmt_gib(total)), S_BAR)
-    return 1
+        draw_bar(f, y, 2 + bw, bw, "MEMORY", share, "%s/%s" % (fmt_gib(used), fmt_gib(total)), S_BAR)
+    return 1 if wide else 2
 
 
 def meters(f, cs, y, w, dev, v):
@@ -1261,8 +1278,8 @@ def meters(f, cs, y, w, dev, v):
 
 
 def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
-    """One box over the full width: the COMPUTE share of wall time, 0 to 100 %, the last two minutes (less when the box is
-    narrow)."""
+    """One box over the full width: the COMPUTE share of wall time (cyan) and the device memory in use as a share of the
+    card's memory (yellow; heavy glyphs without colors), each 0 to 100 %, the last two minutes (less when the box is narrow)."""
     if h < 5 or w < 24:
         return
     box = w - 4
@@ -1276,14 +1293,18 @@ def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
         i = len(samples) - 1 - int(round(age / interval))
         cols.append(samples[i] if i >= 0 else None)
     comp = [None if x is None else x[0] for x in cols]
+    mem = [None if x is None else x[3] for x in cols]
     rr = dev.get("rates")
     have = rr is not None and not rr.get("stale")
     if have:
         legend = [("COMPUTE %3.0f%% %s" % (100 * rr["compute"]["pct"], rr["compute"]["unit"]), S_S1)]
     else:
         legend = [("COMPUTE n/a", S_S1)]
+    share = device_mem_use(dev)[2]
+    text = "n/a" if share is None else "%3.0f%%" % (100 * share)
+    legend.append(("MEMORY  %s%s" % (text, " (heavy)" if v.mono else ""), S_S2))
     left = [(0.0, "100"), (0.25, " 75"), (0.5, " 50"), (0.75, " 25"), (1.0, "  0")]
-    draw_graph(f, cs, y, 3, h, box, [(comp, 1.0, S_S1, False)], legend, left, [], window)
+    draw_graph(f, cs, y, 3, h, box, [(mem, 1.0, S_S2, v.mono), (comp, 1.0, S_S1, False)], legend, left, [], window)
 
 
 def table(f, cs, y, h, w, procs, v):

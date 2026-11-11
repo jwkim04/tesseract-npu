@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- `tsr-top` shows the `MEM BW` meter, the read rate of all DDR channels as a share of what the DRAM gives, and a second line in the time series box for the device memory in use. The three meters share one row from 96 columns and take two rows on a narrower terminal.
+
 ### Fixed
 
 - `tsr-mtp` runs targets without recurrent layers (Gemma 4): it asks for rollback snapshots only when the target is recurrent or hybrid.

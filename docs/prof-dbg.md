@@ -320,16 +320,25 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
 - Device line: board and shell, `PCIe GEN g@wx`, state (`IDLE`, `HELD`, `OWNED`, `BUSY`, `LAUNCH t` for a launch in
   flight longer than 1 s). Clock line: `CORE 200MHz  RV 100MHz`, from sysfs `icap.u.*/clock_freqs` of the card's user
   function (clock ID 0 is the core, 1 the RISC-V control core), else from the clock the owner fitted from
-  `DBG_MTIME`. Sensor line: FPGA temperature, fan, power and limit, `DDR` used, from the sysfs hwmon of the card's
-  user function and from `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s. None of these
-  touches the compute unit.
+  `DBG_MTIME`. Sensor line: FPGA temperature, fan, power and limit, from the sysfs hwmon of the card's user function
+  and from `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s. None of these touches the compute
+  unit.
 - `COMPUTE`: the busiest compute unit as a share of wall time, with its name (`MVM`, `VU`, `QACT`, `ATT`, `ATT_QK`,
   `ATT_PV`; the DMA moves data, it is not compute), from the change of PERF over the window. `MEMORY`: the device
   memory in use against the memory of the card, for example `12.0Gi/32.0Gi` on this U200 (four channels of 8 GiB). The
   total is the `mem_total` of the owner's record, which its transport measured at open. For an idle card it is the
-  capacity recorded for the card (see the next section), which gives `0.0Mi/32.0Gi`, and `n/a` when none is known (a
-  process that holds the card without publishing leaves the use unknown, so the meter shows `n/a`). The time series box
-  shows the compute share from 0 to 100 % over the last two minutes.
+  capacity recorded for the card (§7.2), which gives `0.0Mi/32.0Gi`, and `n/a` when none is known (a process that
+  holds the card without publishing leaves the use unknown, so the meter shows `n/a`). `MEM BW`: the read rate of all
+  DDR channels together, for example `43% 30.7GB/s`. The percentage is the share of what the DRAM gives:
+  `NUM_CH` x 18 GB/s on this card, as `tsr_bw` measures it ([bandwidth-kernel.md](bandwidth-kernel.md) §7). `COMPUTE`
+  and `MEM BW` come from the change of PERF. They show `n/a` while there are no rates: before the first PERF read, and
+  when the rates are idle (see below). From 96 columns the three meters share one row. On a narrower terminal
+  `COMPUTE` and `MEMORY` share the first row and `MEM BW` has a second row, as wide as the two together. The time
+  series box draws two lines over the last two minutes (less when the box is narrow), both from 0 to 100 %: the
+  `COMPUTE` share, and the device memory in use as a share of the memory of the card, which is the `MEMORY` meter over
+  time. The memory line rises while a model loads, when no launch runs and the compute line stays at 0. The legend
+  gives the current value of each line, or `n/a` where it is not known. Without colors (`--once`, `--no-color`) the
+  memory line is drawn with heavy glyphs and its legend ends with `(heavy)`.
 - Process table: `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`. `MODE` is `M6` or `M7`, and `TOK/S` is
   `pp n` while a prefill runs. A process that has the card open but does not publish is listed dimmed with `(no
   tsr-mon)`. User, CPU % and RSS come from `/proc/<pid>`, and the other users of the card from the `/proc/*/fd`
@@ -360,7 +369,8 @@ why the probe is off by default.
   one decoded token, and a pass of more tokens is prefill (so the batch of a speculative verification counts as
   prefill). The tokens of a pass are counted when it starts, so a pass longer than the 3 s window shows as a spike.
 - Before the first launch the record has the process, the memory in use and the configuration but no PERF read, so
-  the meters show `n/a`. On a simulated transport the clock is simulated, so `ACT` and the GB/s over wall time are
-  not hardware figures. An owner started with `TSR_MON=0` is visible only as a process that holds the card.
+  the meters that come from PERF show `n/a`. On a simulated transport the clock is simulated, so `ACT` and the GB/s
+  over wall time are not hardware figures. An owner started with `TSR_MON=0` is visible only as a process that holds
+  the card.
 - The model name comes from `$TSR_MON_MODEL`, `-m`, `--model`, `-hf` or the first mapped `.gguf`, and the
   quantization is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).

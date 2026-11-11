@@ -3,9 +3,10 @@
 #
 #   layout  TEST_TSR_MON         the record layout of tsr_top.py is the one the C header has
 #   synth                        a record written here (this process as the publisher): the reader, the rates, the
-#                                COMPUTE and MEMORY meters and the U split against hand-computed numbers, the text frame at several
-#                                sizes, a record that changes while tsr-top samples it, stale and torn files, and a made-up sysfs
-#                                tree (TSR_TOP_SYSFS) for the clocks, fan, temperature and power, with xbutil as the fallback
+#                                COMPUTE, MEMORY and MEM BW meters, the two lines of the time series box and the U split against
+#                                hand-computed numbers, the text frame at several sizes, a record that changes while tsr-top
+#                                samples it, stale and torn files, and a made-up sysfs tree (TSR_TOP_SYSFS) for the clocks, fan,
+#                                temperature and power, with xbutil as the fallback
 #   live    LLAMA_COMPLETION MODEL TSR_MON_PROBE
 #                                a tiny model on the simulator with the publisher on: the record while it runs
 #                                (never torn, counters never go back), the record it leaves with TSR_MON_KEEP,
@@ -84,9 +85,9 @@ def my_ticks():
     return tsr_top.proc_start_ticks(os.getpid())
 
 
-def synth_perf(k, hz):
+def synth_perf(k, hz, ch=(0.8, 0.8, 0.8, 0.8)):
     """The PERF array after k intervals of 0.1 s of a device that is active 60 % of the time: the MVM holds an op in
-    90 % of the active cycles, the VU 10 %, DMA 20 %, QACT 5 %; every channel streams in 80 % of them."""
+    90 % of the active cycles, the VU 10 %, DMA 20 %, QACT 5 %; channel c streams in the share ch[c] of them (80 %)."""
     C, X = 4, 13
     perf = [0] * 64
     d_cyc = int(0.06 * hz)
@@ -94,7 +95,7 @@ def synth_perf(k, hz):
     perf[tsr_top.P_MVM] = int(k * d_cyc * 0.9)
     perf[tsr_top.P_VU] = int(k * d_cyc * 0.1)
     for c in range(C):
-        perf[5 + c] = int(k * d_cyc * 0.8)          # read beats
+        perf[5 + c] = int(k * d_cyc * ch[c])        # read beats
         perf[5 + C + c] = int(k * d_cyc * 0.01)     # wait
     perf[X + tsr_top.X_DMA] = int(k * d_cyc * 0.2)
     perf[X + tsr_top.X_QACT] = int(k * d_cyc * 0.05)
@@ -103,10 +104,10 @@ def synth_perf(k, hz):
     return perf
 
 
-def synth_page(k, hz, **kw):
+def synth_page(k, hz, ch=(0.8, 0.8, 0.8, 0.8), **kw):
     """The fields of the record after k intervals (the deltas are the last interval's)."""
-    perf = synth_perf(k, hz)
-    dperf = [a - b for a, b in zip(perf, synth_perf(k - 1, hz))] if k > 0 else [0] * 64
+    perf = synth_perf(k, hz, ch)
+    dperf = [a - b for a, b in zip(perf, synth_perf(k - 1, hz, ch))] if k > 0 else [0] * 64
     d = dict(pid=os.getpid(), uid=os.getuid(), proc_start_ticks=my_ticks(), flags=tsr_top.F_FITTED, core_hz=int(hz), rv_hz=int(hz / 2), num_ch=4, perf_x=13,
              perf=perf, dperf=dperf, transport="xrt", owner="graph", mode="M7", quant="q4_K", model="synthetic-Q4_K_M.gguf",
              cmdline="llama-completion -m synthetic-Q4_K_M.gguf", comm="llama-completion", image_id=0x1234567890abcdef, caps=0x21,
@@ -161,6 +162,82 @@ def fake_xbutil(path, temp="60", watts="40.5", max_w="225", fan=None):
     os.chmod(path, 0o755)
 
 
+def meter_text(txt, label):
+    """What stands between the brackets of the meter LABEL[...] in a frame; None when it has no such meter."""
+    m = re.search(re.escape(label) + r"\[([^\]]*)\]", txt)
+    return m.group(1) if m else None
+
+
+def meter_spans(line):
+    """The summary meters of one frame line: [(label, column, width)]."""
+    return [(m.group(1), m.start(), m.end() - m.start()) for m in re.finditer(r"(COMPUTE|MEMORY|MEM BW)\[[^\]]*\]", line)]
+
+
+def meters_layout(txt):
+    """'row' when MEM BW[ is on the line of COMPUTE[, 'below' when it is on the next line, else None."""
+    lines = txt.splitlines()
+    for i, x in enumerate(lines):
+        if "COMPUTE[" in x:
+            if "MEM BW[" in x:
+                return "row"
+            return "below" if i + 1 < len(lines) and "MEM BW[" in lines[i + 1] else None
+    return None
+
+
+def plot_rows(lines):
+    """The time series box of a text frame: the row of each mark of its axis, the interior rows with a heavy line glyph (the
+    memory line of a text frame) and those with a light one (the COMPUTE line; the vertical glyph is left out: it looks like
+    the border)."""
+    mark, heavy, light = {}, [], []
+    for i, x in enumerate(lines):
+        if len(x) > 5 and x[3] == "\u2502":
+            if x[:3].strip() in ("100", "75", "50", "25", "0"):
+                mark[x[:3].strip()] = i
+            body = x[4:-1]
+            if any(c in body for c in "\u2501\u2503\u251b\u250f\u2513\u2517"):
+                heavy.append(i)
+            if any(c in body for c in "\u2500\u256f\u256d\u256e\u2570"):
+                light.append(i)
+    return mark, heavy, light
+
+
+def check_meters(size, txt, gbs_total):
+    """The summary meters of a text frame of the synthetic record: where they are, how wide, and what MEM BW says."""
+    w = int(size.split("x")[0])
+    lines = txt.splitlines()
+    ci = next((i for i, x in enumerate(lines) if "COMPUTE[" in x), None)
+    check(ci is not None and txt.count("MEM BW[") == 1, "%s: the frame has COMPUTE[ and one MEM BW[" % size)
+    if ci is None:
+        return
+    if w >= 96:                     # three meters of one width in one row
+        bw = (w - 4) // 3
+        got = meter_spans(lines[ci])
+        check(meters_layout(txt) == "row" and got == [("COMPUTE", 1, bw), ("MEMORY", 2 + bw, bw), ("MEM BW", 3 + 2 * bw, bw)],
+              "%s: three meters of width %d in one row: %s" % (size, bw, got))
+        field = bw - len("MEM BW") - 2
+    else:                           # COMPUTE and MEMORY in one row, MEM BW as wide as the two below them
+        bw = (w - 3) // 2
+        below = lines[ci + 1] if ci + 1 < len(lines) else ""
+        check(meters_layout(txt) == "below" and meter_spans(lines[ci]) == [("COMPUTE", 1, bw), ("MEMORY", 2 + bw, bw)] and
+              meter_spans(below) == [("MEM BW", 1, 2 * bw + 1)] and lines[ci].rfind("]") == below.rfind("]"),
+              "%s: MEM BW directly below, its right bracket under the one of MEMORY: '%s' '%s'" % (size, lines[ci], below))
+        field = 2 * bw + 1 - len("MEM BW") - 2
+    mb = meter_text(txt, "MEM BW") or ""
+    check("43% 30.7GB/s" in mb, "%s: MEM BW is the read rate of all channels against 4 x 18 GB/s: '%s'" % (size, mb))
+    check(abs(mb.count("|") - gbs_total / 72.0 * field) <= 0.51, "%s: the MEM BW bar fills 43 %% of %d cells: %d" % (size, field, mb.count("|")))
+
+
+def check_series(size, txt):
+    """The time series box of a text frame of the synthetic record: its legend, and its two lines: COMPUTE at 54 % (light)
+    and the memory, 12.0 of 32.0 GiB = 37.5 % (heavy, a text frame has no colors)."""
+    check("COMPUTE  54% MVM" in txt, "%s: the COMPUTE legend" % size)
+    check("MEMORY   38% (heavy)" in txt, "%s: the memory legend (37.5 %% prints as 38; heavy in a text frame)" % size)
+    mark, heavy, light = plot_rows(txt.splitlines())
+    check(len(mark) == 5 and heavy and all(mark["50"] < i < mark["25"] for i in heavy),
+          "%s: the memory line stands at 37.5 %%, between the 50 and the 25 mark: %s, rows %s" % (size, mark, heavy))
+    check(light and all(mark["75"] < i <= mark["50"] for i in light), "%s: the COMPUTE line stands at 54 %%: %s, rows %s" % (size, mark, light))
+
+
 def test_layout(test_tsr_mon):
     r = subprocess.run([test_tsr_mon, "layout"], capture_output=True, text=True, timeout=60)
     check(r.returncode == 0, "test-tsr-mon layout runs")
@@ -202,6 +279,35 @@ def test_synth():
         fake_xbutil(os.path.join(d, "xbutil"))
         senv = {"TSR_TOP_SYSFS": sysfs}
         sargs = ["--xbutil", os.path.join(d, "xbutil")]
+
+        def fresh(**kw):
+            """The record's fields with a PERF read of this moment (rates show while the read is at most 2.5 s old); kw changes them."""
+            n = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+            args = dict(perf_mono_ns=n, d_wall_ns=100_000_000, d_launches=3, launches=100, perf_launches=100, update_mono_ns=n,
+                        tok_decode=50, tok_prefill=7, passes=51)
+            args.update(kw)
+            return synth_page(k, hz, **args)
+
+        def frame(size, **kw):
+            """The --once text frame of the record, changed by kw as in fresh()."""
+            write_record(path, make_page(**fresh(**kw)))
+            r = run_top(["--once", "--window", "0", "--dir", d, "--size", size] + sargs, env=senv)
+            check(r.returncode == 0, "--once %s exit %d: %s" % (size, r.returncode, r.stderr[-300:]))
+            return r.stdout
+
+        def hist_of(dirpath, polls=2):
+            """The history that tsr-top's Monitor keeps (device id -> samples) over a few polls of a record directory."""
+            saved = tsr_top.SYSFS
+            tsr_top.SYSFS = sysfs                                        # the made-up tree: find_cards and the link read it at every call
+            try:
+                mon = tsr_top.Monitor(tsr_top.parse_args(["--dir", dirpath, "--no-sensors", "--no-background"]))
+                for _ in range(polls):
+                    mon.poll()
+                return {name: list(samples) for name, samples in mon.hist.items()}
+            finally:
+                tsr_top.SYSFS = saved
+
+        card_id = "card:0000:ff:00.1"
         recs = tsr_top.scan_records(d)
         check([r["pid"] for r in recs] == [os.getpid()], "only the live publisher is listed: %s" % [r["pid"] for r in recs])
         check(not os.path.exists(os.path.join(d, "tsr-mon-2147483000")), "the stale record of a dead pid is tidied")
@@ -259,14 +365,20 @@ def test_synth():
                   sn["power_max_w"] == 225.0 and sn["source"] == {"temp_c": "sysfs", "power_w": "sysfs", "fan_rpm": "sysfs"},
                   "hwmon temperature, power and fan, xbutil for the limit: %s" % sn)
             check(c["link"]["gen"] == 3 and c["link"]["width"] == 16, "PCIe link")
-        # the text frame at several sizes
-        for size in ("80x24", "100x36", "60x20", "132x50", "40x12"):
+        # the text frame at several sizes: 56x34 is the width of the pane in the project's demo video, 96 and 95 are the two sides of
+        # the width from which the three meters share a row
+        gbs_total = 4 * 0.06 * hz * 0.8 * 64 / 0.1 / 1e9                 # 30.72 GB/s: 43 % of 4 x 18
+        for size in ("80x24", "100x36", "60x20", "132x50", "40x12", "56x34", "96x30", "95x30"):
             w, h = map(int, size.split("x"))
+            write_record(path, make_page(**fresh()))
             r = run_top(["--once", "--window", "0", "--dir", d, "--size", size] + sargs, env=senv)
             check(r.returncode == 0, "--once %s exit %d: %s" % (size, r.returncode, r.stderr[-300:]))
             lines = r.stdout.splitlines()
             check(len(lines) <= h, "%s: %d lines" % (size, len(lines)))
             check(all(len(x) <= w for x in lines), "%s: a line is wider than the screen: %d" % (size, max(len(x) for x in lines)))
+            check_meters(size, r.stdout, gbs_total)
+            if h >= 20:                                                  # room for the time series box
+                check_series(size, r.stdout)
             if w >= 80 and h >= 24:
                 txt = r.stdout
                 for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "12.0Gi/32.0Gi",
@@ -277,8 +389,50 @@ def test_synth():
                     check(gone not in txt, "%s: the frame does not show '%s' by default" % (size, gone))
                 if h >= 24:
                     check(len(lines) >= 20, "%s: the frame fills the screen (%d lines)" % (size, len(lines)))
+        write_record(path, make_page(**fresh()))
         r = run_top(["--once", "--window", "0", "--dir", d, "--size", "80x24", "--ascii"] + sargs, env=senv)
         check(r.returncode == 0 and all(ord(c) < 128 for c in r.stdout), "--ascii output is ASCII")
+        check("MEM BW[" in r.stdout and "43% 30.7GB/s" in r.stdout and "MEMORY   38%" in r.stdout and r.stdout.count("*") >= 1,
+              "--ascii: the meters and the legend are there, the memory line is drawn with '*'")
+
+        # MEM BW is the total over all channels against NUM_CH x 18 GB/s, not the busiest channel: channels that stream in 80, 40, 20
+        # and 0 % of the active cycles give 7.68 + 3.84 + 1.92 GB/s = 13.44 of 72 (the busiest channel alone would be 43 % of 18)
+        mb = meter_text(frame("100x36", ch=(0.8, 0.4, 0.2, 0.0)), "MEM BW") or ""
+        check("19% 13.4GB/s" in mb and abs(mb.count("|") - 13.44 / 72.0 * 24) <= 0.51, "MEM BW of unequal channels: '%s'" % mb)
+        # where the two lines coincide (the memory in use is 54 %, as the COMPUTE share) the COMPUTE line is drawn over the memory line
+        txt = frame("100x36", mem_used=int(0.54 * 32 * 2 ** 30))
+        mark, heavy, light = plot_rows(txt.splitlines())
+        check("MEMORY   54% (heavy)" in txt and light and not heavy, "COMPUTE is drawn over MEMORY: heavy rows %s, light rows %s" % (heavy, light))
+        # no PERF read yet (a model load: no launches) and a read older than 2.5 s: COMPUTE and MEM BW are n/a, MEMORY has its value,
+        # and the memory line stands at 37.5 % while the COMPUTE line lies on 0
+        no_rates = (("no PERF read", dict(perf_mono_ns=0, d_wall_ns=0, perf=[0] * 64, dperf=[0] * 64)),
+                    ("a stale PERF read", dict(perf_mono_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - 10_000_000_000)))
+        for what, kw in no_rates:
+            txt = frame("100x36", **kw)
+            check([(meter_text(txt, x) or "?").strip() for x in ("COMPUTE", "MEM BW")] == ["n/a", "n/a"] and
+                  "12.0Gi/32.0Gi" in (meter_text(txt, "MEMORY") or ""), "%s: COMPUTE[ and MEM BW[ show n/a, MEMORY[ its value" % what)
+            check("COMPUTE n/a" in txt and "MEMORY   38% (heavy)" in txt, "%s: the legend: COMPUTE n/a, MEMORY 38 %%" % what)
+            mark, heavy, light = plot_rows(txt.splitlines())
+            check(len(mark) == 5 and heavy and all(mark["50"] < i < mark["25"] for i in heavy), "%s: the memory line stands at 37.5 %%" % what)
+            check(light and all(i == mark["0"] for i in light), "%s: the COMPUTE line lies on 0 %%" % what)
+        # an owner whose memory total is not known (mem_total 0, no capacity record): MEMORY is n/a and its line is not drawn
+        txt = frame("100x36", mem_total=0)
+        mark, heavy, light = plot_rows(txt.splitlines())
+        check((meter_text(txt, "MEMORY") or "").strip() == "n/a" and "MEMORY  n/a" in txt and light and not heavy,
+              "no memory total: MEMORY[ is n/a, the legend says n/a, the memory line is not drawn (an unknown sample draws nothing)")
+        # the history behind the time series: (compute, busiest channel, DDR GB/s, memory in use), the last of them whether or not
+        # the rates are fresh
+        write_record(path, make_page(**fresh()))
+        hs = hist_of(d).get(card_id, [])
+        check(len(hs) == 2 and all(len(x) == 4 for x in hs), "the history samples are 4-tuples: %s" % hs)
+        if hs:
+            check(abs(hs[-1][0] - 0.54) < 0.01 and abs(hs[-1][1] - 7.68 / 18.0) < 0.003 and abs(hs[-1][2] - 30.72) < 0.2 and hs[-1][3] == 0.375,
+                  "the sample of fresh rates ends with the memory in use, 12.0 of 32.0 GiB: %s" % (hs[-1],))
+        for what, kw in no_rates:
+            write_record(path, make_page(**fresh(**kw)))
+            hs = hist_of(d).get(card_id, [])
+            check(hs and hs[-1] == (0.0, 0.0, 0.0, 0.375), "%s: the sample is 0 and the memory in use: %s" % (what, hs[-1:]))
+        write_record(path, make_page(**pg))
 
         # an idle card (no publisher): the MEMORY meter measures against the capacity the transport recorded for it
         di = os.path.join(d, "idle")
@@ -293,12 +447,26 @@ def test_synth():
         dv, txt = idle_card()
         check(dv["state"] == "idle" and dv["capacity"] is None and "MEMORY[" in txt and "Gi/" not in txt and "64.0Gi" not in txt,
               "idle card, no capacity record: no memory total (not a made-up 64 GiB): %s" % dv["capacity"])
+        check((meter_text(txt, "MEM BW") or "").strip() == "n/a" and "MEMORY  n/a" in txt and "COMPUTE n/a" in txt,
+              "idle card, no capacity record: MEM BW[ is n/a, the legend says MEMORY  n/a")
+        check(plot_rows(txt.splitlines())[2] and not plot_rows(txt.splitlines())[1],
+              "idle card, no capacity record: the memory line is not drawn (an unknown sample draws nothing), the COMPUTE line is")
+        hs = hist_of(di).get(card_id, [])
+        check(hs and hs[-1] == (0.0, 0.0, 0.0, None), "idle card, no capacity record: the memory in use is unknown in the history: %s" % hs[-1:])
         with open(cap, "w") as f:
             f.write("tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes %d\n" % (8 * 2 ** 30))
         check(tsr_top.card_capacity(di, "0000:ff:00.1") == 32 * 2 ** 30, "card_capacity reads the record")
         dv, txt = idle_card()
         check(dv["capacity"] == 32 * 2 ** 30 and "0.0Mi/32.0Gi" in txt and "64.0Gi" not in txt,
               "idle card with a capacity record shows 0.0Mi/32.0Gi (%s)" % dv["capacity"])
+        check((meter_text(txt, "MEM BW") or "").strip() == "n/a" and "MEMORY    0%" in txt and meters_layout(txt) == "row",
+              "idle card with a capacity record: MEM BW[ is n/a, the memory legend is at 0 %")
+        txt = run_top(["--once", "--window", "0", "--dir", di, "--size", "56x34"] + sargs, env=senv).stdout
+        check((meter_text(txt, "MEM BW") or "").strip() == "n/a" and "MEMORY    0%" in txt and meters_layout(txt) == "below" and
+              len(txt.splitlines()) <= 34 and all(len(x) <= 56 for x in txt.splitlines()),
+              "idle card at 56x34: MEM BW[ n/a below the other two meters, the memory legend at 0 %, the frame fits")
+        hs = hist_of(di).get(card_id, [])
+        check(hs and hs[-1] == (0.0, 0.0, 0.0, 0.0), "idle card with a capacity record: 0 memory in use in the history: %s" % hs[-1:])
         for bad in ("tsr-cap 2\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes 8589934592\n", "tsr-cap 1\nbdf 0000:ff:00.0\nnum_ch 4\nch_bytes 8589934592\n",
                     "tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 4\nch_bytes x\n", "tsr-cap 1\nbdf 0000:ff:00.1\nnum_ch 0\nch_bytes 8589934592\n", ""):
             with open(cap, "w") as f:
@@ -312,6 +480,14 @@ def test_synth():
         check(tsr_top.device_mem_total({"capacity": 32 * 2 ** 30, "probe": {"ok": True, "ch_bytes": 16 * 2 ** 30, "num_ch": 4}}) == 32 * 2 ** 30,
               "the recorded capacity wins over the probe")
         check(tsr_top.device_mem_total({"capacity": None, "probe": None}) is None, "nothing known: None")
+        g = 2 ** 30
+        check(tsr_top.device_mem_use({"rec": {"mem_used": 12 * g, "mem_total": 32 * g}, "state": "busy"}) == (12 * g, 32 * g, 0.375),
+              "memory in use: the owner's record gives the use and the total")
+        check(tsr_top.device_mem_use({"rec": None, "state": "idle", "capacity": 32 * g}) == (0, 32 * g, 0.0), "an idle card has nothing in use")
+        check(tsr_top.device_mem_use({"rec": None, "state": "held", "capacity": 32 * g}) == (None, 32 * g, None),
+              "a holder that does not publish leaves the use unknown")
+        check(tsr_top.device_mem_use({"rec": None, "state": "idle"}) == (0, None, None), "no total, no share")
+        check(tsr_top.device_mem_use({"rec": {"mem_used": 40 * g, "mem_total": 32 * g}})[2] == 1.0, "the share is at most 1")
         os.unlink(cap)
 
         # the other sources of the clocks and the sensors
@@ -569,27 +745,41 @@ def test_curses(tmux):
         check(r.returncode == 0, "tmux new-session: %s" % r.stderr)
         scr = screen(lambda t: "COMPUTE " in t and "synth" in t and "FAN 1264rpm" in t and "CORE 250MHz" in t, timeout=60.0)
         check(len(scr.splitlines()) == 24, "24 rows")
-        for want in ("Device", "CORE 250MHz", "RV 125MHz", "FAN 1264rpm", "COMPUTE[", "MEMORY[", "COMPUTE ", "% MVM", "PID", "synth",
+        for want in ("Device", "CORE 250MHz", "RV 125MHz", "FAN 1264rpm", "COMPUTE[", "MEMORY[", "MEM BW[", "COMPUTE ", "% MVM", "PID", "synth",
                      "F2Setup", "F6Sort", "F10Quit"):
             check(want in scr, "the screen shows '%s'" % want)
         for gone in ("IMG ", "KINDS", "MVM[", "EMPTY[", "CH0[", "(1-H)", "tok/s", "prefill/s"):
             check(gone not in scr, "the screen does not show '%s' by default" % gone)
         check("\u250c" in scr and "\u2514" in scr and any(c in scr for c in "\u2500\u2501\u256d\u2570\u250f\u2517"), "box drawing and solid plot lines")
         check(any(x in scr for x in (" 53%", " 54%", " 55%")), "the COMPUTE meter shows about 54 % (the MVM holds an op in 90 % of the 60 % active time)")
+        check(meters_layout(scr) == "below", "80x24: MEM BW[ is on the line below COMPUTE[ and MEMORY[")
+        m = re.search(r"(\d+)% ([\d.]+)GB/s", meter_text(scr, "MEM BW") or "")
+        # the writer moves 12e6 beats per channel every 0.1 s or a little more: just under 30.72 GB/s, 43 % of 4 x 18
+        check(m is not None and 20.0 <= float(m.group(2)) <= 31.0 and abs(int(m.group(1)) - 100 * float(m.group(2)) / 72.0) <= 1.0,
+              "MEM BW shows the read rate of the four channels, about 30 GB/s and 42 or 43 %%: '%s'" % (meter_text(scr, "MEM BW"),))
+        check("MEMORY   38%" in scr and "(heavy)" not in scr, "the memory legend says 38 %, without '(heavy)': the screen has colors")
+        esc = tmux_capture(tmux, sock, e=True)
+        cyan, yellow = r"\x1b\[(?:\d+;)*36m", r"\x1b\[(?:\d+;)*33m"
+        check(re.search(cyan + "COMPUTE ", esc) and re.search(yellow + "MEMORY ", esc), "the legend: COMPUTE in cyan, MEMORY in yellow")
+        check(re.search(cyan + "\u2500", esc) and re.search(yellow + "\u2500", esc),
+              "the time series box has a cyan line (COMPUTE) and a yellow one (the memory in use)")
         # setup menu: F2 opens it, Down and Space switch the time series panel off, Esc closes it
         keys("F2")
-        scr = screen(lambda t: "[x] Compute and memory meters" in t)
-        check("Setup" in scr and "[x] Compute and memory meters" in scr and "[ ] Unit meters" in scr and "[ ] Image line" in scr and "Esc" in scr,
+        scr = screen(lambda t: "[x] Compute, memory and memory bandwidth meters" in t)
+        check("Setup" in scr and "[x] Compute, memory and memory bandwidth meters" in scr and "[x] Compute and memory use time series" in scr and
+              "[ ] Unit meters" in scr and "[ ] Image line" in scr and "Esc" in scr,
               "F2 opens the setup menu; the unit meters, the DDR channels, U and the image line are off")
         keys("Down", "Space")
-        scr = screen(lambda t: "[ ] Utilization time series" in t)
-        check("[ ] Utilization time series" in scr, "Space switches the time series panel off in the menu")
+        scr = screen(lambda t: "[ ] Compute and memory use time series" in t)
+        check("[ ] Compute and memory use time series" in scr, "Space switches the time series panel off in the menu")
         keys("Escape")
         scr = screen(lambda t: "[x] Compute" not in t and "COMPUTE " not in t)
-        check("[x] Compute" not in scr and "COMPUTE " not in scr and "COMPUTE[" in scr, "Esc closes the menu, the time series panel is off, the meters stay")
+        check("[x] Compute" not in scr and "COMPUTE " not in scr and "MEMORY  " not in scr and "(heavy)" not in scr and
+              meters_layout(scr) == "below" and "MEMORY[" in scr,
+              "Esc closes the menu, the time series panel is off (no legend lines), the three meters stay")
         keys("F2", "Down", "Space", "Escape")
-        scr = screen(lambda t: "COMPUTE " in t)
-        check("COMPUTE " in scr, "the panel comes back")
+        scr = screen(lambda t: "COMPUTE " in t and "MEMORY   38%" in t)
+        check("COMPUTE " in scr and "MEMORY   38%" in scr, "the panel comes back with both legend lines")
         # the panels that are off by default: unit meters, DDR channels and U (items 5 to 7), then the image line (item 4)
         keys("F2", "Down", "Down", "Down", "Down", "Down", "Space", "Down", "Space", "Down", "Space", "Escape")
         scr = screen(lambda t: "EMPTY[" in t and "CH0[" in t and "(1-H)" in t)
@@ -612,14 +802,15 @@ def test_curses(tmux):
         check("Refresh 0.3s" in screen(lambda t: "Refresh 0.3s" in t), "- lowers it")
         # resize: wider, then narrow
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "132", "-y", "40"])
-        scr = screen(lambda t: len(t.splitlines()) == 40 and "Device" in t and "COMPUTE[" in t and "COMMAND" in t)
-        check(len(scr.splitlines()) == 40 and "COMPUTE[" in scr and "COMMAND" in scr, "resize to 132x40")
+        scr = screen(lambda t: len(t.splitlines()) == 40 and "Device" in t and "COMPUTE[" in t and "COMMAND" in t and meters_layout(t) == "row")
+        check(len(scr.splitlines()) == 40 and "COMPUTE[" in scr and "COMMAND" in scr and meters_layout(scr) == "row" and "MEMORY[" in scr,
+              "resize to 132x40: the three meters share one line")
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "80", "-y", "24"])
-        scr = screen(lambda t: len(t.splitlines()) == 24 and "Device" in t and "F2Setup" in t and "COMPUTE[" in t)
-        check(len(scr.splitlines()) == 24 and "F2Setup" in scr, "back to 80x24")
+        scr = screen(lambda t: len(t.splitlines()) == 24 and "Device" in t and "F2Setup" in t and "COMPUTE[" in t and meters_layout(t) == "below")
+        check(len(scr.splitlines()) == 24 and "F2Setup" in scr and meters_layout(scr) == "below", "back to 80x24: MEM BW[ below the other two meters")
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "50", "-y", "14"])
-        scr = screen(lambda t: len(t.splitlines()) == 14 and "Device" in t and "F2Setup" in t)
-        check("Device" in scr and "F2Setup" in scr, "a 50x14 terminal still shows the header and the keys:\n" + scr)
+        scr = screen(lambda t: len(t.splitlines()) == 14 and "Device" in t and "F2Setup" in t and "MEM BW[" in t)
+        check("Device" in scr and "F2Setup" in scr and "MEM BW[" in scr, "a 50x14 terminal still shows the header, the meters and the keys:\n" + scr)
         # quit
         keys("q")
         t0 = time.time()
