@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 ### Fixed
 
 - `tsr-mtp` runs targets without recurrent layers (Gemma 4): it asks for rollback snapshots only when the target is recurrent or hybrid.
+- `tsr_mon_read` tries for 200 ms and gives the CPU away while the writer stays stopped inside an update. It made 100,000 tries without a pause and returned -3 when none found the page consistent. The ctest `transport_mon`, whose writer never pauses, failed now and then for that reason. The test now counts a give-up (-3) apart from a torn page and ends on a number of consistent reads.
 
 ### Changed
 

@@ -4,9 +4,10 @@
 // fields the owner sets), the file's name and mode, that the file appears whole, the counters after
 // launches (launch count, op records, wall time, the launch in flight), a PERF read (totals equal
 // the transport's own summary, the deltas between two reads), the seqlock under a writer that never
-// stops (a reader must never see a torn page), the layout table, TSR_MON=0 (no file), the stale file
-// of a dead pid left alone, and that closing the transport removes the file. The capacity record of a
-// card (tsr-cap-<bdf>: written once, read back, replaced, refused for a bad address, left by the process).
+// stops (a reader must never see a torn page), a page that stays odd (the reader gives up), the
+// layout table, TSR_MON=0 (no file), the stale file of a dead pid left alone, and that closing the
+// transport removes the file. The capacity record of a card (tsr-cap-<bdf>: written once, read back,
+// replaced, refused for a bad address, left by the process).
 //
 // `test-tsr-mon layout` prints the layout table as JSON (the Python reader's test compares it).
 
@@ -40,6 +41,27 @@ static int g_fail = 0, g_checks = 0;
 static bool exists(const char * p) {
     struct stat st;
     return stat(p, &st) == 0;
+}
+
+static double now_s() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+// Writes a file of one page: the header of a record and the seqlock counter `seq`, the rest zero.
+static bool write_page(const char * file, uint64_t seq) {
+    uint8_t page[TSR_MON_BYTES] = {};
+    tsr_mon_rec rec = {};
+    memcpy(rec.magic, TSR_MON_MAGIC, 8);
+    rec.layout = TSR_MON_LAYOUT;
+    rec.size = TSR_MON_BYTES;
+    rec.seq = seq;
+    memcpy(page, &rec, sizeof(rec));
+    FILE * f = fopen(file, "wb");
+    if (f == nullptr) return false;
+    const size_t n = fwrite(page, 1, sizeof(page), f);
+    return fclose(f) == 0 && n == sizeof(page);
 }
 
 int main(int argc, char ** argv) {
@@ -135,7 +157,12 @@ int main(int argc, char ** argv) {
     CHECK(r.dperf[TSR_PERF_CYCLES] == 0, "no cycles between two reads with no device launch");
 
     // the seqlock: a writer that never stops against a reader that must never see a torn page.
-    // launch_ns = 7 launches and ops = 3 launches hold on every consistent page.
+    // launch_ns = 7 launches and ops = 3 launches hold on every consistent page. A read that gives up
+    // (-3) found no consistent page in its 200 ms: it is counted apart, it is no torn page. A -3 that
+    // comes sooner is a failure. The writer leaves little time between two updates, so a read mostly
+    // succeeds when something holds the writer there (an interrupt, a switch) and the number of reads
+    // depends on the host: the reader runs for a second and then until it has 100 consistent reads,
+    // 30 s at most.
     tsr_mon_set_model("stress.gguf", "Q8_0");
     const uint64_t base_launches = r.launches;
     const uint64_t base_ns = r.launch_ns, base_ops = r.ops;
@@ -148,14 +175,19 @@ int main(int argc, char ** argv) {
             n_written++;
         }
     });
-    uint64_t reads = 0, torn = 0, last = base_launches;
-    const double t_end = [] { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }() + 1.0;
-    for (;;) {
-        timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        if (ts.tv_sec + ts.tv_nsec * 1e-9 > t_end) break;
+    const uint64_t min_reads = 100;
+    uint64_t reads = 0, torn = 0, gave_up = 0, last = base_launches;
+    int bad = 0;                                // what a read returned that is no read and no give-up
+    const double t0 = now_s();
+    double dt = 0;
+    while (dt < 30.0 && (dt < 1.0 || reads < min_reads)) {
         tsr_mon_rec x;
-        if (tsr_mon_read(path, &x) != 0) { torn++; continue; }
+        const double a = now_s();
+        const int rc = tsr_mon_read(path, &x);
+        const double b = now_s();
+        dt = b - t0;
+        if (rc == -3 && b - a >= 0.2) { gave_up++; continue; }
+        if (rc != 0) { bad = rc; break; }
         reads++;
         const uint64_t n = x.launches - base_launches;
         if (x.launch_ns - base_ns != 7 * n || x.ops - base_ops != 3 * n || x.launches < last) torn++;
@@ -164,7 +196,23 @@ int main(int argc, char ** argv) {
     }
     stop = true;
     w.join();
-    CHECK(torn == 0 && reads > 100, "seqlock: %" PRIu64 " reads, %" PRIu64 " torn, %" PRIu64 " launches written", reads, torn, n_written.load());
+    printf("seqlock: %" PRIu64 " reads in %.2f s, %" PRIu64 " gave up, %" PRIu64 " launches written\n", reads, dt, gave_up, n_written.load());
+    CHECK(torn == 0 && bad == 0 && reads >= min_reads, "seqlock: %" PRIu64 " reads, %" PRIu64 " torn, %" PRIu64 " gave up, a read returned %d",
+          reads, torn, gave_up, bad);
+
+    // a page that stays odd, as a writer that stopped inside an update leaves it: the reader gives up
+    // with -3 after its 200 ms. The same page with an even counter reads.
+    {
+        const std::string odd = dir + "/odd-page";
+        tsr_mon_rec x;
+        CHECK(write_page(odd.c_str(), 2) && tsr_mon_read(odd.c_str(), &x) == 0 && x.seq == 2, "a page with an even counter reads");
+        const bool wrote = write_page(odd.c_str(), 3);
+        const double a = now_s();
+        const int rc = tsr_mon_read(odd.c_str(), &x);
+        const double waited = now_s() - a;
+        CHECK(wrote && rc == -3 && waited >= 0.2, "a page that stays odd: read returns %d after %.3f s", rc, waited);
+        unlink(odd.c_str());
+    }
 
     // the cost of the hooks without a PERF read: a launch_begin / launch_end pair
     {

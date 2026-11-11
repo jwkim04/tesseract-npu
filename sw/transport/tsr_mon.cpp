@@ -2,6 +2,7 @@
 #include "tsr_mon.h"
 
 #include <fcntl.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -491,15 +492,28 @@ extern "C" void tsr_mon_add_tokens(uint32_t decode, uint32_t prefill, uint32_t p
 extern "C" int tsr_mon_read(const char * path, tsr_mon_rec * out) {
     const int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
+    // A try fails when the writer was inside an update during it. The reader tries again at once: a
+    // writer that runs, or that an interrupt holds, is out of the update soon. When 64 tries in a row
+    // find the counter odd and the same in both reads, the writer is taken to be switched out inside
+    // the update, where it may be waiting for this CPU. The reader then gives the CPU away after each
+    // try, until a try sees the counter move. The try that starts after 200 ms is the last one.
+    const uint64_t t0 = clock_ns(CLOCK_MONOTONIC);
+    unsigned stuck = 0;
     int rc = -3;
-    for (int tries = 0; tries < 100000; ++tries) {
+    for (;;) {
+        const bool last = clock_ns(CLOCK_MONOTONIC) - t0 >= 200000000ull;
         uint8_t page[TSR_MON_BYTES];
         if (pread(fd, page, sizeof(page), 0) != (ssize_t) sizeof(page)) { rc = -1; break; }
         uint64_t seq2 = 0;
         if (pread(fd, &seq2, sizeof(seq2), 16) != (ssize_t) sizeof(seq2)) { rc = -1; break; }
         uint64_t seq1;
         memcpy(&seq1, page + 16, 8);
-        if ((seq1 & 1u) != 0 || seq1 != seq2) continue;
+        if ((seq1 & 1u) != 0 || seq1 != seq2) {
+            if (last) break;
+            stuck = seq1 == seq2 ? stuck + 1 : 0;
+            if (stuck >= 64) sched_yield();
+            continue;
+        }
         if (memcmp(page, TSR_MON_MAGIC, 8) != 0) { rc = -1; break; }
         uint32_t layout;
         memcpy(&layout, page + 8, 4);

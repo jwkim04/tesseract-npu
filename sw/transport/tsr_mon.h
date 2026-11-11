@@ -168,7 +168,8 @@ void tsr_mon_cap_path(char * path, size_t n, const char * bdf);
 // The directory the records are in: $TSR_MON_DIR or /dev/shm. Fills `path` with the record of `pid`.
 void tsr_mon_path(char * path, size_t n, uint32_t pid);
 // Copies a record under the seqlock. 0 on success, -1 if the file cannot be read or is no record,
-// -2 if the layout is not this one, -3 if the writer never left the page consistent (retries ran out).
+// -2 if the layout is not this one, -3 if no try in 200 ms found the page consistent. The reader does
+// not sleep between tries; it gives the CPU away while the writer stays stopped inside an update.
 int  tsr_mon_read(const char * path, tsr_mon_rec * out);
 // The field table of layout 1 as JSON: {"layout":1,"size":N,"fields":[{"name":..,"off":..,"size":..,"count":..}, ...]},
 // for the layout test (tsr_top.py holds the same table). Returns the length, as snprintf.
