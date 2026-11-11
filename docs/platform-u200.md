@@ -278,8 +278,10 @@ The placement constraints of a K4 build are limited to Pblocks for major functio
 pre-hook of `k4.cfg`. It creates two child Pblocks and assigns hierarchical cells to them and to the platform's SLR Pblocks. It
 names no LUT, register, pipeline stage, site or BEL, and no ownership audit or placement ECO is run. Vivado places and routes the
 logic inside the regions, and the normal implementation reports and the clock, CDC and final timing checks of §8.3 and §8.4 decide
-the result. `hw/viz/k4_pblock_preview.py` draws the map from the hook. The map shows allowed regions, not placed cells. Regenerate
-it when the block assignments or the platform change, and look at it before a build.
+the result. The link flow marks every kernel `DONT_PARTITION`, which asks the placer not to split the kernel between SLRs. This
+kernel spans three SLRs, so the hook clears the mark on it. `hw/viz/k4_pblock_preview.py` draws the map from the hook. The map
+shows allowed regions, not placed cells. Regenerate it when the block assignments or the platform change, and look at it before a
+build.
 
 | Region | Blocks |
 |---|---|

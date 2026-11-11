@@ -5,7 +5,8 @@ pblocks and the ones the hook created, create_pblock / resize_pblock / set_prope
 get_sites returns a counted list, and add_cells_to_pblock prints the assignment. No Xilinx tool, checkpoint or
 placement is involved. The test checks which whole block goes into which pblock, that nothing below a block (a LUT,
 register, stage or site) is named, that the control plane follows TSR_K4_CTRL and the vector unit TSR_K4_VU, that a
-missing block stops the hook (or is skipped with TSR_K4_SKIP_MISSING), and the two child Pblocks themselves: the
+missing block stops the hook (or is skipped with TSR_K4_SKIP_MISSING), that the hook clears the link flow's
+DONT_PARTITION mark on the kernel and on nothing else, and the two child Pblocks themselves: the
 control Pblock, a child of the SLR0 platform pblock at the SLR1 boundary and off the DDR0 controller, and the VU
 Pblock, a child of the SLR2 platform pblock next to the SPM and off the DDR3 controller, both large enough.
 """
@@ -26,7 +27,10 @@ set ::pblocks {pblock_dynamic_SLR0 pblock_dynamic_SLR1 pblock_dynamic_SLR2}
 array set ::parent {}
 array set ::ranges {}
 proc get_cells {args} {
-    if {[lsearch -exact $args -filter] >= 0} {return top/tsr_k4/inst}
+    if {[lsearch -exact $args -filter] >= 0} {
+        if {[info exists ::env(MOCK_NO_MARK)] && [string first DONT_PARTITION [lindex $args end]] >= 0} {return {}}
+        return top/tsr_k4/inst
+    }
     set p [lindex $args end]
     if {[info exists ::env(MOCK_MISSING)] && [string first $::env(MOCK_MISSING) $p] >= 0} {return {}}
     if {[info exists ::env(MOCK_NO_DUAL)] && ([string first g_b.u_asm_b $p] >= 0 || [string first g_dual.g_chb $p] >= 0)} {return {}}
@@ -44,6 +48,7 @@ proc resize_pblock {pb args} {
     lappend ::ranges($pb) [lindex $args 1]
 }
 proc set_property {key value obj} {
+    if {$key eq "DONT_PARTITION"} {puts [join [list property $key $value $obj] "\t"]; return}
     if {$key ne "PARENT"} {error "mock: unexpected set_property $key"}
     if {[info exists ::env(MOCK_PARENT)]} {set value $::env(MOCK_PARENT)}
     set ::parent($obj) $value
@@ -170,6 +175,42 @@ def test_core_map():
     r, got, _ = run_hook(core="")
     assert r.returncode == 0, r.stderr
     assert got == expected("", False, "ctrl")
+
+
+def properties(r):
+    return [tuple(line.split("\t")[1:]) for line in r.stdout.splitlines() if line.startswith("property\t")]
+
+
+def test_kernel_map_clears_the_flows_dont_partition_mark():
+    """The link flow marks the kernel DONT_PARTITION; the kernel spans three SLRs, so the hook clears the mark on it."""
+    r, _, _ = run_hook()
+    assert r.returncode == 0, r.stderr
+    assert properties(r) == [("DONT_PARTITION", "false", "top/tsr_k4/inst")]
+    assert "cleared DONT_PARTITION on top/tsr_k4/inst" in r.stdout
+
+
+def test_kernel_without_the_mark():
+    r, got, _ = run_hook(no_mark=1)
+    assert r.returncode == 0, r.stderr
+    assert properties(r) == []
+    assert "the kernel is not marked DONT_PARTITION" in r.stdout
+    assert got == expected("top/tsr_k4/inst/u_kernel/", True, "ctrl")
+
+
+def test_a_mark_on_another_cell_stays():
+    """Only the cell that holds the kernel body is changed: the marked cell of the mock is top/tsr_k4/inst."""
+    for body in ("top/other/inst/u_kernel", "top/tsr_k4/inst2/u_kernel"):
+        r, _, _ = run_hook(body=body)
+        assert r.returncode == 0, r.stderr
+        assert properties(r) == []
+        assert "the kernel is not marked DONT_PARTITION" in r.stdout
+
+
+def test_core_map_changes_no_property():
+    r, _, _ = run_hook(core="")
+    assert r.returncode == 0, r.stderr
+    assert properties(r) == []
+    assert "DONT_PARTITION" not in r.stdout
 
 
 def test_vu_on_the_platform_pblock_of_slr2():

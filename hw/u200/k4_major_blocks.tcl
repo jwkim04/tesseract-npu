@@ -11,7 +11,8 @@
 #
 # Each block goes whole into one Pblock: the platform's pblock of an SLR, or one of the two Pblocks below. Nothing
 # here names a LUT, a register, a pipeline stage, a site or a BEL. Vivado places and routes inside the regions.
-# hw/viz/k4_pblock_preview.py draws the map from this file.
+# hw/viz/k4_pblock_preview.py draws the map from this file. In the link the hook also clears the flow's
+# DONT_PARTITION mark on the kernel (at the end of this file).
 #
 #   SLR0  clusters 0 and 2 with their result assemblers (each cluster holds both of its weight streams and stream B has an
 #         own row assembler); the pair source of clusters 0 and 2; the DDR0 bridge, the read-only bridge of the second weight
@@ -283,6 +284,23 @@ if {$tsr_k4_ctrl_plane ne "free"} {
 
 # The whole vector unit, front end and both lane banks, in SLR2.
 tsr_k4_major_block [expr {$tsr_k4_vu_where eq "pblock" ? "vu" : 2}] "$tsr_k4_dp/g_vu.u_vu"
+
+# The v++ link marks every kernel DONT_PARTITION (vpl/output/dont_partition.xdc, read at init_design): the placer is
+# asked not to split the kernel between SLRs. This kernel spans three SLRs by the Pblocks above, and place_design
+# reported that it could not obey the mark ([Place 30-1239], "Failed to find partition obeying USER_SLR_ASSIGNMENT
+# constraint, SLR 2"). The hook clears the mark on the cell that holds the kernel body. This is not a placement
+# constraint: the placer's own SLR partitioning decides where the logic that no Pblock names goes.
+if {$tsr_k4_kernel} {
+  set tsr_k4_cleared 0
+  foreach tsr_k4_cell [get_cells -quiet -hierarchical -filter {DONT_PARTITION == true}] {
+    set tsr_k4_name [get_property NAME $tsr_k4_cell]
+    if {[string first "$tsr_k4_name/" "$tsr_k4_body/"] != 0} { continue }
+    set_property DONT_PARTITION false $tsr_k4_cell
+    incr tsr_k4_cleared
+    puts "K4 major blocks: cleared DONT_PARTITION on $tsr_k4_name"
+  }
+  if {$tsr_k4_cleared == 0} { puts "K4 major blocks: the kernel is not marked DONT_PARTITION" }
+}
 
 tsr_k4_pblock_check [tsr_k4_ctrl_pblock_name] $tsr_k4_ctrl_min_ramb36 "control plane"
 if {$tsr_k4_vu_where eq "pblock"} {
