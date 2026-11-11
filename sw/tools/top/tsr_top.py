@@ -38,6 +38,7 @@ PAGE = 4096
 MON_DIR_DEFAULT = "/dev/shm"
 CORE_HZ_NOMINAL = 200e6              # the release image's core clock: the fallback when neither the fit nor sysfs gives one
 DRAM_GBS = 18.0                      # per channel: what the DRAM gives, as tsr_bw measures it (docs/bandwidth-kernel.md §7)
+CAPS_MVM_DUAL = 1 << 16              # CAPS bit 16: a cluster reads two weight streams, two beats per cycle (docs/rtl-mvm.md §15)
 XBUTIL = "/opt/xilinx/xrt/bin/xbutil"
 SYSFS = os.environ.get("TSR_TOP_SYSFS", "/sys")       # the tests point it at a made-up tree
 
@@ -562,12 +563,13 @@ def rates_between(a, b, rec, hz=None):
     beats = [d[5 + c] for c in range(C)]
     wait = [d[5 + C + c] for c in range(C)]
     gbs = [x * 64.0 / wall / 1e9 for x in beats]
-    stream = 64.0 * hz / 1e9
+    streams = 2 if rec["caps"] & CAPS_MVM_DUAL else 1            # weight streams of a cluster: 64 B per core cycle each
+    stream = streams * 64.0 * hz / 1e9
     top = max(range(C), key=lambda c: gbs[c]) if C else 0
     r["memory"] = {"channel": top, "gbs": gbs[top] if C else 0.0, "pct": (gbs[top] / DRAM_GBS) if C else 0.0}
     r["ddr"] = {
         "ch_gbs": gbs, "ch_wait_pct": [(w / cyc if cyc > 0 else 0.0) for w in wait],
-        "total_gbs": sum(gbs), "stream_limit_gbs": stream, "dram_limit_gbs": DRAM_GBS,
+        "total_gbs": sum(gbs), "streams": streams, "stream_limit_gbs": stream, "dram_limit_gbs": DRAM_GBS,
         "pct_stream": sum(gbs) / (C * stream) if C else 0.0, "pct_dram": sum(gbs) / (C * DRAM_GBS) if C else 0.0,
     }
     # U ~ (1-H)(1-G)(1-F)E (docs/prof-dbg.md §3). H: no launch active; G: the MVM does not hold an op;
@@ -1255,9 +1257,9 @@ def meters(f, cs, y, w, dev, v):
     if v.panels["ddr"]:
         if have:
             d = rr["ddr"]
-            txt = " rd %.1f GB/s: %.0f%% of stream limit %.1f (64 B x %s), %.0f%% of DRAM %.1f" % (
-                d["total_gbs"], 100 * d["pct_stream"], d["stream_limit_gbs"] * len(d["ch_gbs"]), fmt_hz(rr["core_hz"]),
-                100 * d["pct_dram"], d["dram_limit_gbs"] * len(d["ch_gbs"]))
+            txt = " rd %.1f GB/s: %.0f%% of stream limit %.1f (%s64 B x %s), %.0f%% of DRAM %.1f" % (
+                d["total_gbs"], 100 * d["pct_stream"], d["stream_limit_gbs"] * len(d["ch_gbs"]), "2 x " if d["streams"] == 2 else "",
+                fmt_hz(rr["core_hz"]), 100 * d["pct_dram"], d["dram_limit_gbs"] * len(d["ch_gbs"]))
         else:
             txt = " rd n/a GB/s"
         f.segs(y + rows, 0, [(txt[:1], S_DEF), ("rd", S_LABEL), (txt[3:], S_DEF)])

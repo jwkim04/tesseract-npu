@@ -307,6 +307,22 @@ def test_synth():
             finally:
                 tsr_top.SYSFS = saved
 
+        def panels_frame(size, **kw):
+            """The text frame of the record, changed by kw as in fresh(), with every setup panel on. It is composed in this process:
+            --once has no switch for the panels that are off by default."""
+            write_record(path, make_page(**fresh(**kw)))
+            saved = tsr_top.SYSFS
+            tsr_top.SYSFS = sysfs
+            try:
+                mon = tsr_top.Monitor(tsr_top.parse_args(["--dir", d, "--no-sensors", "--no-background", "--no-color"]))
+                snap = mon.poll()
+                v = tsr_top.View(mon.opts)
+                v.panels = {key: True for key in v.panels}
+                w, h = map(int, size.split("x"))
+                return tsr_top.compose(snap, mon.hist, v, h, w, mon.interval).text()
+            finally:
+                tsr_top.SYSFS = saved
+
         card_id = "card:0000:ff:00.1"
         recs = tsr_top.scan_records(d)
         check([r["pid"] for r in recs] == [os.getpid()], "only the live publisher is listed: %s" % [r["pid"] for r in recs])
@@ -343,7 +359,8 @@ def test_synth():
             want = 0.06 * hz * 0.8 * 64 / 0.1 / 1e9
             check(all(abs(g - want) < 0.05 for g in rates["ddr"]["ch_gbs"]), "channel GB/s %s, want %.2f" % (rates["ddr"]["ch_gbs"], want))
             check(abs(rates["ddr"]["total_gbs"] - 4 * want) < 0.2, "total GB/s")
-            check(abs(rates["ddr"]["stream_limit_gbs"] - 16.0) < 0.01, "stream limit 64 B x 250 MHz = 16 GB/s")
+            check(rates["ddr"]["streams"] == 1 and abs(rates["ddr"]["stream_limit_gbs"] - 16.0) < 0.01 and
+                  abs(rates["ddr"]["pct_stream"] - want / 16.0) < 0.003, "stream limit 64 B x 250 MHz = 16 GB/s: %s" % rates["ddr"])
             # COMPUTE: the busiest compute unit (not the DMA) as a share of wall time; MEMORY: the busiest channel against 18 GB/s
             check(rates["compute"]["unit"] == "MVM" and abs(rates["compute"]["busy_active"] - 0.9) < 0.01 and
                   abs(rates["compute"]["pct"] - 0.6 * 0.9) < 0.01, "compute %s" % rates["compute"])
@@ -399,6 +416,21 @@ def test_synth():
         # and 0 % of the active cycles give 7.68 + 3.84 + 1.92 GB/s = 13.44 of 72 (the busiest channel alone would be 43 % of 18)
         mb = meter_text(frame("100x36", ch=(0.8, 0.4, 0.2, 0.0)), "MEM BW") or ""
         check("19% 13.4GB/s" in mb and abs(mb.count("|") - 13.44 / 72.0 * 24) <= 0.51, "MEM BW of unequal channels: '%s'" % mb)
+        # the stream limit follows the weight streams of the core. With CAPS bit 16, the dual weight stream, a cluster takes two beats
+        # of 64 B per core cycle: 32 GB/s per channel at 250 MHz, so the same read rate is half the share of the limit. MEM BW is
+        # measured against the DRAM and stays.
+        for caps, streams, clock in ((0x21, 1, "(64 B x 250MHz)"), (0x10021, 2, "(2 x 64 B x 250MHz)")):
+            txt = panels_frame("132x50", caps=caps)                      # wide enough for the share in the channel bars
+            r = run_top(["--json", "--window", "0", "--dir", d] + sargs, env=senv)
+            dd = [p for p in json.loads(r.stdout)["processes"] if p["publisher"]][0]["rates"]["ddr"]
+            check(dd["streams"] == streams and abs(dd["stream_limit_gbs"] - 16.0 * streams) < 0.01 and
+                  abs(dd["pct_stream"] - 7.68 / (16.0 * streams)) < 0.003 and abs(dd["pct_dram"] - 7.68 / 18.0) < 0.003,
+                  "CAPS 0x%x: %d weight stream(s) of 16 GB/s, the share of the DRAM stays: %s" % (caps, streams, dd))
+            line = [x for x in txt.splitlines() if "stream limit" in x]
+            want_line = "rd 30.7 GB/s: %.0f%% of stream limit %.1f %s, 43%% of DRAM 72.0" % (48.0 / streams, 64.0 * streams, clock)
+            check(len(line) == 1 and want_line in line[0], "CAPS 0x%x: the DDR panel says '%s': %s" % (caps, want_line, line))
+            check("7.7G %.0f%%" % (48.0 / streams) in txt and "43% 30.7GB/s" in (meter_text(txt, "MEM BW") or ""),
+                  "CAPS 0x%x: the channel bars give %.0f %% of the stream limit, MEM BW stays at 43 %%" % (caps, 48.0 / streams))
         # where the two lines coincide (the memory in use is 54 %, as the COMPUTE share) the COMPUTE line is drawn over the memory line
         txt = frame("100x36", mem_used=int(0.54 * 32 * 2 ** 30))
         mark, heavy, light = plot_rows(txt.splitlines())

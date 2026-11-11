@@ -19,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ### Changed
 
+- `tsr-top` takes the stream limit of its DDR panel and of `--json` (`rates.ddr.stream_limit_gbs`, `pct_stream`) as two beats of 64 B per core cycle and channel on a core with `CAPS` bit 16, the dual weight stream. The new key `rates.ddr.streams` gives the number of weight streams of a cluster. Counted with one beat, the read rate of such a core came out above 100 % of the limit.
 - The profile report page (`sw/tools/prof`) is a profiler window: toolbar, launch tree, timeline with a row per unit, and a bottom pane with Summary, Records, Graph and Details tabs. `capture_card.sh` defaults to the k4f250 release image and no longer replays the first-ATTPV trace unless `WARM=1`.
 
 ## [1.1.0] - 2026-11-10
