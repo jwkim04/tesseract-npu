@@ -10,7 +10,7 @@ Tesseract has five version numbers. Each answers a separate question and each ch
 | Basis ABI, one integer | Whether a host and a firmware image speak the same protocol. | driver ABI |
 | Kind numerics revision, one integer per op list kind | Whether a kind still produces the same bits. | none |
 
-The current releases are Tesseract Core 1.1.0, with capability 1.0, and Tesseract Basis 1.2.0, with Basis ABI 1.
+The current releases are Tesseract Core 1.1.0, with capability 1.0, and Tesseract Basis 1.3.0, with Basis ABI 1.
 Normative text: [SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4
 and §7.5.
 
@@ -74,14 +74,14 @@ and the tools. Its version is MAJOR.MINOR.PATCH.
 - Patch: a small fix that leaves the inputs and outputs of every function unchanged: every output
   bit of every kind, every interface and every planner's acceptance.
 
-The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 1.2.0 is `0x0001_0200`.
+The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 1.3.0 is `0x0001_0300`.
 
 The number in `version.h` changes at release, not with each commit. A build between two releases
 carries the number of the last release, so it is told apart by its image id and its kind revisions.
 
 ## Basis ABI
 
-The ABI is one integer, `TSR_SDK_ABI`. It is 1 in Basis 1.2.0 and is defined in `sw/ctrl/include/tsr/version.h`
+The ABI is one integer, `TSR_SDK_ABI`. It is 1 in Basis 1.3.0 and is defined in `sw/ctrl/include/tsr/version.h`
 and nowhere else. It changes when an existing image and an existing host would stop working
 together. It covers:
 
@@ -140,7 +140,7 @@ the tool). The image id changes with every build.
 
 ```
   ID 0x54535231  Tesseract Core capability 1.0 (VERSION 0x00000100), CAPS 0x00007169 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP)
-  image build/dev/fw/tsr-fw.elf: id a5cbf3767c91cc4f, Tesseract Basis 1.2.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.2.0
+  image build/dev/fw/tsr-fw.elf: id 3315f27bade62df4, Tesseract Basis 1.3.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.3.0
   kinds (23, signature 0x249c): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 ... GATED_DELTA_NET r2
 ```
 
@@ -150,7 +150,7 @@ the device with both versions:
 
 ```
 $ TSR_DEVICE=sim build/dev/bin/llama-cli --list-devices
-  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.2.0 (ABI 1, 23 kinds, image a5cbf3767c91cc4f) (63488 MiB, 63488 MiB free)
+  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.3.0 (ABI 1, 23 kinds, image 3315f27bade62df4) (63488 MiB, 63488 MiB free)
 ```
 
 The text up to the semicolon is the capability and its `CAPS` features. After it come the configuration, the Basis
@@ -188,7 +188,7 @@ a backend that is newer than its image could send a shape the image refuses. The
 rule, so captured launch traces of other images still replay. An image that provides fewer kinds works: the ops it
 cannot run stay on the CPU, and `TSR_KINDS=m6` narrows the device to the matrix products the same way.
 
-Core 1.1.0 needs Basis 1.2.0 or later, and Basis 1.2.0 runs on Core 1.1.0 and on Core 1.0.0.
+Core 1.1.0 needs Basis 1.2.0 or later, and Basis 1.3.0 runs on Core 1.1.0 and on Core 1.0.0.
 
 ## Identifiers that are not versions
 

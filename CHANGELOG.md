@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-13
+
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).
+It runs on Tesseract Core 1.1.0 and 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)).
+
 ### Added
 
 - The op list kinds MUL_MAT_BEGIN (0x20) and MUL_MAT_END (0x21), at kind revision 1. A MUL_MAT of one T-tile can be two records: BEGIN pushes the LD of x, the LD of the addend or old y, QACT and MVM and keeps its ring block, END pushes the ST of the y rows and releases the block, so the records between them run under the MVM. A BEGIN followed at once by its END pushes exactly the ops of a MUL_MAT record, and the kind revision and the pushes of MUL_MAT do not change. The executor keeps a table of the open BEGIN records of a launch (eight entries, 0.8 KiB of DTCM) and closes them by rules: an END closes its BEGIN, a ninth BEGIN closes the oldest, a refused ring allocation closes them all, and the end of the list closes the rest, so every list is legal. The op list has 23 kinds (kind table signature 0x249c).
@@ -115,7 +120,8 @@ Basis ABI 1. Targets Tesseract Core capability 1.0.
 - ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
 - Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.2.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.3.0...HEAD
+[1.3.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.2.0...basis-v1.3.0
 [1.2.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.1.0...basis-v1.2.0
 [1.1.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.0.0...basis-v1.1.0
 [1.0.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v0.1.0...basis-v1.0.0
