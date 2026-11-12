@@ -4,7 +4,8 @@ and back, as seven numbered steps over three bands (host, firmware, hardware).
 Content follows docs/design/01-execution-model.md §2.1, §4 (launch protocol, runtime contract),
 docs/design/06-software-verification.md §7 (op list, `graph` kernel), §8, §9.3 (backend) and
 docs/spec.md §2 (four MVM clusters of 128 MAC lanes, 4 MiB SPM, four DDR4 channels):
-1. llama.cpp builds the ggml graph; ggml-tesseract lowers it to an op list (cached after the first
+1. llama.cpp builds the ggml graph; ggml-tesseract orders its nodes with Tesseract Pivot (the
+   graph scheduler, docs/design/07-graph-scheduler.md) and lowers it to an op list (cached after the first
    token); the weights already sit in the card DDR (written at model load);
 2. tsr_transport writes the token inputs to DDR and pushes one launch descriptor over PCIe;
 3. the runtime on the control core takes the launch; the `graph` kernel of Basis walks the op list;
@@ -53,8 +54,8 @@ HW_B = RC + RC_H + 32
 STEPS_Y = HW_B + 72
 
 STEPS = [
-    "llama.cpp builds the ggml graph; ggml-tesseract turns it into an op list, cached after the "
-    "first token. The weights already sit in card DDR.",
+    "llama.cpp builds the ggml graph. Pivot orders the nodes, ggml-tesseract lowers them to an "
+    "op list, cached after the first token. The weights already sit in card DDR.",
     "The transport writes the token inputs to DDR and pushes one launch descriptor over PCIe.",
     "The runtime on the control core takes the launch; the Basis graph kernel walks the op list.",
     "The kernel issues tile ops through the issue path (checker, unit queues) to the units.",
@@ -72,8 +73,8 @@ H = int((STEPS_Y + max(sum(STEP_H[:4]), sum(STEP_H[4:])) + 40 + 7) // 8 * 8)
 f = Fig("dataflow", W, H,
         title="One decode token, from the host to the hardware and back",
         desc="Three bands, host, firmware on the RISC-V control core and hardware, with seven "
-             "numbered steps. 1: llama.cpp builds the ggml graph and ggml-tesseract turns it into "
-             "a cached op list; the weights already sit in card DDR. 2: the transport writes the "
+             "numbered steps. 1: llama.cpp builds the ggml graph, Tesseract Pivot orders its nodes and "
+             "ggml-tesseract lowers them to a cached op list; the weights already sit in card DDR. 2: the transport writes the "
              "token inputs to DDR and pushes one launch descriptor over PCIe. 3: the runtime takes "
              "the launch and the Basis graph kernel walks the op list. 4: the kernel issues tile "
              "ops through the issue path and unit queues. 5: the DMA moves activations and KV rows "

@@ -7,7 +7,9 @@ band per layer and a column of developer tools beside the middle layers. Top to 
    `llama-server`, its OpenAI-compatible API; written as text, no OpenAI mark) and PyTorch
    (`torch.compile(model, backend="tesseract")` on Hugging Face models; sw/torch/README.md);
 2. backends: `ggml-tesseract` (backend device `Tesseract0`, op-list builder and cache;
-   sw/ggml-tesseract/README.md) and `tsr_rt` (weight upload, linear; sw/rt/README.md);
+   sw/ggml-tesseract/README.md), with Tesseract Pivot, its graph scheduler (docs/design/
+   07-graph-scheduler.md), drawn as a chip inside the tile because it is a part of the backend and
+   not a layer, and `tsr_rt` (weight upload, linear; sw/rt/README.md);
 3. transport: `tsr_transport`, one protocol layer (image load, launch, wait, log) over the kinds
    `sim`, `mock` and `xrt` (docs/design/01-execution-model.md §10,
    docs/design/06-software-verification.md §9.1; sw/transport/README.md, tsr_transport.h). The
@@ -43,7 +45,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/stack.py      (TSR_FIG_THEME=da
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK, INK_SOFT, TYPE, Fig, font, logo_box, measure  # noqa: E402
+from tsrfig import INK, INK_SOFT, ROLES, TYPE, Fig, font, logo_box, measure, tint  # noqa: E402
 
 W = 1600
 FX0, FX1 = 56, 1544                   # full-width panels: applications, the card
@@ -54,7 +56,8 @@ GAP_V = 56                            # between layer panels (one two-way arrow 
 HEAD = 64                             # panel top to tile top (layer name row)
 FOOT = 24                             # tile bottom to panel bottom
 TILE_GAP = 24
-LOGO_X, LOGO_GAP = 24, 20             # tile edge to logo; logo to the tile's text
+LOGO_X, LOGO_GAP = 24, 20
+CHIP_H = 48                           # the chip of a named part inside a tile             # tile edge to logo; logo to the tile's text
 
 
 # ---- layout helpers ----------------------------------------------------------------------------
@@ -91,6 +94,13 @@ def place(tiles, x0, x1, gap=TILE_GAP):
 def tile(f, x, y, w, h, t):
     """One solid tile."""
     lg = t.get("logo")
+    chip = t.get("chip")
+    if chip:                               # a named part of the tile: text on top, chip at the bottom
+        f.box(x, y, w, h, t["role"], "", label_role="label_l", sub_role="sub_l")
+        f.label_block(x, y, w, h - CHIP_H - 16, t["label"], t.get("sub", ""), "label_l", "sub_l")
+        f.box(x + 16, y + h - CHIP_H - 16, w - 32, CHIP_H, "host", "", sub=chip, sub_role="sub_l",
+              fill=tint(ROLES["host"], 0.55), cut=12)
+        return
     f.box(x, y, w, h, t["role"], "" if lg else t["label"], sub="" if lg else t.get("sub", ""),
           label_role="label_l", sub_role="sub_l")
     if lg:
@@ -134,8 +144,8 @@ def panel(f, x, y, w, h, name, caption="", logo=None):
         f.text(cx, y + 40, caption, "note_l", anchor="end", color=INK_SOFT)
 
 
-def T(role, label, sub="", logo=None, badge=None):
-    return {"role": role, "label": label, "sub": sub, "logo": logo, "badge": badge}
+def T(role, label, sub="", logo=None, badge=None, chip=""):
+    return {"role": role, "label": label, "sub": sub, "logo": logo, "badge": badge, "chip": chip}
 
 
 # ---- content -----------------------------------------------------------------------------------
@@ -147,7 +157,8 @@ apps = [T("host", "LLAMA.CPP", "llama-cli · GGUF models · -ngl\nllama-server (
         T("host", "", 'torch.compile(backend="tesseract")',
           logo={"key": "pytorch", "h": 44, "backing": True, "pad": 10},
           badge=(HF_BADGE, "Hugging Face models"))]
-backends = [T("host", "GGML-TESSERACT", "device Tesseract0 · op lists"),
+backends = [T("host", "GGML-TESSERACT", "device Tesseract0 · op lists",
+              chip="Tesseract Pivot · graph scheduler"),
             T("host", "TSR_RT", "weight upload · linear")]
 transport = [T("host", "SIM", "in process"), T("host", "MOCK", "adapter model"),
              T("host", "XRT", "xrt::ip · PCIe")]
@@ -178,7 +189,8 @@ ROW = 96                              # tile height in the core panel
 BUS = 64                              # control row to units row: room for the unit-queue bus
 SPM_GAP, SPM_H = 56, 80               # units row to SPM bar; SPM bar height
 panels = {}                           # name -> (y, h)
-for name, h in (("apps", HEAD + H2 + FOOT), ("backends", HEAD + H1 + FOOT),
+H3 = 160                              # backend tiles: text and the Pivot chip
+for name, h in (("apps", HEAD + H2 + FOOT), ("backends", HEAD + H3 + FOOT),
                 ("transport", HEAD + H1 + FOOT), ("firmware", HEAD + H2 + FOOT),
                 ("core", HEAD + ROW + BUS + ROW + SPM_GAP + SPM_H + FOOT), ("card", HEAD + H1 + FOOT)):
     panels[name] = (Y, h)
@@ -191,7 +203,7 @@ f = Fig("stack", W, H,
         desc="Layered software stack, top to bottom: llama.cpp (llama-cli and llama-server, an "
              "OpenAI-compatible API) and PyTorch with Hugging Face models, each with its official "
              "logo; the ggml-tesseract "
-             "backend and tsr_rt; tsr_transport with the sim, mock and xrt kinds; "
+             "backend, which contains a chip for Tesseract Pivot, its graph scheduler, and tsr_rt; tsr_transport with the sim, mock and xrt kinds; "
              "firmware on the RISC-V control core (runtime, graph executor, kernels for MUL_MAT, "
              "norms, RoPE and flash attention, selftest and replay); the NPU core (control core, "
              "issue path with unit queues, DMA, QACT, MVM clusters, vector unit, SPM); the Alveo "
@@ -212,7 +224,7 @@ for t, (x, w) in zip(apps, place(apps, FX0 + PAD, FX1 - PAD)):
 y, h = panels["backends"]
 panel(f, MX0, y, MX1 - MX0, h, "BACKENDS", "weights · op lists · launches")
 for t, (x, w) in zip(backends, place(backends, IX0, IX1)):
-    tile(f, x, y + HEAD, w, H1, t)
+    tile(f, x, y + HEAD, w, H3, t)
 
 # transport: the four kinds of tsr_transport
 y, h = panels["transport"]

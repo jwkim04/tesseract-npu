@@ -15,7 +15,7 @@ A full-stack, open-source NPU for LLM inference.
 
 - <img alt="Tesseract Core" src="docs/logo/tesseract-core-lockup-universal.png" height="20" align="absmiddle"> hardware: NPU core in SystemVerilog with an on-chip RISC-V control core.
 - <img alt="Tesseract Basis" src="docs/logo/tesseract-basis-lockup-universal.png" height="20" align="absmiddle"> firmware: C++20 runtime, kernel library and kernel SDK.
-- Software: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
+- Software: llama.cpp and PyTorch backends, the Tesseract Pivot graph scheduler, bit-exact simulator, verification tools.
 
 Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA. The U200 card holds 32 GiB of DDR4, four channels of 8 GiB. The design supports up to 16 GiB per channel.
 
@@ -98,14 +98,16 @@ crossing goes through a synchronizer, a gray-coded counter or FIFO, or a handsha
 
 ## Software stack
 
-<p align="center"><img src="docs/fig/stack.png" alt="The software stack from the applications down: llama.cpp and PyTorch; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the sim, mock and xrt kinds; Basis firmware on the control core; the NPU core; and the U200 card with its XRT shell and four DDR4 channels. A column lists the developer tools." width="100%"></p>
+<p align="center"><img src="docs/fig/stack.png" alt="The software stack from the applications down: llama.cpp and PyTorch; the ggml-tesseract backend, with Tesseract Pivot, its graph scheduler, as a part of it, and the tsr_rt runtime; tsr_transport with the sim, mock and xrt kinds; Basis firmware on the control core; the NPU core; and the U200 card with its XRT shell and four DDR4 channels. A column lists the developer tools." width="100%"></p>
 
-llama.cpp hands its graph to the ggml-tesseract backend. The backend lowers the graph to an op list
-and launches it through `tsr_transport`. The Basis firmware on the control core walks the op list
-and issues tile ops. The transport kinds are `sim` (the C simulator, the bit-exact oracle), `mock`
+llama.cpp hands its graph to the ggml-tesseract backend. The backend orders the nodes of the graph
+with Tesseract Pivot, the graph scheduler, then lowers it to an op list and launches it through
+`tsr_transport`. Pivot lets independent matrix products run on the MVM unit while the control core
+and the glue pipeline are busy; it changes no output ([design](docs/design/07-graph-scheduler.md)).
+The Basis firmware on the control core walks the op list and issues tile ops. The transport kinds are `sim` (the C simulator, the bit-exact oracle), `mock`
 (the adapter's register model around the simulator) and `xrt` (the card).
 
-<p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, ggml-tesseract turns it into an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, QACT, four MVM clusters and the vector unit. The units work through the 4 MiB scratchpad, and each cluster streams weights from its own DDR4 channel. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
+<p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, Pivot orders the nodes, ggml-tesseract lowers them to an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, QACT, four MVM clusters and the vector unit. The units work through the 4 MiB scratchpad, and each cluster streams weights from its own DDR4 channel. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
 
 Logos in the figures belong to their owners ([sources and licenses](docs/fig/logos/SOURCES.md)).
 
