@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
   <a href="rtl/CHANGELOG.md"><img alt="Core: 1.1.0" src="https://img.shields.io/badge/core-1.1.0-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.2.0" src="https://img.shields.io/badge/basis-1.2.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.3.0" src="https://img.shields.io/badge/basis-1.3.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -35,6 +35,29 @@ has loaded and runs in real time. The shell sets `TSR_DEVICE=xrt`, `TSR_XCLBIN` 
 The profile report of one decode token (Gemma 4 E2B Q8_0): a timeline per unit for the card and the
 simulator, the records by layer, and the device counters ([profiling](docs/prof-dbg.md)).
 
+## Latest releases
+
+**Tesseract Basis 1.3.0** (2026-11-13), the firmware SDK and the host side
+
+- Tesseract Pivot, a graph scheduler. It orders the nodes of a graph so that independent matrix products run on the MVM
+  unit while the control core and the element-wise pipeline work on other records (op list kinds `MUL_MAT_BEGIN` and
+  `MUL_MAT_END`). Gemma 4 26B-A4B decodes at 14.34 tok/s, from 13.32.
+- A mixture-of-experts prefill reads each expert once per tile of a batch. Gemma 4 26B-A4B prefill is 39.34 tok/s, from
+  25.33.
+- Gated DeltaNet runs as a token block pipeline. Qwen3.8 27B prefill is 5.59 tok/s, from 5.08, and with Pivot its decode
+  is 2.30 tok/s, from 2.11.
+- Multi-token prediction gains with them: 17.54 tok/s on Gemma 4 26B-A4B, from 15.15.
+- `tsr-top` shows the generation rate of a multi-token prediction run.
+
+**Tesseract Core 1.1.0** (2026-11-12), the RTL and the Alveo U200 image
+
+- The dual weight stream. In decode a cluster reads two weight streams at once, so the DDR4 channel and not the core clock
+  bounds the weight rate. Decode is 1.31 to 1.37 times as fast as on Core 1.0.0, for the seven models of the table below.
+- A read-only second memory port per channel carries the second stream.
+- `CAPS` bit `MVM_DUAL` reports the feature, and `TSR_MVM_DUAL=0` turns it off for a comparison.
+
+All changes are in [CHANGELOG.md](CHANGELOG.md) (Basis) and [rtl/CHANGELOG.md](rtl/CHANGELOG.md) (Core).
+
 ## Performance
 
 Decode and prefill rates on one Alveo U200 card with the Tesseract Core 1.1.0 image, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
@@ -43,21 +66,21 @@ board power.
 
 | Model | Quantization | Prefill tok/s | Decode tok/s | tok/s/W |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q8_0 | 5.08 | 2.11 | 0.036 |
-| Qwen3.5 9B | Q8_0 | 16.63 | 6.57 | 0.114 |
-| Gemma 4 31B | Q4_K_M | 9.30 | 3.35 | 0.055 |
-| Gemma 4 26B-A4B | Q8_0 | 25.33 | 13.32 | 0.235 |
-| Gemma 4 12B | Q8_0 | 15.54 | 5.13 | 0.085 |
-| Gemma 4 E4B | Q8_0 | 39.41 | 12.26 | 0.207 |
-| Gemma 4 E2B | Q8_0 | 76.05 | 23.12 | 0.393 |
+| Qwen3.8 27B | Q8_0 | 5.59 | 2.30 | 0.038 |
+| Qwen3.5 9B | Q8_0 | 18.46 | 7.16 | 0.121 |
+| Gemma 4 31B | Q4_K_M | 9.30 | 3.39 | 0.054 |
+| Gemma 4 26B-A4B | Q8_0 | 39.34 | 14.34 | 0.248 |
+| Gemma 4 12B | Q8_0 | 15.54 | 5.20 | 0.085 |
+| Gemma 4 E4B | Q8_0 | 39.44 | 12.40 | 0.206 |
+| Gemma 4 E2B | Q8_0 | 76.03 | 23.24 | 0.403 |
 
 With multi-token prediction the draft head proposes tokens and the device verifies them in one launch. The output is identical to plain greedy decoding.
 
 | Model | Quantization | Plain tok/s | MTP tok/s | Speedup |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q4_K_M | 2.84 | 3.89 | 1.37x |
-| Qwen3.8 2B | Q4_K_M | 28.41 | 30.37 | 1.07x |
-| Gemma 4 26B-A4B | Q8_0 | 13.23 | 15.15 | 1.15x |
+| Qwen3.8 27B | Q4_K_M | 3.20 | 4.49 | 1.40x |
+| Qwen3.8 2B | Q4_K_M | 31.45 | 33.89 | 1.08x |
+| Gemma 4 26B-A4B | Q8_0 | 14.31 | 17.54 | 1.23x |
 
 The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
 
@@ -80,6 +103,7 @@ runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE an
 
 - One launch per decode token. In full mode the whole token, KV cache and attention included, is one launch of the firmware's `graph` kernel. In matmul mode only the matrix products run on the device ([execution modes](docs/design/README.md)).
 - Multi-token prediction. The model's draft head proposes tokens and the device verifies a window of them in one launch, with rollback of the recurrent state. `tsr-mtp` drives and measures it.
+- Graph scheduling. Tesseract Pivot orders the nodes of a graph before they are lowered, so that independent matrix products run on the MVM unit while the control core and the element-wise pipeline work on other records ([design](docs/design/07-graph-scheduler.md)).
 - Kernel SDK. Basis kernels are freestanding C++20 for the control core and build for the host as well.
 - Bit-exact simulator. `sw/sim` is the oracle for the RTL, the firmware and the host stack. The transports are `sim`, `mock` and `xrt` (the card).
 - PyTorch backend. `torch.compile(model, backend="tesseract")` runs the weight matmuls of a model on the device.
