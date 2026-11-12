@@ -600,7 +600,9 @@ def test_live(llama, model, probe):
     try:
         n_pred = 40
         prompt = "the cat sat on the mat and the dog ran in the park"
-        env = dict(os.environ, TSR_DEVICE="sim", TSR_MON_DIR=d, TSR_MON_KEEP="1", TSR_SIM_THREADS="2")
+        # TSR_MON_PERF_MS=0: a PERF read after every launch, so the PERF checks below do not depend on the run lasting
+        # longer than the default interval (100 ms)
+        env = dict(os.environ, TSR_DEVICE="sim", TSR_MON_DIR=d, TSR_MON_KEEP="1", TSR_SIM_THREADS="2", TSR_MON_PERF_MS="0")
         env.pop("TSR_MON", None)
         cmd = [llama, "-m", model, "-ngl", "99", "-p", prompt, "-n", str(n_pred), "--ignore-eos", "-no-cnv", "--temp", "0",
                "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-c", "512"]

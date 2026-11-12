@@ -181,6 +181,16 @@ def connect(port_file, proc, timeout=60):
     return s
 
 
+def wait_for_text(path, text, proc, timeout=60):
+    t0 = time.time()
+    while text not in open(path).read():
+        if proc.poll() is not None:
+            raise RuntimeError("the process exited early (status %s)" % proc.returncode)
+        if time.time() - t0 > timeout:
+            raise TimeoutError("no '%s' in %s" % (text, path))
+        time.sleep(0.05)
+
+
 # ---------------------------------------------------------------------------------------------
 # Standalone session
 # ---------------------------------------------------------------------------------------------
@@ -394,7 +404,8 @@ def drop_once(args, mode):
     pf = os.path.join(args.scratch, "port")
     if os.path.exists(pf):
         os.unlink(pf)
-    log = open(os.path.join(args.scratch, "drop_%s.log" % mode), "w")
+    lp = os.path.join(args.scratch, "drop_%s.log" % mode)
+    log = open(lp, "w")
     if args.embedded:
         env = dict(os.environ, TSR_GDB="tcp:0", TSR_GDB_WAIT="launch", TSR_GDB_PORT_FILE=pf)
         cmd = [args.server, "embed-host", args.elf, "3"]
@@ -404,6 +415,11 @@ def drop_once(args, mode):
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
     who = "owner process" if args.embedded else "server"
     try:
+        if args.embedded:
+            # The port file appears when the server listens, before the owner's first boot. A session that ends before
+            # that boot has no launch to let go: the boot then arms the launch wait, and the first launch waits for a
+            # GDB that never comes. So the client connects once the boot has armed it.
+            wait_for_text(lp, "TSR_GDB_WAIT=launch: the first launch halts", proc)
         s = connect(pf, proc)
         if mode == "fin-noack":
             g = Rsp(s)
@@ -424,7 +440,7 @@ def drop_once(args, mode):
         if proc.poll() is None:
             proc.kill()
         log.close()
-    txt = open(os.path.join(args.scratch, "drop_%s.log" % mode)).read()
+    txt = open(lp).read()
     print(txt)
     check("GDB session ended" in txt, "[%s] the session ended through the detach path" % mode)
     if args.embedded:
