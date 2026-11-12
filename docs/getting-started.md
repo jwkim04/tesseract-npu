@@ -126,6 +126,32 @@ The text is not bit-identical to the CPU backend. Greedy output leaves the CPU's
 with several slots it can differ from a single-slot run at near-ties, because the rounding in flash
 attention depends on how the slots' cells interleave in the shared cache. The model-level check is `klcheck`.
 
+## Multi-token prediction
+
+The model's multi-token prediction (MTP) head drafts tokens, and the device verifies a window of them in one launch
+([`docs/design/06-software-verification.md`](design/06-software-verification.md) §7.11). `llama-cli` and
+`llama-server` run it on the simulator and on the card. The command needs the environment of the section it runs
+in: `TSR_DEVICE=sim` as in "Serving", or the card variables as in "Run on the card".
+
+```sh
+LLAMA_ATTN_ROT_DISABLE=1 build/xrt/bin/llama-cli -m MODEL -md MTP --spec-type draft-mtp --spec-draft-n-max 1 \
+    -ngl 99 -ngld 99 -fa on -ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 -fit off
+```
+
+- `--spec-type draft-mtp` selects llama.cpp's drafter that uses the model's MTP head.
+- `-md MTP` names the GGUF file of the head when the head is a separate file (Gemma 4 26B-A4B, Qwen3.8 27B).
+  Leave it out when the head is inside the model file (Qwen3.8 2B).
+- `--spec-draft-n-max K` is the number of draft tokens per step. K = 1 is the fastest on the card for the measured
+  models.
+- `-ngld 99 -ctkd q8_0 -ctvd q8_0` put the draft context on the device with a q8_0 KV cache, as
+  `-ngl 99 -ctk q8_0 -ctv q8_0` do for the target context.
+- `-fit off` skips llama.cpp's memory fitting step. With it on, llama.cpp logs one error line for a Gemma 4 MTP head
+  ("Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)") and then loads and
+  runs normally. The text is the same with and without the flag.
+- `llama-server` takes the same flags.
+- The measured rates and the best K per model are in [`docs/performance.md`](performance.md) (MTP). `tsr-top`
+  shows the generation rate of such a run in its `TOK/S` column ([`docs/prof-dbg.md`](prof-dbg.md) §7.5).
+
 ## Run a PyTorch model
 
 `torch.compile(model, backend="tesseract")` runs the weight matmuls of a PyTorch model on the device and

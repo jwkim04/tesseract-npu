@@ -21,12 +21,14 @@ Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD
 
 ## Demo
 
-[![Gemma 4 26B-A4B Q8_0 on one Alveo U200: llama.cpp chat on the left, tsr-top on the right](docs/demo/demo.gif)](docs/demo/demo.mp4)
+[![Gemma 4 26B-A4B Q8_0 with multi-token prediction on one Alveo U200: llama.cpp chat on the left, tsr-top on the right](docs/demo/demo.gif)](docs/demo/demo.mp4)
 
 Gemma 4 26B-A4B Q8_0 in the llama.cpp chat (left) on one Alveo U200 in full mode, with thinking off, and
-`tsr-top` watching the card (right). The video starts after the model has loaded and runs in real
-time. The shell sets `TSR_DEVICE=xrt`, `TSR_XCLBIN` and `LLAMA_ATTN_ROT_DISABLE=1`
-([getting-started](docs/getting-started.md)). [MP4](docs/demo/demo.mp4)
+`tsr-top` watching the card (right). The run uses multi-token prediction: the model's MTP head drafts one
+token per step. The command line is at the top of the left pane when the video starts, and its multi-token
+prediction flags are explained in [getting-started](docs/getting-started.md). The video starts after the model
+has loaded and runs in real time. The shell sets `TSR_DEVICE=xrt`, `TSR_XCLBIN` and `LLAMA_ATTN_ROT_DISABLE=1`.
+[MP4](docs/demo/demo.mp4)
 
 [![Profile report of one decode token of Gemma 4 E2B Q8_0: unit timeline for the card and the simulator, layer tree and summary tables](docs/demo/profile.png)](docs/demo/profile.png)
 
