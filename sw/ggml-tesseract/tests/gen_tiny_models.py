@@ -21,6 +21,9 @@ graphs from (SW §8 "Ops in the two model families"):
   gemma4-tiny-shared-q8_0.gguf
                           Gemma 4 E4B's KV sharing: 4 layers (SWA, full, SWA, full); the last two have no K / V projections
                           and attend to the K and V planes of layers 0 and 1 (hparams n_layer_kv_from_start 2); the rest as above
+  gemma4-tiny-moe-q8_0.gguf
+                          Gemma 4 26B-A4B's layer: 4 layers as gemma4-tiny, each with the dense FFN beside 16 experts (4 used: the
+                          router chain, one gate-up tensor, a per-expert output scale): the graph Tesseract Pivot reorders
   qwen35-tiny-q8_0.gguf   4 layers, 3 Gated DeltaNet + 1 full attention (Qwen3.5 / 3.8's 3 : 1 pattern):
                           S_v = 32, 4 key heads for 16 value heads (a 4x tiling like the 27B's 16 : 48), conv kernel 4,
                           the full layer with the joint Q|gate projection, per-head Q/K norms and partial
@@ -415,8 +418,11 @@ def qwen3moe_spec(seed: int) -> dict:
     return {"arch": "qwen3moe", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
-def gemma4_spec(seed: int, shared: bool = False) -> dict:
-    """shared: Gemma 4 E2B / E4B's KV sharing: layers 0 and 1 (SWA, full) own their KV cache and layers 2 and 3 (SWA, full)
+def gemma4_spec(seed: int, shared: bool = False, moe: bool = False) -> dict:
+    """moe: Gemma 4 26B-A4B's layer: every layer has a dense FFN (the "shared expert", with its own norms) beside 16 experts of which
+    4 are used (a softmax router behind RMS_NORM / scale / MUL, one gate-up tensor, a per-expert output scale, the expert and the
+    dense outputs combined), so the graph has the dense products that Tesseract Pivot moves around the router and the experts.
+    shared: Gemma 4 E2B / E4B's KV sharing: layers 0 and 1 (SWA, full) own their KV cache and layers 2 and 3 (SWA, full)
     attend to those two layers' K and V (llama.cpp's n_layer_kv_from_start = 2), so a FLASH_ATTN reads a plane that an
     earlier layer's SET_ROWS wrote, with the rest of the layer's nodes between them."""
     E, H, F, L, V = 256, 16, 512, 4, 64
@@ -424,7 +430,8 @@ def gemma4_spec(seed: int, shared: bool = False) -> dict:
     is_swa = [True, False, True, False] if shared else [True, True, True, False]
     n_shared = 2 if shared else 0
     n_swa = 16
-    r = Rng(seed, "gemma4-tiny-shared" if shared else "gemma4-tiny")
+    X, K, FX = 16, 4, 128                                               # experts, used, expert width (moe)
+    r = Rng(seed, "gemma4-tiny-shared" if shared else "gemma4-tiny-moe" if moe else "gemma4-tiny")
     t: dict[str, np.ndarray] = {}
     t["token_embd.weight"] = r.normal((V, E), 1.0 / math.sqrt(E))   # x sqrt(E) in the graph -> O(1)
     # rope_freqs: shared by the full layers ([D_FULL / 2]); the 12B rotates the first 25 % of the
@@ -456,6 +463,15 @@ def gemma4_spec(seed: int, shared: bool = False) -> dict:
         t[p + "ffn_up.weight"] = r.normal((F, E), 1.0 / math.sqrt(E))
         t[p + "ffn_down.weight"] = r.normal((E, F), 1.0 / math.sqrt(F))
         t[p + "post_ffw_norm.weight"] = r.normal((E,), 0.1, 0.7)
+        if moe:
+            t[p + "ffn_gate_inp.weight"] = r.normal((X, E), 3.0 / math.sqrt(E))      # the router: F32 [E, X], logits of a std of about 3
+            t[p + "ffn_gate_inp.scale"] = r.normal((E,), 0.1, 1.0)
+            t[p + "pre_ffw_norm_2.weight"] = r.normal((E,), 0.1, 1.0)
+            t[p + "post_ffw_norm_1.weight"] = r.normal((E,), 0.1, 0.7)
+            t[p + "post_ffw_norm_2.weight"] = r.normal((E,), 0.1, 0.7)
+            t[p + "ffn_gate_up_exps.weight"] = r.normal((X, 2 * FX, E), 1.0 / math.sqrt(E))
+            t[p + "ffn_down_exps.weight"] = r.normal((X, E, FX), 0.7 / math.sqrt(FX))
+            t[p + "ffn_down_exps.scale"] = r.normal((X,), 0.1, 1.0)
         t[p + "layer_output_scale.weight"] = np.array([0.6 + 0.1 * il], np.float32)
     t["output_norm.weight"] = r.normal((E,), 0.1, 1.0)
     # tied head (no output.weight): logits = token_embd . h; token_embd rows have norm ~1 and h
@@ -464,7 +480,7 @@ def gemma4_spec(seed: int, shared: bool = False) -> dict:
     kv = {
         "general.architecture": "gemma4",
         "general.type": "model",
-        "general.name": "gemma4-tiny-shared" if shared else "gemma4-tiny",
+        "general.name": "gemma4-tiny-shared" if shared else "gemma4-tiny-moe" if moe else "gemma4-tiny",
         "gemma4.block_count": (VT.UINT32, L),
         "gemma4.context_length": (VT.UINT32, 4096),
         "gemma4.embedding_length": (VT.UINT32, E),
@@ -486,6 +502,10 @@ def gemma4_spec(seed: int, shared: bool = False) -> dict:
         "gemma4.rope.dimension_count": (VT.UINT32, D_FULL),
         "gemma4.rope.dimension_count_swa": (VT.UINT32, D_SWA),
     }
+    if moe:
+        kv["gemma4.expert_count"] = (VT.UINT32, X)
+        kv["gemma4.expert_used_count"] = (VT.UINT32, K)
+        kv["gemma4.expert_feed_forward_length"] = (VT.UINT32, FX)
     return {"arch": "gemma4", "tensors": t, "kv": kv, "vocab": vocab_gemma4()}
 
 
@@ -571,12 +591,13 @@ def check_model(spec: dict, variant: str, path: Path) -> None:
 
 
 SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec,
-         "gemma4shared": lambda seed: gemma4_spec(seed, True), "qwen3moe": qwen3moe_spec, "qwen35mtp": lambda seed: qwen35_spec(seed, False, True),
+         "gemma4shared": lambda seed: gemma4_spec(seed, True), "gemma4moe": lambda seed: gemma4_spec(seed, False, True), "qwen3moe": qwen3moe_spec, "qwen35mtp": lambda seed: qwen35_spec(seed, False, True),
          "qwen35bigmtp": lambda seed: qwen35_spec(seed, True, True)}
 OUTPUTS = [("qwen2-tiny-q8_0.gguf", "qwen2", "q8_0"),
            ("qwen2-tiny-q4_k.gguf", "qwen2", "q4_k"),
            ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0"),
            ("gemma4-tiny-shared-q8_0.gguf", "gemma4shared", "q8_0"),
+           ("gemma4-tiny-moe-q8_0.gguf", "gemma4moe", "q8_0"),
            ("qwen35-tiny-q8_0.gguf", "qwen35", "q8_0"),
            ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0"),
            ("qwen35-tiny-mtp-q8_0.gguf", "qwen35mtp", "q8_0"),

@@ -296,6 +296,39 @@ struct tsr_fusion {
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);
 
+// The structure of the fusion groups, the part of their conditions that does not depend on the device, the addresses or the
+// token count. tsr_build_fusion applies it and adds what the device and the addresses decide; Tesseract Pivot
+// (tsr-pivot-graph.h) takes the same groups as the units it must keep together, so the two cannot disagree on a group's shape.
+// A node that matches may still not fuse (placement, a node written in between): the unit then holds nodes the builder lowers
+// separately, which costs nothing.
+//   tsr_fusion_user     the first node after i that lists node i as a source, or -1 (a user in another graph)
+//   tsr_fuse_pair_shape u, the first user of the MUL_MAT or RMS_NORM `node`, is the SCALE or the ADD (a bias or the residual of
+//                       the MUL_MAT's shape) that its record absorbs, or the MUL by a weight that an RMS_NORM record absorbs
+//   tsr_softcap_shape   behind the SCALE k of a MUL_MAT: the TANH and the closing SCALE of a softcap, each the only user of the
+//                       one before (*mid, *tail)
+//   tsr_moe_route_match the routing group headed by the SOFT_MAX i (group above), tsr_moe_scale_match the scale group of the
+//                       MUL_MAT_ID i
+//   tsr_conv_group_shape the SSM_CONV node i with its CONCAT, state CPYs and SILU (the SILU is -1 when there is none)
+//   tsr_gdn_state_shape the GATED_DELTA_NET node i with its state gather and state CPY
+struct tsr_conv_shape {
+    int concat = -1, cpy = -1, silu = -1;
+    std::vector<int32_t> cpys;            // every state CPY (cpy is the one of the final state)
+};
+struct tsr_gdn_shape {
+    int gather = -1, cpy = -1;
+    uint32_t slots = 1, n_seq = 0;
+    int32_t cell0 = 0;
+    const ggml_tensor * ids = nullptr;    // the gather's index input
+};
+int  tsr_fusion_user(const ggml_cgraph * cg, int i);
+bool tsr_fuse_pair_shape(const ggml_tensor * node, const ggml_tensor * u);
+bool tsr_softcap_shape(const ggml_cgraph * cg, int k, int * mid, int * tail);
+bool tsr_moe_route_match(const ggml_cgraph * cg, int i, tsr_moe_route * out);
+bool tsr_moe_scale_match(const ggml_cgraph * cg, int i, tsr_moe_scale * out);
+bool tsr_conv_group_shape(const ggml_cgraph * cg, int i, tsr_conv_shape * out);
+bool tsr_gdn_state_shape(const ggml_cgraph * cg, int i, tsr_gdn_shape * out);
+
+
 // MoE lowering. tsr_lower_moe_route: the records of a router group, recs[0 .. *n) (at most TSR_MOE_ROUTE_RECS): for up to
 // 64 tokens (one tile) the one MOE_ROUTE record, which writes the ids and the weights where the graph has them; for more
 // tokens (SW-76) the MOE_ROUTE record writes them to the device scratch (env.scratch) and two CPY records move them into

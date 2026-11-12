@@ -2,7 +2,7 @@
 
 This directory is the design contract of Tesseract Core, the hardware, and Tesseract Basis, the
 firmware SDK and host software that drive it. [docs/spec.md](../spec.md) is the master specification
-and summarizes these documents. The six area documents define the details.
+and summarizes these documents. The seven area documents define the details.
 
 When two sources disagree, the order of authority is `docs/spec.md`, the C simulator in `sw/sim`, the
 documents in this directory, then the other documents.
@@ -15,7 +15,7 @@ software that runs on it and on the simulator.
 
 Read them in this order: EX (the host-visible model and every global table), CC (the RTL that
 implements it), VU and AT (vector and attention compute), DB (debug and profiling), SW (simulator,
-firmware, host stack, verification). Section 4 lists where each global table lives. Every other
+firmware, host stack, verification), PV (the order of a graph's nodes before the backend lowers it). Section 4 lists where each global table lives. Every other
 mention of a table is a pointer to that place.
 
 | File | Short form | Covers |
@@ -26,6 +26,7 @@ mention of a table is a pointer to that place.
 | `04-control-core.md` | CC | Ibex and debug module, RISC-V address map and control window, issue path, SPM banks, clock-domain crossings, resets, floorplan and timing |
 | `05-debug.md` | DB | GDB over PCIe, tile-level debug, logs and crash records, recovery, profiler, DBG registers |
 | `06-software-verification.md` | SW | Simulator and references, trace format, firmware SDK and kernels, op-list format, versions, llama.cpp backend, verification |
+| `07-graph-scheduler.md` | PV | Tesseract Pivot, the graph scheduler: units and dependencies, the machine model and its costs, the hoist search, the ggml adapter, the guards, the knob |
 
 ## 2. Execution modes and standing decisions
 
@@ -67,9 +68,9 @@ Documents are cited by short form and section number: `CC §14` is section 14 of
 `04-control-core.md`, and `spec §8` is section 8 of `docs/spec.md`. Section numbers are stable. Code
 and other documents cite them, so a section is never renumbered.
 
-Decisions have identifiers made of the short form and a number: EX-1, VU-1, AT-1, CC-1, DB-1, SW-1.
+Decisions have identifiers made of the short form and a number: EX-1, VU-1, AT-1, CC-1, DB-1, SW-1, PV-1.
 Each is a short entry in the Decisions section of its area document (EX §13, VU §11, AT §11, CC §17,
-DB §12, SW §13) with the decision and its reason. A number is never reused. A decision that another
+DB §12, SW §13, PV §10) with the decision and its reason. A number is never reused. A decision that another
 one replaces stays in the table and names its successor.
 
 Numbers marked estimate in the documents come from the design and not from a measurement. Numbers

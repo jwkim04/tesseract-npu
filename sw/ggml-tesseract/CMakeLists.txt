@@ -38,6 +38,29 @@ target_compile_options(test-tsr-kvbuf PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
 set_target_properties(test-tsr-kvbuf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_test(NAME ggml_tesseract_kvbuf COMMAND test-tsr-kvbuf)
 
+# Tesseract Pivot's core (tsr-pivot: the machine model, the hoist search, the validator; no ggml, no device):
+# hand-built graphs with their expected orders, the model's arithmetic, and random DAGs (valid order, never slower,
+# a fixed point, deterministic, the recorded gains replayed), and the time of a graph of 3000 units.
+add_executable(test-tsr-pivot tests/test-tsr-pivot.cpp)
+target_link_libraries(test-tsr-pivot PRIVATE tsr_lower)
+target_compile_features(test-tsr-pivot PRIVATE cxx_std_17)
+target_compile_options(test-tsr-pivot PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+set_target_properties(test-tsr-pivot PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME ggml_tesseract_pivot COMMAND test-tsr-pivot)
+
+# Tesseract Pivot's ggml adapter (tsr-pivot-graph: units from nodes, the order constraints, the costs, the node validator) on
+# shape-only graphs in llama.cpp's node order (Gemma 4 26B-A4B and Qwen3.8 27B layers): needs ggml-base, like the builder tests.
+if (TARGET ggml-base)
+    add_executable(test-tsr-pivot-graph tests/test-tsr-pivot-graph.cpp tsr-pivot-graph.cpp tsr-build.cpp tsr-weights.cpp)
+    target_link_libraries(test-tsr-pivot-graph PRIVATE tsr_lower ggml-base)
+    target_include_directories(test-tsr-pivot-graph PRIVATE
+        ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
+    target_compile_features(test-tsr-pivot-graph PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-pivot-graph PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    set_target_properties(test-tsr-pivot-graph PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    add_test(NAME ggml_tesseract_pivot_graph COMMAND test-tsr-pivot-graph)
+endif()
+
 # The launcher on a device (TSR_DEVICE, default sim; the build's firmware image): a list with a JOIN
 # and an ACC_DST record against the spec model, an OPL cache hit, a TILE_ERR (DRAM_RANGE in op 1)
 # and a KERNEL_ERR (BAD_RECORD) answer mapped to their op and named, then a valid list again.

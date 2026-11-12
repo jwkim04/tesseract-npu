@@ -5,7 +5,7 @@
 # Tiny models (SW-21): gen_tiny_models.py (gguf-py from the pinned llama.cpp + numpy) writes, at
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
-#   1 full), gemma4-tiny-shared-q8_0.gguf (4 layers whose last two share the KV of the first two, as Gemma 4
+#   1 full), gemma4-tiny-moe-q8_0.gguf (the same layers with a dense FFN beside 16 experts), gemma4-tiny-shared-q8_0.gguf (4 layers whose last two share the KV of the first two, as Gemma 4
 #   E4B does), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
 #   layers and 1 full attention layer; S_v 32 and 128), qwen35-tiny-mtp-q8_0.gguf and qwen35-tiny-s128-mtp-q8_0.gguf (the
 #   same with the multi-token prediction block, SW-83), qwen3moe-tiny-q8_0.gguf and qwen3moe-tiny-q4_k.gguf
@@ -108,7 +108,7 @@ endif()
 message(STATUS "tiny models: gen_tiny_models.py run by ${_tiny_py}")
 
 set(_tiny_outputs ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q4_k.gguf
-                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/gemma4-tiny-shared-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/gemma4-tiny-moe-q8_0.gguf ${TSR_TINY_MODEL_DIR}/gemma4-tiny-shared-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q4_k.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-mtp-q8_0.gguf
@@ -199,6 +199,32 @@ if (TARGET llama)
                          --n-prompts 2 -n 9 --prompt-tail 8 -ub 8 -t 4 --min-pairs 1 --split)
         set_tests_properties(ggml_tesseract_defer_${_short}_split PROPERTIES TIMEOUT 900
                              ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=8;TSR_OPL_SPLIT=7")
+    endforeach()
+    # Tesseract Pivot, the graph scheduler (docs/design/07-graph-scheduler.md): the device output with the pass (the default) and with TSR_PIVOT=0
+    # is bit-identical, launch for launch, for the prompt (ubatches of 16 tokens), the single-token decodes and a replay in verification
+    # windows of 4 tokens (the batches of speculative decoding, T_MAX 4); the pass must have moved nodes. The MoE model with the dense FFN
+    # beside its experts and the Qwen3.5 model also have the pass's mark checked in the decode launch's records: the dense gate product is a
+    # MUL_MAT_BEGIN in front of MOE_ROUTE and its MUL_MAT_END comes after the MUL_MAT_ID records; the z product is a MUL_MAT_BEGIN in front of the
+    # GATED_DELTA_NET record with its MUL_MAT_END behind it.
+    # name | model | --min-moves | extra arguments
+    foreach (_pv "qwen2|qwen2-tiny-q8_0|0|" "gemma4|gemma4-tiny-q8_0|1|" "gemma4moe|gemma4-tiny-moe-q8_0|1|--expect=moe"
+                 "qwen35|qwen35-tiny-q8_0|1|--expect=gdn" "qwen3moe|qwen3moe-tiny-q8_0|0|")
+        string(REPLACE "|" ";" _pvf "${_pv}")
+        list(GET _pvf 0 _pvn)
+        list(GET _pvf 1 _pvm)
+        list(GET _pvf 2 _pvmin)
+        list(LENGTH _pvf _pvlen)
+        set(_pvx "")
+        if (_pvlen GREATER 3)
+            list(GET _pvf 3 _pvx)
+        endif()
+        add_test(NAME ggml_tesseract_pivot_${_pvn}
+                 COMMAND ${_tiny_py} ${_tiny_m7} pivot --klcheck $<TARGET_FILE:klcheck>
+                         --model ${TSR_TINY_MODEL_DIR}/${_pvm}.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                         --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/ggml_tesseract_pivot_${_pvn}
+                         --n-prompts 2 -n 9 --prompt-tail 8 -ub 16 -t 4 --min-moves ${_pvmin} --verify-k 3 ${_pvx})
+        set_tests_properties(ggml_tesseract_pivot_${_pvn} PROPERTIES TIMEOUT 900
+                             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4")
     endforeach()
     # SW-83: klcheck's verification windows (--verify-k 3): the recorded tokens of the plain device run decoded in windows of 4
     # tokens, every row an output, the accepted length cycling through 0 .. 3 (wrong tokens behind it, a rollback to the

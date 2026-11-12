@@ -99,6 +99,7 @@
 #include "tsr-build.h"
 #include "tsr-lower.h"
 #include "tsr-opl.h"
+#include "tsr-pivot-graph.h"
 #include "tsr-prof.h"
 #include "tsr-weights.h"
 #include "tsr-wlayout.h"
@@ -349,6 +350,10 @@ struct tsr_device {
     uint64_t     kind_mask = 0;   // the op list kinds supports_op may route (SW §6.9: the booted image's,
                                   // narrowed by TSR_KINDS, tsr_kinds_parse)
     std::string  image_desc;      // "Tesseract Basis 1.0.0, image <id>" (supports_op's reasons)
+    // Tesseract Pivot, the graph scheduler (graph_optimize; docs/design/07-graph-scheduler.md): on unless TSR_PIVOT=0, and only
+    // for an image that has MUL_MAT_BEGIN and MUL_MAT_END with TSR_MM_DEFER on. Read once per device open.
+    bool         pivot = false;
+    tsr_pivot_dev pivot_dev;
 
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
@@ -453,6 +458,7 @@ static tsr_buffer_ctx * tsr_buf(ggml_backend_buffer_t buffer) {
 
 static tsr::plan::dev_cfg tsr_plan_cfg_m7(tsr_device * d);
 static void tsr_mon_note_mode(tsr_device * d);
+static bool tsr_mm_defer();
 
 static bool tsr_dev_open_locked(tsr_device * d) {
     if (d->tp != nullptr) {
@@ -527,6 +533,14 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         d->kind_mask |= v.kind_rev[k] != 0 ? 1ull << k : 0ull;
     }
     d->kind_mask &= kinds_env;            // TSR_KINDS (SW-14: m6 keeps NOP, JOIN and MUL_MAT)
+    {
+        const char * pe = getenv("TSR_PIVOT");
+        d->pivot = (pe == nullptr || pe[0] == '\0' || atoi(pe) != 0) && tsr_mm_defer() &&
+                   tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_BEGIN) && tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_END);
+        d->pivot_dev.num_ch = c->num_ch;
+        d->pivot_dev.dual = (c->caps & TSR_CAPS_MVM_DUAL) != 0;
+        TSR_DBG(1, "Tesseract Pivot (graph_optimize): %s\n", d->pivot ? "on" : "off");
+    }
     if (getenv("TSR_KINDS") != nullptr) {
         std::string names;
         for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
@@ -3655,6 +3669,9 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
 struct tsr_backend_ctx {
     tsr_device * dev;
     tsr_mon_ctx  mon;
+    // Tesseract Pivot: the node orders it gave this instance's graphs, by structure (tsr-pivot-graph.h). The instance belongs to one
+    // scheduler, and so to one ggml-alloc plan: a graph gets the order of the first graph of its structure.
+    tsr_pivot_memo pivot_memo;
 };
 
 static const char * tsr_backend_get_name(ggml_backend_t backend) {
@@ -3836,6 +3853,44 @@ static ggml_guid_t tsr_backend_guid() {
     return &guid;
 }
 
+// graph_optimize (Tesseract Pivot, docs/design/07-graph-scheduler.md): ggml calls it on a view of each split before ggml-alloc and lets
+// the backend permute the nodes. It runs outside the device mutex and reads no tensor data of compute tensors and nothing from the
+// device but what the open fixed (d->pivot, d->pivot_dev). The memo is the backend instance's: its scheduler calls this from one
+// thread, so it needs no lock.
+static void tsr_backend_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph, ggml_backend_graph_optimize_params * params) {
+    GGML_UNUSED(params);
+    tsr_backend_ctx * bc = (tsr_backend_ctx *) backend->context;
+    const tsr_device * d = bc->dev;
+    if (!d->pivot) {
+        return;
+    }
+    tsr_pivot_report rep;
+    tsr_pivot_optimize(cgraph, d->pivot_dev, tsr_pivot_params(), &rep, nullptr, &bc->pivot_memo);
+    // The buffers of this structure are planned for the remembered order (ggml-alloc replays the plan by node index); a graph that
+    // cannot take it stops the process here.
+    tsr_pivot_stop_on_conflict(rep);
+    if (tsr_debug_level() < 1) {
+        return;
+    }
+    if (rep.memo_hit) {
+        fprintf(stderr, "[tesseract] pivot: graph %p: %u nodes, structure %016" PRIx64 ": the remembered order%s, %.0f us\n", (void *) cgraph,
+                rep.n_nodes, rep.key, rep.applied ? "" : " (no change)", (double) rep.ns * 1e-3);
+    } else if (rep.memo_full) {
+        fprintf(stderr, "[tesseract] pivot: graph %p: %u nodes, structure %016" PRIx64 ": not searched, the memo is full\n", (void *) cgraph,
+                rep.n_nodes, rep.key);
+    } else if (rep.ran) {
+        for (const std::string & m : rep.moves) {
+            fprintf(stderr, "[tesseract] pivot move: %s\n", m.c_str());
+        }
+        fprintf(stderr, "[tesseract] pivot: graph %p: %u nodes, structure %016" PRIx64 ", %u units, %zu moves in %u passes, model %" PRId64
+                " -> %" PRId64 " cycles, %.0f us%s\n", (void *) cgraph, rep.n_nodes, rep.key, rep.n_units, rep.moves.size(), rep.passes,
+                rep.cycles_before, rep.cycles_after, (double) rep.ns * 1e-3, rep.refused ? " (the new order was refused)" : "");
+    } else {
+        fprintf(stderr, "[tesseract] pivot: graph %p: %u nodes, structure %016" PRIx64 ": nothing to schedule\n", (void *) cgraph, rep.n_nodes,
+                rep.key);
+    }
+}
+
 static const ggml_backend_i tsr_backend_iface = {
     /* .get_name            = */ tsr_backend_get_name,
     /* .free                = */ tsr_backend_free,
@@ -3852,7 +3907,7 @@ static const ggml_backend_i tsr_backend_iface = {
     /* .graph_compute       = */ tsr_backend_graph_compute,
     /* .event_record        = */ nullptr,
     /* .event_wait          = */ nullptr,
-    /* .graph_optimize      = */ nullptr,
+    /* .graph_optimize      = */ tsr_backend_graph_optimize,
 };
 
 // ---------------------------------------------------------------------------
@@ -3917,7 +3972,7 @@ static ggml_backend_t tsr_dev_init_backend(ggml_backend_dev_t dev, const char * 
         /* .guid    = */ tsr_backend_guid(),
         /* .iface   = */ tsr_backend_iface,
         /* .device  = */ dev,
-        /* .context = */ new tsr_backend_ctx { d, {} },
+        /* .context = */ new tsr_backend_ctx { d, {}, {} },
     };
 }
 

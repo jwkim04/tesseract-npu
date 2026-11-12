@@ -18,6 +18,7 @@ the design documents in [design/](design/README.md), then the other documents.
 - [design/04-control-core.md](design/04-control-core.md): the RISC-V control core, issue path, clock domains and floorplan (CC).
 - [design/05-debug.md](design/05-debug.md): debug module, GDB over PCIe, tile-level debug and the trace writer (DB).
 - [design/06-software-verification.md](design/06-software-verification.md): software stack, firmware SDK, simulator, op list, backend and verification (SW).
+- [design/07-graph-scheduler.md](design/07-graph-scheduler.md): Tesseract Pivot, the graph scheduler of the ggml backend: units, machine model, costs, search, adapter and guards (PV).
 - [platform-u200.md](platform-u200.md): the XRT adapter, the kernels `tsr_u200_k1` and `tsr_u200_k4`, the `v++` flow and floorplan, card bring-up.
 - [ctrl-riscv.md](ctrl-riscv.md): design record of the control core, with the decisions and the rejected alternatives.
 - [rtl-core.md](rtl-core.md): RTL contract of the core infrastructure: conventions, interfaces, SPM, CSR block, QACT and the fp library.

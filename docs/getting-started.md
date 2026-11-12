@@ -231,6 +231,7 @@ ignored. Each component document holds the complete list for its own variables.
 | `TSR_IMAGE` | firmware ELF to boot. Default: the build's `tsr-fw.elf`. |
 | `TSR_XCLBIN` | `xrt`: the xclbin to load ([`xrt-host.md`](xrt-host.md) §4.3) |
 | `TSR_KINDS` | the op kinds the device takes. Unset: every kind of the booted image. `m6`: the matrix products. |
+| `TSR_PIVOT` | `0` turns off Tesseract Pivot, the graph scheduler that orders the nodes of a split before they are lowered ([`design/07-graph-scheduler.md`](design/07-graph-scheduler.md)). Default on; it is also off with `TSR_MM_DEFER=0` or an image without MUL_MAT_BEGIN and MUL_MAT_END. |
 | `TSR_SIM_*`, `TSR_TRACE` | the simulated core, its resources and its schedule ([`sw/transport/README.md`](../sw/transport/README.md), [`sw/sim/README.md`](../sw/sim/README.md)) |
 | `TSR_LOG`, `TSR_LOG_LEVEL`, `TSR_STATS`, `TSR_DEBUG` | the device log, device counters at exit, the backend's placement and launch log |
 | `TSR_GDB`, `TSR_DUMP_DIR`, `TSR_MON`, `TSR_DUMP_PLAN` | debugging and profiling ([`prof-dbg.md`](prof-dbg.md) §1) |
@@ -240,7 +241,7 @@ ignored. Each component document holds the complete list for its own variables.
 
 `docs/` has the specification, the design set and the component documents ([`docs/README.md`](README.md) is the index).
 `sw/` has `sim/` (the bit-exact simulator and references), `ctrl/` (Basis, the firmware SDK), `transport/`,
-`ggml-tesseract/`, `rt/` and `torch/` (the host stack), `tools/` (`klcheck`, `tsr-numcheck`, `tsr-selftest`,
+`ggml-tesseract/` (the llama.cpp backend, with Tesseract Pivot, the graph scheduler), `rt/` and `torch/` (the host stack), `tools/` (`klcheck`, `tsr-numcheck`, `tsr-selftest`,
 `tsr-dbg`, `tsr-prof`, `tsr-top`, `tsr-log`, the trace tools, `tsr-mtp`), `tables/` (the single source of the CSR
 map, opcodes, error codes, PERF slots and formats) and `xrt-driver/`. `rtl/` has `core/` (vendor-independent
 SystemVerilog), `tech/` (generic and Xilinx wrappers) and `platform/alveo_xrt/` (the XRT adapter and the kernel tops).

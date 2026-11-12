@@ -1,13 +1,14 @@
 # Tesseract architecture and ISA specification
 
 This is the master specification of the Tesseract core: architecture, data layouts, numerics, ISA,
-interfaces and verification strategy. It is the technical entry point. The six area documents of
+interfaces and verification strategy. It is the technical entry point. The seven area documents of
 [docs/design](design/README.md) hold the detail that this document summarizes:
 [EX](design/01-execution-model.md) (execution model, host interface, global tables),
 [VU](design/02-vector-unit.md) (vector unit and numerics), [AT](design/03-attention-kv.md)
 (attention and KV cache), [CC](design/04-control-core.md) (control core, issue path, SPM, clock
-domains), [DB](design/05-debug.md) (debug and profiling) and
-[SW](design/06-software-verification.md) (simulator, firmware, host software, verification).
+domains), [DB](design/05-debug.md) (debug and profiling),
+[SW](design/06-software-verification.md) (simulator, firmware, host software, verification) and
+[PV](design/07-graph-scheduler.md) (the graph scheduler of the ggml backend).
 
 A section that points to an area document summarizes it. The area document is the normative
 definition and is incorporated here by reference. Every table has one definition
@@ -112,9 +113,9 @@ algorithm).
 
 ### Decision index
 
-Design decisions are numbered per area (EX-1, VU-1, AT-1, CC-1, DB-1, SW-1) and recorded as short
-entries in the Decisions section of each area document: EX §13, VU §11, AT §11, CC §17, DB §12 and
-SW §13. The standing decisions D1 to D18 are in section 16.
+Design decisions are numbered per area (EX-1, VU-1, AT-1, CC-1, DB-1, SW-1, PV-1) and recorded as short
+entries in the Decisions section of each area document: EX §13, VU §11, AT §11, CC §17, DB §12, SW §13 and
+PV §10. The standing decisions D1 to D18 are in section 16.
 
 ## 2. System structure
 
@@ -901,6 +902,12 @@ kernel every time, so a cached op list never needs patching. `src1` and `dst` ar
 Tesseract compute buffer; if that buffer is an IO window, the kernel reads and writes it in place, and if it
 is host memory, graph_compute moves the data through the IO staging area.
 
+Order of the nodes. Before ggml-alloc runs, the backend's `graph_optimize` hook orders the nodes of each split with
+Tesseract Pivot, the graph scheduler ([PV](design/07-graph-scheduler.md)). A cost model of the control core, the glue
+pipeline and the MVM unit ranks the orders, and independent matrix products move to where the MVM unit is idle and
+become `MUL_MAT_BEGIN` / `MUL_MAT_END` pairs. The pass changes the order of the nodes and no output bit. `TSR_PIVOT=0`
+turns it off.
+
 Lowering constraints (details in [sw/ggml-tesseract/README.md](../sw/ggml-tesseract/README.md) and
 [llama-pin.md](llama-pin.md)):
 
@@ -1343,7 +1350,7 @@ tesseract/
 ├── docs/                    # spec.md (this document), design/ (the normative design set), figures (fig/)
 ├── sw/
 │   ├── tables/              # table source tsr_tables.py and generator gen_tables.py: SV package, C header, mmio/vu/at.hpp, tb Python (EX-30)
-│   ├── ggml-tesseract/      # backend: reg/device/buffer, repacker, OPL builder and cache, KV buffers
+│   ├── ggml-tesseract/      # backend: reg/device/buffer, repacker, OPL builder and cache, KV buffers, Tesseract Pivot
 │   ├── sim/                 # simulator and references: tsr_ref*.c, CSR and queue model, VU and AT units, RV32 interpreter, scheduler, race detector, trace format, debug models
 │   ├── ctrl/                # firmware SDK: header library tsr/*.hpp, runtime, graph executor, kernels, host build, tsr-elf
 │   ├── transport/           # tsr_transport: protocol layer and the kdevs sim, mock, vkernel, xrt

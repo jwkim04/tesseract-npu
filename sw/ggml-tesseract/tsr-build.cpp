@@ -1896,7 +1896,7 @@ static bool tsr_can_hoist(const ggml_cgraph * cg, int i, int k, const ggml_tenso
     return true;
 }
 
-static int tsr_fusion_user(const ggml_cgraph * cg, int i) {
+int tsr_fusion_user(const ggml_cgraph * cg, int i) {
     for (int j = i + 1; j < cg->n_nodes; ++j) {
         for (const ggml_tensor * src : cg->nodes[j]->src)
             if (src == cg->nodes[i]) return j;
@@ -1919,47 +1919,136 @@ static int tsr_index_of(const ggml_cgraph * cg, const ggml_tensor * t) {
     return -1;
 }
 
+// The structure of a fusion pair (tsr-build.h): `u`, the first user of `node`, is the SCALE or the ADD (a bias or the residual of
+// the MUL_MAT's shape) that a MUL_MAT record absorbs, or the MUL by a weight that an RMS_NORM record absorbs. Shapes only.
+bool tsr_fuse_pair_shape(const ggml_tensor * node, const ggml_tensor * u) {
+    if (node->op == GGML_OP_MUL_MAT) {
+        if (u->op == GGML_OP_SCALE) {
+            return u->src[0] == node;
+        }
+        if (u->op != GGML_OP_ADD || (u->src[0] != node && u->src[1] != node) || u->src[0] == u->src[1]) {
+            return false;
+        }
+        const ggml_tensor * b = tsr_add_other(node, u);
+        return b->type == GGML_TYPE_F32 && b->ne[0] == node->ne[0] && ggml_are_same_shape(u, node) &&
+               (ggml_nrows(b) == 1 || ggml_are_same_shape(b, node));
+    }
+    if (node->op != GGML_OP_RMS_NORM || u->op != GGML_OP_MUL || u->src[0] != node || u->src[1] == node || !ggml_are_same_shape(u, node)) {
+        return false;
+    }
+    const ggml_tensor * w = u->src[1];
+    uint32_t p = 0;
+    return w->type == GGML_TYPE_F32 && w->ne[0] == node->ne[0] && tsr_row_period(node, w, &p) &&
+           (p <= 1 || (ggml_is_contiguous(w) && (node->ne[0] * 4) % TSR_LINE_BYTES == 0));
+}
+
+// The rest of a softcap chain behind the SCALE k of a MUL_MAT: TANH (its use) and the closing SCALE (the TANH's use), each
+// the only user of the one before. *mid, *tail: their indices.
+bool tsr_softcap_shape(const ggml_cgraph * cg, int k, int * mid, int * tail) {
+    if (!ggml_node_has_n_uses(cg, k, 1)) return false;
+    const int m = tsr_fusion_user(cg, k);
+    if (m < 0 || !tsr_is_tanh(cg->nodes[m]) || cg->nodes[m]->src[0] != cg->nodes[k] || !(cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) ||
+        !ggml_node_has_n_uses(cg, m, 1)) {
+        return false;
+    }
+    const int t = tsr_fusion_user(cg, m);
+    if (t < 0 || cg->nodes[t]->op != GGML_OP_SCALE || cg->nodes[t]->src[0] != cg->nodes[m] || !(cg->nodes[t]->flags & GGML_TENSOR_FLAG_COMPUTE)) {
+        return false;
+    }
+    *mid = m;
+    *tail = t;
+    return true;
+}
+
+// The routing group of the SOFT_MAX i (tsr-build.h), by the structure of the graph alone: the chain nodes in llama.cpp's order
+// with the use counts that make the absorbed nodes unobserved. No device, no addresses, no token count.
+bool tsr_moe_route_match(const ggml_cgraph * cg, int i, tsr_moe_route * out) {
+    const int n = cg->n_nodes;
+    const ggml_tensor * sm = cg->nodes[i];
+    if (sm->op != GGML_OP_SOFT_MAX || !ggml_node_has_n_uses(cg, i, 2)) return false;
+    tsr_moe_route g;
+    g.softmax = i;
+    g.argsort = tsr_find_after(cg, i, GGML_OP_ARGSORT, 0, sm);
+    const ggml_tensor * as = g.argsort >= 0 ? cg->nodes[g.argsort] : nullptr;
+    if (as == nullptr || tsr_param_i32(as, 0) != GGML_SORT_ORDER_DESC || !ggml_node_has_n_uses(cg, g.argsort, 1)) return false;
+    // the view of the first k sorted: the top-k ids
+    int vi = -1;
+    for (int j = g.argsort + 1; j < n && vi < 0; ++j) {
+        if (cg->nodes[j]->op == GGML_OP_VIEW && cg->nodes[j]->view_src == as) vi = j;
+    }
+    if (vi < 0) return false;
+    g.topk = cg->nodes[vi];
+    // GET_ROWS(RESHAPE(probs), topk)
+    int ri = -1;
+    for (int j = i + 1; j < n && ri < 0; ++j) {
+        if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == sm) ri = j;
+    }
+    if (ri < 0) return false;
+    g.get_rows = tsr_find_after(cg, ri, GGML_OP_GET_ROWS, 0, cg->nodes[ri]);
+    const ggml_tensor * gr = g.get_rows >= 0 ? cg->nodes[g.get_rows] : nullptr;
+    if (gr == nullptr || gr->src[1] != g.topk || !ggml_node_has_n_uses(cg, g.get_rows, 1)) return false;
+    // RESHAPE(weights) -> SUM_ROWS, DIV
+    int wi = -1;
+    for (int j = g.get_rows + 1; j < n && wi < 0; ++j) {
+        if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == gr) wi = j;
+    }
+    if (wi < 0 || ggml_node_get_use_count(cg, wi) != 2) return false;
+    g.sum_rows = tsr_find_after(cg, wi, GGML_OP_SUM_ROWS, 0, cg->nodes[wi]);
+    if (g.sum_rows < 0 || !ggml_node_has_n_uses(cg, g.sum_rows, 1)) return false;
+    g.clamp = tsr_find_after(cg, g.sum_rows, GGML_OP_CLAMP, 0, cg->nodes[g.sum_rows]);
+    if (g.clamp < 0 || !ggml_node_has_n_uses(cg, g.clamp, 1) || !tsr_param_inf(cg->nodes[g.clamp], 1)) return false;
+    g.div = tsr_find_after(cg, g.clamp, GGML_OP_DIV, 1, cg->nodes[g.clamp]);
+    if (g.div < 0 || cg->nodes[g.div]->src[0] != cg->nodes[wi] || !ggml_node_has_n_uses(cg, g.div, 1)) return false;
+    *out = g;
+    return true;
+}
+
+// The scale group of the MUL_MAT_ID i (tsr-build.h), by structure: MUL(mmid, GET_ROWS(REPEAT(RESHAPE(table)), ids)).
+bool tsr_moe_scale_match(const ggml_cgraph * cg, int i, tsr_moe_scale * out) {
+    const int n = cg->n_nodes;
+    const ggml_tensor * sm = cg->nodes[i];
+    if (sm->op != GGML_OP_MUL_MAT_ID || !ggml_node_has_n_uses(cg, i, 1)) return false;
+    tsr_moe_scale g;
+    g.mmid = i;
+    g.mul = -1;
+    for (int j = i + 1; j < n && g.mul < 0; ++j) {
+        const ggml_tensor * u = cg->nodes[j];
+        if (u->op == GGML_OP_MUL && u->src[0] == sm && u->src[1] != nullptr && u->src[1]->op == GGML_OP_GET_ROWS) g.mul = j;
+    }
+    if (g.mul < 0) return false;
+    const ggml_tensor * gr = cg->nodes[g.mul]->src[1];
+    g.get_rows = tsr_index_of(cg, gr);
+    const ggml_tensor * rp = gr->src[0];
+    g.repeat = rp != nullptr && rp->op == GGML_OP_REPEAT ? tsr_index_of(cg, rp) : -1;
+    if (g.get_rows < 0 || g.repeat < 0 || gr->src[1] != sm->src[2] || !ggml_node_has_n_uses(cg, g.get_rows, 1) ||
+        !ggml_node_has_n_uses(cg, g.repeat, 1)) return false;
+    const ggml_tensor * rs = rp->src[0];
+    // The table is the RESHAPE of the leaf, or, when the scheduler copied the view's result to this backend (the
+    // table of Gemma 4 lives in host memory: no kind of the image takes a MUL_MAT_ID weight that is not an expert
+    // tensor), the copy: a leaf of its own with the same elements.
+    if (rs == nullptr) return false;
+    if (rs->op == GGML_OP_RESHAPE && rs->src[0] != nullptr && rs->src[0]->op == GGML_OP_NONE) {
+        g.table = rs->src[0];
+    } else if (rs->op == GGML_OP_NONE && rs->view_src == nullptr) {
+        g.table = rs;
+    } else {
+        return false;
+    }
+    if (!ggml_are_same_shape(cg->nodes[g.mul], sm)) return false;
+    *out = g;
+    return true;
+}
+
 // Pass 3 for the MoE chains (tsr-build.h): the routing group of every SOFT_MAX and the scale group of every MUL_MAT_ID that
-// matches llama.cpp's build_moe_ffn node for node, with the use counts that make the absorbed nodes unobserved.
+// matches llama.cpp's build_moe_ffn node for node (tsr_moe_route_match, tsr_moe_scale_match), when the image has the kinds.
 static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, tsr_fusion * f) {
     const int n = cg->n_nodes;
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * sm = cg->nodes[i];
         if ((sm->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) continue;
-        if (sm->op == GGML_OP_SOFT_MAX && tsr_moe_softmax_ok(env, sm, nullptr) && ggml_node_has_n_uses(cg, i, 2)) {
+        if (sm->op == GGML_OP_SOFT_MAX && tsr_moe_softmax_ok(env, sm, nullptr)) {
             tsr_moe_route g;
-            g.softmax = i;
-            g.argsort = tsr_find_after(cg, i, GGML_OP_ARGSORT, 0, sm);
-            const ggml_tensor * as = g.argsort >= 0 ? cg->nodes[g.argsort] : nullptr;
-            if (as == nullptr || tsr_param_i32(as, 0) != GGML_SORT_ORDER_DESC || !ggml_node_has_n_uses(cg, g.argsort, 1)) continue;
-            // the view of the first k sorted: the top-k ids
-            int vi = -1;
-            for (int j = g.argsort + 1; j < n && vi < 0; ++j) {
-                if (cg->nodes[j]->op == GGML_OP_VIEW && cg->nodes[j]->view_src == as) vi = j;
-            }
-            if (vi < 0) continue;
-            g.topk = cg->nodes[vi];
-            // GET_ROWS(RESHAPE(probs), topk)
-            int ri = -1;
-            for (int j = i + 1; j < n && ri < 0; ++j) {
-                if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == sm) ri = j;
-            }
-            if (ri < 0) continue;
-            g.get_rows = tsr_find_after(cg, ri, GGML_OP_GET_ROWS, 0, cg->nodes[ri]);
-            const ggml_tensor * gr = g.get_rows >= 0 ? cg->nodes[g.get_rows] : nullptr;
-            if (gr == nullptr || gr->src[1] != g.topk || !ggml_node_has_n_uses(cg, g.get_rows, 1)) continue;
-            // RESHAPE(weights) -> SUM_ROWS, DIV
-            int wi = -1;
-            for (int j = g.get_rows + 1; j < n && wi < 0; ++j) {
-                if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == gr) wi = j;
-            }
-            if (wi < 0 || ggml_node_get_use_count(cg, wi) != 2) continue;
-            g.sum_rows = tsr_find_after(cg, wi, GGML_OP_SUM_ROWS, 0, cg->nodes[wi]);
-            if (g.sum_rows < 0 || !ggml_node_has_n_uses(cg, g.sum_rows, 1)) continue;
-            g.clamp = tsr_find_after(cg, g.sum_rows, GGML_OP_CLAMP, 0, cg->nodes[g.sum_rows]);
-            if (g.clamp < 0 || !ggml_node_has_n_uses(cg, g.clamp, 1) || !tsr_param_inf(cg->nodes[g.clamp], 1)) continue;
-            g.div = tsr_find_after(cg, g.clamp, GGML_OP_DIV, 1, cg->nodes[g.clamp]);
-            if (g.div < 0 || cg->nodes[g.div]->src[0] != cg->nodes[wi] || !ggml_node_has_n_uses(cg, g.div, 1)) continue;
+            if (!tsr_moe_route_match(cg, i, &g)) continue;
             bool flagged = true;
             for (int m : { g.argsort, g.get_rows, g.sum_rows, g.clamp, g.div }) {
                 flagged = flagged && (cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) && f->into[m] < 0;
@@ -1969,38 +2058,13 @@ static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, ts
             f->routes.push_back(g);
             for (int m : { g.argsort, g.get_rows, g.sum_rows, g.clamp, g.div }) f->into[m] = i;
             f->n_pairs++;
-        } else if (sm->op == GGML_OP_MUL_MAT_ID && ggml_node_has_n_uses(cg, i, 1) && tsr_kind_in_image(env.kinds, opl::K_CPY) &&
+        } else if (sm->op == GGML_OP_MUL_MAT_ID && tsr_kind_in_image(env.kinds, opl::K_CPY) &&
                    tsr_kind_in_image(env.kinds, opl::K_MUL_MAT_ID)) {
-            // MUL(mmid, GET_ROWS(REPEAT(RESHAPE(table)), ids))
             tsr_moe_scale g;
-            g.mmid = i;
-            g.mul = -1;
-            for (int j = i + 1; j < n && g.mul < 0; ++j) {
-                const ggml_tensor * u = cg->nodes[j];
-                if (u->op == GGML_OP_MUL && u->src[0] == sm && u->src[1] != nullptr && u->src[1]->op == GGML_OP_GET_ROWS) g.mul = j;
-            }
-            if (g.mul < 0) continue;
-            const ggml_tensor * gr = cg->nodes[g.mul]->src[1];
-            g.get_rows = tsr_index_of(cg, gr);
-            const ggml_tensor * rp = gr->src[0];
-            g.repeat = rp != nullptr && rp->op == GGML_OP_REPEAT ? tsr_index_of(cg, rp) : -1;
-            if (g.get_rows < 0 || g.repeat < 0 || gr->src[1] != sm->src[2] || !ggml_node_has_n_uses(cg, g.get_rows, 1) ||
-                !ggml_node_has_n_uses(cg, g.repeat, 1)) continue;
-            const ggml_tensor * rs = rp->src[0];
-            // The table is the RESHAPE of the leaf, or, when the scheduler copied the view's result to this backend (the
-            // table of Gemma 4 lives in host memory: no kind of the image takes a MUL_MAT_ID weight that is not an expert
-            // tensor), the copy: a leaf of its own with the same elements.
-            if (rs == nullptr) continue;
-            if (rs->op == GGML_OP_RESHAPE && rs->src[0] != nullptr && rs->src[0]->op == GGML_OP_NONE) {
-                g.table = rs->src[0];
-            } else if (rs->op == GGML_OP_NONE && rs->view_src == nullptr) {
-                g.table = rs;
-            } else {
-                continue;
-            }
+            if (!tsr_moe_scale_match(cg, i, &g)) continue;
             bool flagged = true;
             for (int m : { g.repeat, g.get_rows, g.mul }) flagged = flagged && (cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) && f->into[m] < 0;
-            if (!flagged || !ggml_are_same_shape(cg->nodes[g.mul], sm)) continue;
+            if (!flagged) continue;
             f->scale_of[i] = (int32_t) f->scales.size();
             f->scales.push_back(g);
             for (int m : { g.repeat, g.get_rows, g.mul }) f->into[m] = i;
@@ -2013,12 +2077,13 @@ static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, ts
 // build_recurrent_attn in the graph. The state operand is RESHAPE / VIEW (offset 0) nodes over GET_ROWS(RESHAPE(cache), ids)
 // with one id per sequence (no extra states); the new state is the VIEW of the node's result behind the attention rows,
 // and its only reader is one CPY into rows of the same cache. Nothing else reads the gathered copy or the result's state
-// rows, and no node between the gather and the CPY touches the cache rows the CPY writes. Fills *c (gather, cpy, ids, n,
-// cell0 and, with the ids' values from env.read_i32, in_place) and returns true when the group has this shape.
-static bool tsr_gdn_state_group(const tsr_build_env & env, const ggml_cgraph * cg, int i, tsr_gdn_cell * c) {
+// rows (tsr_gdn_state_shape: the graph's structure alone, no addresses and no values), and no node between the gather and
+// the CPY touches the cache rows the CPY writes (tsr_gdn_state_group, by address). Fills *c (gather, cpy, ids, n, cell0 and,
+// with the ids' values from env.read_i32, in_place) and returns true when the group has this shape.
+bool tsr_gdn_state_shape(const ggml_cgraph * cg, int i, tsr_gdn_shape * sh) {
     const ggml_tensor * node = cg->nodes[i];
     const int n_nodes = cg->n_nodes;
-    if (!env.gdn_cell || !env.read_i32 || node->src[5] == nullptr || node->src[0] == nullptr || node->src[2] == nullptr) {
+    if (node->src[5] == nullptr || node->src[0] == nullptr || node->src[2] == nullptr) {
         return false;
     }
     const int64_t Sv = node->src[2]->ne[0], Hv = node->src[2]->ne[1], T = node->src[2]->ne[2], ns = node->src[2]->ne[3];
@@ -2096,6 +2161,26 @@ static bool tsr_gdn_state_group(const tsr_build_env & env, const ggml_cgraph * c
             }
         }
     }
+    sh->gather = ig;
+    sh->cpy = ik;
+    sh->slots = (uint32_t) nw;
+    sh->n_seq = (uint32_t) ns;
+    sh->cell0 = (int32_t) (cpy->view_offs / cache->nb[1]);
+    sh->ids = gather->src[1];
+    return true;
+}
+
+static bool tsr_gdn_state_group(const tsr_build_env & env, const ggml_cgraph * cg, int i, tsr_gdn_cell * c) {
+    tsr_gdn_shape sh;
+    if (!env.gdn_cell || !env.read_i32 || !tsr_gdn_state_shape(cg, i, &sh)) {
+        return false;
+    }
+    const int ig = sh.gather, ik = sh.cpy;
+    const ggml_tensor * gather = cg->nodes[ig];
+    const ggml_tensor * cpy = cg->nodes[ik];
+    const ggml_tensor * cache = gather->src[0]->view_src != nullptr ? gather->src[0]->view_src : gather->src[0];
+    const int64_t ns = sh.n_seq, nw = sh.slots;
+
     // nothing between the gather and the CPY (but the group's own nodes) touches the cache rows the CPY writes: the record
     // reads them at the node's position and writes them there
     const tsr_vrange rb = tsr_bytes_of(cpy);
@@ -2131,6 +2216,63 @@ static bool tsr_gdn_state_group(const tsr_build_env & env, const ggml_cgraph * c
     return true;
 }
 
+
+// The SSM_CONV group of node i by the structure of the graph alone (tsr-build.h): its CONCAT (earlier), the state CPYs (one for
+// the final state or, with rollback snapshots, one per slot; all before the SSM_CONV, all reading views of the CONCAT, which
+// has no other reader) and the SILU that follows it (the SSM_CONV's only user), if there is one.
+bool tsr_conv_group_shape(const ggml_cgraph * cg, int i, tsr_conv_shape * out) {
+    const int n = cg->n_nodes;
+    const ggml_tensor * node = cg->nodes[i];
+    if (node->op != GGML_OP_SSM_CONV) return false;
+    tsr_conv_parts p;
+    if (!tsr_conv_parts_of(node, &p, nullptr)) {
+        return false;
+    }
+    int ic = -1, icpy = -1, isilu = -1;
+    for (int j = i - 1; j >= 0 && ic < 0; --j) {
+        if (cg->nodes[j] == p.concat) ic = j;
+    }
+    // the state CPYs: one (the final state) or, with rollback snapshots (SW-83), one per slot of the cache's groups. Each
+    // reads its own VIEW of the CONCAT (the CONCAT's uses: the SSM_CONV and those views)
+    std::vector<int32_t> cpys;
+    const int64_t keep = p.dc - 1;
+    for (int j = ic + 1; j < n && ic >= 0; ++j) {
+        const ggml_tensor * u = cg->nodes[j];
+        if (u->op == GGML_OP_CPY && u->src[0] != nullptr && u->src[0]->view_src == p.concat) {
+            cpys.push_back(j);
+            if (u->src[0]->view_offs == (size_t) ((p.concat->ne[0] - keep) * 4)) {
+                if (icpy >= 0) {
+                    icpy = -2;             // two copies of the final state: not the pinned graph
+                    break;
+                }
+                icpy = j;
+            }
+        }
+    }
+    bool cpys_ok = icpy >= 0 && !cpys.empty() && ic >= 0 && ggml_node_has_n_uses(cg, ic, 1 + (int) cpys.size());
+    for (size_t q = 0; q < cpys.size() && cpys_ok; ++q) {
+        const ggml_tensor * u = cg->nodes[cpys[q]];
+        cpys_ok = cpys[q] < i && tsr_conv_state_cpy_ok(u, nullptr) && (u->flags & GGML_TENSOR_FLAG_COMPUTE) != 0 &&
+                  (cpys.size() == 1 || (u->view_src != nullptr && u->view_src == cg->nodes[icpy]->view_src));
+    }
+    if (!cpys_ok) {
+        return false;
+    }
+    if (ggml_node_has_n_uses(cg, i, 1)) {
+        const int k = tsr_fusion_user(cg, i);
+        const ggml_tensor * u = k >= 0 ? cg->nodes[k] : nullptr;
+        if (u != nullptr && (u->flags & GGML_TENSOR_FLAG_COMPUTE) && u->op == GGML_OP_UNARY &&
+            ggml_get_unary_op(u) == GGML_UNARY_OP_SILU && u->src[0] == node) {
+            isilu = k;
+        }
+    }
+    out->concat = ic;
+    out->cpy = icpy;
+    out->cpys = cpys;
+    out->silu = isilu;
+    return true;
+}
+
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     tsr_fusion f;
     const int n = cg->n_nodes;
@@ -2150,40 +2292,13 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
         if (node->op != GGML_OP_SSM_CONV || (node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || !tsr_kind_in_image(env.kinds, opl::K_SSM_CONV)) {
             continue;
         }
-        tsr_conv_parts p;
-        if (!tsr_conv_parts_of(node, &p, nullptr)) {
+        tsr_conv_shape cs;
+        if (!tsr_conv_group_shape(cg, i, &cs)) {
             continue;
         }
-        int ic = -1, icpy = -1, isilu = -1;
-        for (int j = i - 1; j >= 0 && ic < 0; --j) {
-            if (cg->nodes[j] == p.concat) ic = j;
-        }
-        // the state CPYs: one (the final state) or, with rollback snapshots (SW-83), one per slot of the cache's groups. Each
-        // reads its own VIEW of the CONCAT (the CONCAT's uses: the SSM_CONV and those views)
-        std::vector<int32_t> cpys;
-        const int64_t keep = p.dc - 1;
-        for (int j = ic + 1; j < n && ic >= 0; ++j) {
-            const ggml_tensor * u = cg->nodes[j];
-            if (u->op == GGML_OP_CPY && u->src[0] != nullptr && u->src[0]->view_src == p.concat) {
-                cpys.push_back(j);
-                if (u->src[0]->view_offs == (size_t) ((p.concat->ne[0] - keep) * 4)) {
-                    if (icpy >= 0) {
-                        icpy = -2;             // two copies of the final state: not the pinned graph
-                        break;
-                    }
-                    icpy = j;
-                }
-            }
-        }
-        bool cpys_ok = icpy >= 0 && !cpys.empty() && ic >= 0 && ggml_node_has_n_uses(cg, ic, 1 + (int) cpys.size());
-        for (size_t q = 0; q < cpys.size() && cpys_ok; ++q) {
-            const ggml_tensor * u = cg->nodes[cpys[q]];
-            cpys_ok = cpys[q] < i && tsr_conv_state_cpy_ok(u, nullptr) && (u->flags & GGML_TENSOR_FLAG_COMPUTE) != 0 &&
-                      (cpys.size() == 1 || (u->view_src != nullptr && u->view_src == cg->nodes[icpy]->view_src));
-        }
-        if (!cpys_ok) {
-            continue;
-        }
+        const int ic = cs.concat, icpy = cs.cpy;
+        int isilu = cs.silu;
+        const std::vector<int32_t> & cpys = cs.cpys;
         // the state CPYs move down to the SSM_CONV: no node in between touches the cache run each writes
         bool clash = false;
         for (size_t c = 0; c < cpys.size() && !clash; ++c) {
@@ -2200,13 +2315,8 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
             }
         }
         if (clash) continue;
-        if (ggml_node_has_n_uses(cg, i, 1)) {
-            const int k = tsr_fusion_user(cg, i);
-            const ggml_tensor * u = k >= 0 ? cg->nodes[k] : nullptr;
-            if (u != nullptr && (u->flags & GGML_TENSOR_FLAG_COMPUTE) && u->op == GGML_OP_UNARY &&
-                ggml_get_unary_op(u) == GGML_UNARY_OP_SILU && u->src[0] == node && f.into[k] < 0 && tsr_can_hoist(cg, i, k, nullptr, u)) {
-                isilu = k;
-            }
+        if (isilu >= 0 && !(f.into[isilu] < 0 && tsr_can_hoist(cg, i, isilu, nullptr, cg->nodes[isilu]))) {
+            isilu = -1;
         }
         f.conv_concat[i] = ic;
         f.conv_cpy[i] = icpy;
@@ -2252,50 +2362,37 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
             continue;
         }
         tsr_tloc l;
+        if (!tsr_fuse_pair_shape(node, u)) {
+            continue;
+        }
         if (node->op == GGML_OP_MUL_MAT && u->op == GGML_OP_SCALE) {
-            if (u->src[0] != node || !tsr_can_hoist(cg, i, k, nullptr, u)) continue;
+            if (!tsr_can_hoist(cg, i, k, nullptr, u)) continue;
             if (tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SOFTCAP) && ggml_node_has_n_uses(cg, k, 1)) {
-                const int mid = tsr_fusion_user(cg, k);
-                if (mid >= 0 && tsr_is_tanh(cg->nodes[mid]) && cg->nodes[mid]->src[0] == u &&
-                    (cg->nodes[mid]->flags & GGML_TENSOR_FLAG_COMPUTE) && f.into[mid] < 0 && f.with[mid] < 0 &&
-                    ggml_node_has_n_uses(cg, mid, 1)) {
-                    const int tail = tsr_fusion_user(cg, mid);
-                    if (tail >= 0 && cg->nodes[tail]->op == GGML_OP_SCALE && cg->nodes[tail]->src[0] == cg->nodes[mid] &&
-                        (cg->nodes[tail]->flags & GGML_TENSOR_FLAG_COMPUTE) && f.into[tail] < 0 && f.with[tail] < 0 &&
-                        tsr_can_hoist(cg, i, mid, nullptr, cg->nodes[mid], k) &&
-                        tsr_can_hoist(cg, i, tail, nullptr, cg->nodes[tail], k, mid)) {
-                        f.softcap_mid[i] = mid;
-                        f.softcap_tail[i] = tail;
-                        f.into[mid] = f.into[tail] = i;
-                    }
+                int mid = -1, tail = -1;
+                if (tsr_softcap_shape(cg, k, &mid, &tail) && f.into[mid] < 0 && f.with[mid] < 0 && f.into[tail] < 0 && f.with[tail] < 0 &&
+                    tsr_can_hoist(cg, i, mid, nullptr, cg->nodes[mid], k) &&
+                    tsr_can_hoist(cg, i, tail, nullptr, cg->nodes[tail], k, mid)) {
+                    f.softcap_mid[i] = mid;
+                    f.softcap_tail[i] = tail;
+                    f.into[mid] = f.into[tail] = i;
                 }
             }
             if (f.softcap_tail[i] < 0 && !tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SCALE)) continue;
         } else if (node->op == GGML_OP_MUL_MAT) {
-            if (u->op != GGML_OP_ADD || (u->src[0] != node && u->src[1] != node) || u->src[0] == u->src[1]) {
-                continue;
-            }
             const ggml_tensor * b = tsr_add_other(node, u);
             const ggml_tensor * x = node->src[1];
             // the MUL_MAT must run in place (not staged): x, the ADD result and the addend on the device,
             // and its rows on lines when T > 1 (SW §9.3 step 2)
-            if (b->type != GGML_TYPE_F32 || b->ne[0] != node->ne[0] || !ggml_are_same_shape(u, node) ||
-                (ggml_nrows(b) != 1 && !ggml_are_same_shape(b, node)) || !env.loc || !env.loc(x, &l) || !env.loc(u, &l) ||
-                !env.loc(b, &l) || (ggml_nrows(x) > 1 && (node->ne[0] * 4) % TSR_LINE_BYTES != 0)) {
+            if (!env.loc || !env.loc(x, &l) || !env.loc(u, &l) || !env.loc(b, &l) ||
+                (ggml_nrows(x) > 1 && (node->ne[0] * 4) % TSR_LINE_BYTES != 0)) {
                 continue;
             }
             if (!tsr_can_hoist(cg, i, k, b, u)) {
                 continue;
             }
         } else {
-            if (u->op != GGML_OP_MUL || u->src[0] != node || u->src[1] == node || !ggml_are_same_shape(u, node)) {
-                continue;
-            }
             const ggml_tensor * w = u->src[1];
-            uint32_t p = 0;
-            if (w->type != GGML_TYPE_F32 || w->ne[0] != node->ne[0] || !tsr_row_period(node, w, &p) ||
-                (p > 1 && (!ggml_is_contiguous(w) || (node->ne[0] * 4) % TSR_LINE_BYTES != 0)) || !env.loc || !env.loc(w, &l) ||
-                !env.loc(u, &l)) {
+            if (!env.loc || !env.loc(w, &l) || !env.loc(u, &l)) {
                 continue;
             }
             if (!tsr_can_hoist(cg, i, k, w, u)) {

@@ -8,11 +8,14 @@ set(GGML_TESSERACT_DIR ${CMAKE_CURRENT_LIST_DIR})
 # library tsr_lower (lower.cmake), shared with the runtime sw/rt; only the ggml-dependent sources are
 # listed here. tsr-build (the M7 records of ggml nodes, supports_op M7, fusion, the graph key;
 # docs/design/06-software-verification.md §9.3) is ggml-aware but device-free, so the unit tests compile
-# it too (CMakeLists.txt, test-tsr-backend-units).
+# it too (CMakeLists.txt, test-tsr-backend-units). tsr-pivot-graph (Tesseract Pivot's ggml adapter over the core in tsr_lower) is
+# ggml-aware and device-free as well (CMakeLists.txt, test-tsr-pivot-graph).
 set(GGML_TESSERACT_SOURCES
     ${GGML_TESSERACT_DIR}/ggml-tesseract.cpp
     ${GGML_TESSERACT_DIR}/tsr-build.cpp
     ${GGML_TESSERACT_DIR}/tsr-build.h
+    ${GGML_TESSERACT_DIR}/tsr-pivot-graph.cpp
+    ${GGML_TESSERACT_DIR}/tsr-pivot-graph.h
     ${GGML_TESSERACT_DIR}/tsr-prof.cpp
     ${GGML_TESSERACT_DIR}/tsr-prof.h
     ${GGML_TESSERACT_DIR}/tsr-weights.cpp

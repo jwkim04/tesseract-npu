@@ -26,6 +26,16 @@ defer   MUL_MAT deferral (SW-92, SW-94; ggml_tesseract_defer_*): klcheck generat
         --expect-identical`: the same tokens, the same logits), launch for launch (the same launch count), the default run must
         have launched at least --min-pairs MUL_MAT_BEGIN / MUL_MAT_END pairs (TSR_STATS' records per kind) and the TSR_MM_DEFER=0
         run none.
+pivot   Tesseract Pivot, the graph scheduler (docs/design/07-graph-scheduler.md; ggml_tesseract_pivot_*): klcheck generates the same tokens on
+        the device twice, with the pass on (the default) and with TSR_PIVOT=0; the two runs must be bit-identical (the same tokens, the
+        same logits) with the same launches, the same records but for the MUL_MAT_BEGIN / MUL_MAT_END split, a replay of the recorded
+        tokens in verification windows (--verify-k, the batches of speculative decoding) must be bit-identical too, the pass must have
+        made at least --min-moves moves (its TSR_DEBUG lines), every structure must have been searched once and every later graph of it
+        must have got the remembered order, with one structure per node count (the permutation is a function of the graph's structure:
+        ggml-alloc replays the reserve graph's allocation by node index) and the knob off none. --expect moe | gdn checks the decode launch of the
+        pass-on run (TSR_DEBUG=2's record listing): moe: in every layer the dense ffn_gate product is a MUL_MAT_BEGIN in front of the
+        MOE_ROUTE and its MUL_MAT_END comes after the layer's MUL_MAT_ID records, the up product's END too; gdn: in every layer with a
+        GATED_DELTA_NET record the z product is a MUL_MAT_BEGIN in front of it with its MUL_MAT_END behind it.
 ops     test-backend-ops on the device for one op filter: every supported case must pass, at least
         --min-run cases must be supported (so that a supports_op regression cannot pass as "all
         unsupported"), and the unsupported cases are counted and listed (the full list in --list).
@@ -398,6 +408,183 @@ def cmd_defer(a: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------------------------
+# pivot: the device output with and without Tesseract Pivot
+
+RE_REC = re.compile(r"^\[tesseract\]\s+(\d+) (\S+)\s+deps\s+(-?\d+)\s+(-?\d+)((?: [0-9a-f]{8})*)(?:\s+(.*))?$")
+RE_LAUNCH = re.compile(r"^\[tesseract\] launch #(\d+): (\d+) records")
+RE_PIVOT_MOVE = re.compile(r"^\[tesseract\] pivot move: ")
+RE_PIVOT_GRAPH = re.compile(r"^\[tesseract\] pivot: graph \S+: (\d+) nodes, structure ([0-9a-f]{16}), (\d+) units, (\d+) moves in (\d+) passes, "
+                            r"model (\d+) -> (\d+) cycles")
+RE_PIVOT_HIT = re.compile(r"^\[tesseract\] pivot: graph \S+: (\d+) nodes, structure ([0-9a-f]{16}): the remembered order")
+RE_PIVOT_NONE = re.compile(r"^\[tesseract\] pivot: graph \S+: (\d+) nodes, structure ([0-9a-f]{16}): nothing to schedule")
+
+
+def launches_of(text: str) -> list[list[tuple[int, str, str]]]:
+    """The record listings of a TSR_DEBUG=2 log: per launch the (index, kind, name) of its records."""
+    out: list[list[tuple[int, str, str]]] = []
+    cur = None
+    for raw in text.splitlines():
+        line = ANSI.sub("", raw)
+        if RE_LAUNCH.match(line):
+            cur = []
+            out.append(cur)
+            continue
+        m = RE_REC.match(line)
+        if m and cur is not None:
+            cur.append((int(m.group(1)), m.group(2), (m.group(6) or "").strip()))
+        elif cur is not None and not line.startswith("[tesseract]   pre"):
+            cur = None
+    return out
+
+
+def check_plan(recs: list[tuple[int, str, str]], expect: str) -> list[str]:
+    """The pivot's mark on a decode launch (a launch of the pass-on run): where the dense products and the z products are split."""
+    fails = []
+
+    def named(kind: str | None, name: str) -> list[int]:
+        return [i for i, k, n in recs if (kind is None or k == kind) and re.search(r"(^| )" + re.escape(name) + r"$", n)]
+
+    def region(il: int) -> tuple[int, int]:
+        # a layer's records lie between the record that writes the previous layer's output (named l_out-N, alone or fused) and its own
+        start = named(None, f"l_out-{il - 1}")
+        end = named(None, f"l_out-{il}")
+        return (start[0] if start else -1, end[0] if end else len(recs))
+
+    layers = sorted({int(m.group(1)) for _, k, n in recs for m in [re.search(r"ffn_gate-(\d+)$", n)] if m and k == "MUL_MAT_BEGIN"}) \
+        if expect == "moe" else sorted({int(m.group(1)) for _, k, n in recs for m in [re.search(r"(?:^| )z-(\d+)$", n)] if m})
+    if not layers:
+        return [f"no {'dense ffn_gate' if expect == 'moe' else 'z'} product is a MUL_MAT_BEGIN in the decode launch"]
+    for il in layers:
+        lo, hi = region(il)
+        if expect == "moe":
+            route = [i for i, k, n in recs if k == "MOE_ROUTE" and lo < i < hi]
+            mmid = [i for i, k, n in recs if k == "MUL_MAT_ID" and lo < i < hi]
+            gate_b, gate_e = named("MUL_MAT_BEGIN", f"ffn_gate-{il}"), named("MUL_MAT_END", f"ffn_gate-{il}")
+            up_b, up_e = named("MUL_MAT_BEGIN", f"ffn_up-{il}"), named("MUL_MAT_END", f"ffn_up-{il}")
+            if not (route and mmid and gate_b and gate_e and up_b and up_e):
+                fails.append(f"layer {il}: records missing (MOE_ROUTE {route}, MUL_MAT_ID {mmid}, gate {gate_b}/{gate_e}, up {up_b}/{up_e})")
+            elif not (gate_b[0] < route[0] and gate_e[0] > max(mmid) and up_e[0] > max(mmid)):
+                fails.append(f"layer {il}: ffn_gate BEGIN {gate_b[0]} / END {gate_e[0]}, ffn_up BEGIN {up_b[0]} / END {up_e[0]}, "
+                             f"MOE_ROUTE {route[0]}, MUL_MAT_ID up to {max(mmid)}: the gate's BEGIN has to be in front of MOE_ROUTE and the ENDs behind the experts")
+        else:
+            gdn = [i for i, k, n in recs if k == "GATED_DELTA_NET" and lo < i < hi]
+            zb, ze = named("MUL_MAT_BEGIN", f"z-{il}"), named("MUL_MAT_END", f"z-{il}")
+            if not (gdn and zb and ze):
+                fails.append(f"layer {il}: records missing (GATED_DELTA_NET {gdn}, z {zb}/{ze})")
+            elif not (zb[0] < min(gdn) and ze[0] > max(gdn)):
+                fails.append(f"layer {il}: the z product's BEGIN {zb[0]} / END {ze[0]} does not enclose GATED_DELTA_NET {gdn}")
+    return fails
+
+
+def cmd_pivot(a: argparse.Namespace) -> int:
+    out = Path(a.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    kl = a.klcheck
+    common = ["-m", a.model, "--phase", "m7", "-ub", str(a.ub), "-t", str(a.threads)]
+    prompts = ["--prompts", a.prompts] if a.prompts else []
+    runs = {}
+    for name, knob in (("on", None), ("off", "0")):
+        env = dict(os.environ)
+        env["TSR_STATS"] = "1"
+        env["TSR_DEBUG"] = "2" if (name == "on" and a.expect) else "1"
+        env.pop("TSR_KINDS", None)
+        env.pop("TSR_MM_DEFER", None)
+        env.pop("TSR_PIVOT", None)
+        if knob is not None:
+            env["TSR_PIVOT"] = knob
+        klc, log = out / f"{name}.klc", out / f"{name}.log"
+        rc = run([kl, "run", "--device", a.device] + prompts + ["--n-prompts", str(a.n_prompts), "-n", str(a.n_gen),
+                  "--prompt-tail", str(a.prompt_tail), "--out", str(klc)] + common, log=log, env=env, quiet=True)
+        if rc != 0:
+            print("\n".join(log.read_text(errors="replace").splitlines()[-12:]))
+            print(f"m7_tests: FAIL: the device run (TSR_PIVOT {knob or 'default'}) exited with {rc} (log: {log})")
+            return 1
+        text = log.read_text(errors="replace")
+        lines = [ANSI.sub("", l) for l in text.splitlines()]
+        st = next((RE_STATS.search(l) for l in lines if RE_STATS.match(l)), None)
+        # one order per structure: ggml-alloc replays the allocation of the reserve graph by node index, so every graph of one structure
+        # must get the same permutation, whatever its tokens and its batch. The pass searches the first graph of a structure and gives
+        # every later one that order from its memo (klcheck has one context, so one memo): each structure has one search line (or a
+        # "nothing to schedule" line), in front of its "remembered order" lines, and the graphs of one node count have one structure
+        searched: set[str] = set()
+        keys_of: dict[int, set] = {}
+        bad: list[str] = []
+        hits = 0
+        for l in lines:
+            m, h = RE_PIVOT_GRAPH.match(l) or RE_PIVOT_NONE.match(l), RE_PIVOT_HIT.match(l)
+            if m:
+                keys_of.setdefault(int(m.group(1)), set()).add(m.group(2))
+                if m.group(2) in searched:
+                    bad.append(f"structure {m.group(2)} ({m.group(1)} nodes) was searched twice")
+                searched.add(m.group(2))
+            elif h:
+                keys_of.setdefault(int(h.group(1)), set()).add(h.group(2))
+                hits += 1
+                if h.group(2) not in searched:
+                    bad.append(f"structure {h.group(2)} ({h.group(1)} nodes) got a remembered order with no search before it")
+        bad += [f"graphs with {n} nodes have {len(v)} structures" for n, v in sorted(keys_of.items()) if len(v) > 1]
+        runs[name] = {"kinds": kind_counts(text), "launches": int(st.group(2)) if st else -1, "text": text, "same_perm": "; ".join(bad),
+                      "moves": sum(1 for l in lines if RE_PIVOT_MOVE.match(l)), "pivot_lines": len(searched) + hits, "hits": hits, "searched": len(searched),
+                      "knob": next((l.rsplit(": ", 1)[-1] for l in lines if "Tesseract Pivot (graph_optimize):" in l), "?")}
+    fails = []
+    on, off = runs["on"], runs["off"]
+    if on["knob"] != "on" or off["knob"] != "off":
+        fails.append(f"the knob: the default run says '{on['knob']}', TSR_PIVOT=0 says '{off['knob']}'")
+    if on["same_perm"]:
+        fails.append(on["same_perm"])
+    if on["moves"] < a.min_moves:
+        fails.append(f"the pass made {on['moves']} moves in the default run (want at least {a.min_moves})")
+    if on["hits"] < 1:
+        fails.append("no graph of the default run got its order from the memo (the prompt and the decodes have one structure)")
+    if off["moves"] or off["pivot_lines"]:
+        fails.append(f"TSR_PIVOT=0 run: {off['moves']} moves, {off['pivot_lines']} pass lines")
+    if on["launches"] <= 0 or on["launches"] != off["launches"]:
+        fails.append(f"launches differ: {on['launches']} with the pass, {off['launches']} without")
+    skip = ("MUL_MAT_BEGIN", "MUL_MAT_END", "MUL_MAT")
+    n_on = sum(v for k, v in on["kinds"].items() if k not in skip)
+    n_off = sum(v for k, v in off["kinds"].items() if k not in skip)
+    mm_on = on["kinds"].get("MUL_MAT", 0) + on["kinds"].get("MUL_MAT_BEGIN", 0)
+    mm_off = off["kinds"].get("MUL_MAT", 0) + off["kinds"].get("MUL_MAT_BEGIN", 0)
+    if n_on != n_off or mm_on != mm_off or on["kinds"].get("MUL_MAT_BEGIN", 0) != on["kinds"].get("MUL_MAT_END", -1):
+        fails.append(f"the records differ: {mm_on} matrix products / {n_on} other records with the pass, {mm_off} / {n_off} without")
+    rc = run([kl, "compare", "--ref", str(out / "off.klc"), "--dev", str(out / "on.klc"), "--expect-identical", "-q"])
+    if rc != 0:
+        fails.append("the logits with the pass differ from those without it")
+    # the batches of speculative decoding: the recorded tokens in verification windows of K + 1 tokens, with and without the pass
+    vident = None
+    if a.verify_k:
+        for name, knob in (("on", None), ("off", "0")):
+            env = dict(os.environ)
+            env.pop("TSR_KINDS", None)
+            env.pop("TSR_PIVOT", None)
+            if knob is not None:
+                env["TSR_PIVOT"] = knob
+            rc = run([kl, "run", "--device", a.device, "--tokens", str(out / "off.klc"), "--verify-k", str(a.verify_k), "--out",
+                      str(out / f"verify_{name}.klc")] + common, log=out / f"verify_{name}.log", env=env, quiet=True)
+            if rc != 0:
+                fails.append(f"the verification replay ({name}) exited with {rc} (log: {out / f'verify_{name}.log'})")
+                break
+        else:
+            vident = run([kl, "compare", "--ref", str(out / "verify_off.klc"), "--dev", str(out / "verify_on.klc"), "--expect-identical", "-q"]) == 0
+            if not vident:
+                fails.append("the verification windows' logits with the pass differ from those without it")
+    if a.expect:
+        launches = launches_of(on["text"])
+        # the last launch with a single token's records: a decode (the prompt's launch has the same records, but a different T)
+        if not launches:
+            fails.append("no record listing in the default run's log (TSR_DEBUG=2)")
+        else:
+            fails += check_plan(launches[-1], a.expect)
+    for f in fails:
+        print(f"m7_tests: FAIL: {f}")
+    print(f"m7_tests: {'FAIL' if fails else 'PASS'}: {on['moves']} moves in {on['searched']} structures, {on['hits']} graphs with a remembered order, "
+          f"BEGIN / END {on['kinds'].get('MUL_MAT_BEGIN', 0)} with the pass "
+          f"and {off['kinds'].get('MUL_MAT_BEGIN', 0)} without, logits {'identical' if rc == 0 else 'DIFFER'}"
+          f"{'' if vident is None else (', verification windows identical' if vident else ', verification windows DIFFER')} (files in {out})")
+    return 1 if fails else 0
+
+
+# ---------------------------------------------------------------------------------------------
 # ops: test-backend-ops per op
 
 RE_CASE = re.compile(r"^\s+([A-Z][A-Z0-9_]*)\((.*)\): (.*)$")
@@ -504,6 +691,20 @@ def main() -> int:
     d.add_argument("--split", action="store_true",
                    help="the environment has TSR_OPL_SPLIT: the lists are cut after n records, an END comes before each cut, so the two "
                         "runs cut at other nodes and their launch counts may differ; the cuts must still happen")
+    pv = sub.add_parser("pivot", help="device output with and without Tesseract Pivot")
+    pv.add_argument("--klcheck", required=True)
+    pv.add_argument("--model", required=True)
+    pv.add_argument("--prompts", default="")
+    pv.add_argument("--out-dir", required=True)
+    pv.add_argument("--device", default="sim")
+    pv.add_argument("--n-prompts", type=int, default=2)
+    pv.add_argument("-n", "--n-gen", type=int, default=9)
+    pv.add_argument("--prompt-tail", type=int, default=8)
+    pv.add_argument("-ub", "--ub", type=int, default=16)
+    pv.add_argument("-t", "--threads", type=int, default=4)
+    pv.add_argument("--min-moves", type=int, default=1, help="moves the pass must have made in the default run")
+    pv.add_argument("--verify-k", type=int, default=0, help="also replay the tokens in verification windows of K + 1 tokens, with and without the pass")
+    pv.add_argument("--expect", choices=("moe", "gdn"), default="", help="check the decode launch's records (see the module text)")
     o = sub.add_parser("ops", help="test-backend-ops for one op on the device")
     o.add_argument("--test-backend-ops", required=True)
     o.add_argument("--backend", default="Tesseract0")
@@ -514,7 +715,7 @@ def main() -> int:
     o.add_argument("--list", default="", help="write every unsupported case to this file")
     a = ap.parse_args()
     try:
-        return cmd_graph(a) if a.cmd == "graph" else cmd_defer(a) if a.cmd == "defer" else cmd_ops(a)
+        return cmd_graph(a) if a.cmd == "graph" else cmd_defer(a) if a.cmd == "defer" else cmd_pivot(a) if a.cmd == "pivot" else cmd_ops(a)
     except (OSError, subprocess.SubprocessError) as e:
         print(f"m7_tests: error: {e}")
         return 2

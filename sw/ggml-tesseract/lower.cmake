@@ -6,6 +6,8 @@
 #   tsr-opl.{h,cpp}      the op-list path (docs/design/06-software-verification.md §9.3, §9.4): the op list format
 #                        builder with DRAM-range hazards and JOINs, the OPL cache; tsr-opl-dev.cpp:
 #                        the `graph` kernel on a transport (boot, launch, wait, error text)
+#   tsr-pivot.{h,cpp}    Tesseract Pivot, the graph scheduler's core (units with preds, the machine model, the hoist search;
+#                        no ggml, no device)
 #   tsr-alloc.{h,cpp}    first-fit range allocator (IO windows, AUX, symmetric WEIGHT heap, OPL cache)
 #   tsr-wlayout.{h,cpp}  device-format row bytes, row repack + symmetric scatter / gather
 #
@@ -24,6 +26,7 @@ add_library(tsr_lower STATIC
     ${CMAKE_CURRENT_LIST_DIR}/tsr-lower.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl-dev.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-pivot.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-wlayout.cpp
     # KV-cache buffers (tsr-kvbuf, AT §4.6) and the mask-summary producer (tsr-msum, AT §7.3)
     ${CMAKE_CURRENT_LIST_DIR}/tsr-kvbuf.cpp

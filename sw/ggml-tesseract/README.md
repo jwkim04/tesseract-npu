@@ -34,6 +34,7 @@ planner (`plan.hpp`, SW-20), so the host refuses exactly what the firmware canno
 | `ggml-tesseract.cpp` | reg, device, buffer type, buffer and backend, placement, lazy conversion, segments, staging, execution |
 | `tsr-opl.*`, `tsr-opl-dev.cpp` | the op-list path (no ggml): the OPL builder, the OPL cache, the `graph` kernel on a transport |
 | `tsr-build.*`, `tsr-lower.*` | the graph builder (ggml-aware, device-free) and MUL_MAT shape checks and SPM tiling |
+| `tsr-pivot.*`, `tsr-pivot-graph.*` | Tesseract Pivot, the graph scheduler (`graph_optimize`; [PV](../../docs/design/07-graph-scheduler.md)): the core (units, machine model, search; no ggml) and the ggml adapter (units from nodes, order constraints, the node validator) |
 | `tsr-weights.*`, `tsr-alloc.*`, `tsr-wlayout.*` | ggml type to device format and back, the first-fit allocator, row repack with symmetric scatter and gather |
 | `tsr-kvbuf.*`, `tsr-msum.*`, `tsr-prof.*` | KV buffers, mask summaries, the plan dump for the profile report ([`docs/prof-dbg.md`](../../docs/prof-dbg.md) §3.1) |
 | `lower.cmake`, `sources.cmake` | `tsr_lower` (the ggml-free files, shared with `sw/rt`) and the source list that llama.cpp's `ggml/src/ggml-tesseract/CMakeLists.txt` (patch 0001) includes |
@@ -48,6 +49,7 @@ counters used by `tsr-mtp`).
 | --- | --- |
 | `TSR_DEVICE`, `TSR_IMAGE` | transport kind (`sim` default, `xrt`; `none` registers no device) and firmware image |
 | `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (NOP, JOIN, MUL_MAT; `m6,+MUL_MAT_ID` for a MoE model), `all`, `NAME` or `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`). A list whose first word is a removal starts from every kind, and any other list starts from NOP and JOIN only, so `TSR_KINDS=+FLASH_ATTN` alone turns MUL_MAT off. The ops of a removed kind run on the CPU. SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo`. Unset: every kind of the booted image. `klcheck` and `tsr-numcheck` set `m6` for `--phase m6` and keep the caller's value for `--phase m7` (SW-49). |
+| `TSR_PIVOT=0` | no node ordering by Tesseract Pivot ([PV](../../docs/design/07-graph-scheduler.md) §8). Read once at open; on by default, and off with `TSR_MM_DEFER=0` or an image without MUL_MAT_BEGIN and MUL_MAT_END. `TSR_DEBUG=1` logs the moves and the modeled cycles. The device output is the same either way. |
 | `TSR_MM_DEFER=0` | no MUL_MAT is lowered as MUL_MAT_BEGIN and MUL_MAT_END: every MUL_MAT is one record, as on an image without the two kinds. Read once; the device output is the same either way. |
 | `TSR_DEBUG=1`, `2` | placement, lowering and launch log on stderr. `2` adds buffer events, every launched record and `supports_op`'s reasons. |
 | `TSR_STATS=1`, `TSR_MON=0`, `TSR_DUMP_PLAN`, `TSR_PROF_TRW_MIB`, `TSR_OPL_PROF`, `TSR_OPL_KINDS` | counters at backend free, the live monitor record, the profile dump ([`docs/prof-dbg.md`](../../docs/prof-dbg.md)) |
