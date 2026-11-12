@@ -13,11 +13,18 @@
 //       gdn       S_v 128 with H_k = H_v = 16 and H_v = 48 / H_k = 16, T 1 and 3, two sequences, strided q / k / v
 //                 token rows, S_v 16 / 32 / 64, in-place state, a small SPM; records with Inf / NaN / zero / subnormal
 //                 words among the state, q, k, v, g and beta;
+//       gdn_tok   the token block pipeline of the fused path (gdn_kinds.cpp gdn_run_tok, SW-70): every kind of group
+//                 (T = 1 with two state tiles over sequences, T > 1 with resident tiles, groups of Gs heads below H_v
+//                 down to one head, a last group of one head), head strides above L, H_v not a multiple of 16, S_v
+//                 64 / 128 / 256, in-place and separate state, the records that fall back to the head by head
+//                 pipeline (the block does not fit the budget), chains of T = 1 records that pass the state on (the
+//                 verification batch of §7.11); each case states the Gs the planner must choose;
 //       --gdn 1   (default) the simulator has CAPS bit 8, the fused GDN op: GATED_DELTA_NET records with S_v >= 64
 //                 take the fused path (numerics revision 2, SW-78), S_v 16 / 32 the composition; the reference is
 //                 gdn_ref with the simulator's CAPS. All suites run.
 //       --gdn 0   CAPS bit 8 is clear (an image without the fused op): every record takes the composition (revision 1's
-//                 bits). Only the suites with a GATED_DELTA_NET record run (gdn, gdn_small, chain).
+//                 bits). Only the suites with a GATED_DELTA_NET record run (gdn, gdn_small, gdn_tok, gdn_chain, chain;
+//                 gdn_tok_small not: two of its records (S_v 128) do not plan on the composition).
 //       chain     SSM_CONV -> SOFTPLUS-free conv output feeding nothing, GDN -> SOFTPLUS (deps across kinds).
 //   test_fw_gdn_rv IMAGE errors
 //       refused records answer BAD_RECORD / SCRATCH and write nothing.
@@ -167,33 +174,55 @@ int sconv(suite & s, uint32_t C, uint32_t dc, uint32_t T, uint32_t ns, bool silu
 // GATED_DELTA_NET: sv, hk, hv, T tokens, ns sequences; token-row padding of q / k / v (lines), v head stride
 // (L = dense), in-place state.
 struct gdn_opts {
-    uint32_t qpad = 0, vpad = 0, gpad = 0, vhs_extra = 0;
+    uint32_t qpad = 0, vpad = 0, gpad = 0, vhs_extra = 0, qhs_extra = 0;   // qhs_extra: q / k head stride L + qhs_extra
     bool inplace = false;
     bool scale_nontrivial = true;
     bool specials = false;   // Inf, NaN, zeros and subnormals among the inputs (fill mode 3)
+    int from = -1;           // >= 0: the state in is that GATED_DELTA_NET op's state out (a chain of records)
+    int gs = -1;             // >= 0: the Gs the planner must choose on a device with the fused op (0: head by head)
 };
 int gdn(suite & s, uint32_t sv, uint32_t hk, uint32_t hv, uint32_t T, uint32_t ns, const gdn_opts & o = {}, const char * what = "") {
     const uint32_t L = sv / 16u, nt = ns * T, Lg = L16(hv);
     const float qs = 1.0f / std::sqrt(float(sv));
-    const uint32_t qts = hk * L + o.qpad, vhs = L + o.vhs_extra, vts = hv * vhs + o.vpad, gts = Lg + o.gpad;
+    const uint32_t qhs = L + o.qhs_extra;
+    const uint32_t qts = hk * qhs + o.qpad, vhs = L + o.vhs_extra, vts = hv * vhs + o.vpad, gts = Lg + o.gpad;
     const int nm = o.specials ? 3 : 0, um = o.specials ? 3 : 1;   // fill modes: normal data, uniform data (g, beta)
-    const uint32_t hq = tensor(s, nt, qts, hk * L * 16u, nm, qs), hk_ = tensor(s, nt, qts, hk * L * 16u, nm, qs);
+    const uint32_t hq = tensor(s, nt, qts, hk * qhs * 16u, nm, qs), hk_ = tensor(s, nt, qts, hk * qhs * 16u, nm, qs);
     const uint32_t hv_ = tensor(s, nt, vts, hv * vhs * 16u, nm, 1.0f);
     const uint32_t hg = o.specials ? tensor(s, nt, gts, hv, 3, -1.0f) : tensor(s, nt, gts, hv, um, -3.0f, -0.001f),
                    hb = o.specials ? tensor(s, nt, gts, hv, 3, 0.5f) : tensor(s, nt, gts, hv, um, 0.0f, 1.0f);
-    const uint32_t hsi = tensor(s, ns * hv * sv, L, sv, nm, 0.3f);
+    std::vector<uint32_t> deps;
+    uint32_t hsi;
+    if (o.from >= 0) {
+        hsi = s.ops[size_t(o.from)].outs[1].h;
+        deps.push_back(uint32_t(o.from));
+    } else {
+        hsi = tensor(s, ns * hv * sv, L, sv, nm, 0.3f);
+    }
     const uint32_t hso = o.inplace ? hsi : outtensor(s, ns * hv * sv, L);
     const uint32_t hd = outtensor(s, nt * hv, L);
     const uint32_t scale = o.scale_nontrivial ? 0x3db504f3u /* 1/sqrt(128) */ : 0x3f800000u;
     std::vector<uint32_t> a(opl::gdn::NARGS);
     namespace g = opl::gdn;
     a[g::DST] = hd; a[g::STATE_OUT] = hso; a[g::STATE_IN] = hsi;
-    a[g::Q] = hq; a[g::Q_HEAD_STRIDE] = L; a[g::Q_TOKEN_STRIDE] = qts;
-    a[g::K] = hk_; a[g::K_HEAD_STRIDE] = L; a[g::K_TOKEN_STRIDE] = qts;
+    a[g::Q] = hq; a[g::Q_HEAD_STRIDE] = qhs; a[g::Q_TOKEN_STRIDE] = qts;
+    a[g::K] = hk_; a[g::K_HEAD_STRIDE] = qhs; a[g::K_TOKEN_STRIDE] = qts;
     a[g::V] = hv_; a[g::V_HEAD_STRIDE] = vhs; a[g::V_TOKEN_STRIDE] = vts;
     a[g::G] = hg; a[g::G_TOKEN_STRIDE] = gts; a[g::BETA] = hb; a[g::BETA_TOKEN_STRIDE] = gts;
     a[g::S_V] = sv; a[g::H_K] = hk; a[g::H_V] = hv; a[g::N_TOKENS] = T; a[g::N_SEQS] = ns; a[g::SCALE] = scale;
-    return add_op(s, opl::K_GATED_DELTA_NET, a, {region{hd, nt * hv, L, L}, region{hso, ns * hv * sv, L, L}}, {}, what);
+    // The pipeline the planner chooses for this device (the firmware plans with the same limits): the case says which.
+    {
+        const tsr::plan::dev_cfg dc = {s.cfg.spm_bytes / 64u, s.cfg.t_max, s.cfg.k_max, s.cfg.num_ch, 9344u, 16u, s.cfg.caps};
+        tsr::kind_plan kp{};
+        const bool planned = tsr::plan_gated_delta_net(a.data(), g::NARGS, tsr::plan::plan_limits_of(dc), &kp);
+        CHECK(planned, "%s (%s): the record does not plan (status 0x%x)", s.name, what, kp.status);
+        if (o.gs >= 0) {
+            const uint32_t want = tsr::plan::gdn::use_fused(s.cfg.caps, sv) ? uint32_t(o.gs) : 0u;
+            CHECK(planned && kp.aux[3] == want && (want == 0u ? kp.aux[2] == 0u : kp.aux[2] == (T > 1u ? want : 2u)),
+                  "%s (%s): the plan has Gs %u and R %u, expected Gs %u", s.name, what, kp.aux[3], kp.aux[2], want);
+        }
+    }
+    return add_op(s, opl::K_GATED_DELTA_NET, a, {region{hd, nt * hv, L, L}, region{hso, ns * hv * sv, L, L}}, deps, what);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +499,102 @@ suite suite_gdn_small() {
     gdn(s, 32, 4, 4, 3, 2, o, "S_v 32, two sequences, in place");
     return s;
 }
+// The token block pipeline of the fused path (header comment; gs = the Gs the planner chooses, in gdn_opts).
+suite suite_gdn_tok() {
+    suite s{};
+    s.name = "gdn_tok";
+    s.cfg = base_cfg(4u << 20);
+    s.seed = 0x6D03;
+    gdn_opts o;
+    o.gs = 12;
+    gdn(s, 64, 4, 12, 1, 3, o, "T = 1, three sequences, H_v = 3 H_k (two state tiles over the sequences)");
+    o.gs = 1;
+    gdn(s, 64, 1, 1, 1, 3, o, "T = 1, one head, three sequences (the next head is the next sequence's)");
+    o.gs = 1;
+    gdn(s, 64, 1, 1, 4, 1, o, "T = 4, one head (one state tile)");
+    o.gs = 20;
+    gdn(s, 64, 4, 20, 1, 1, o, "T = 1, H_v = 20 (not a multiple of 16)");
+    gdn(s, 64, 4, 20, 5, 1, o, "T = 5, H_v = 20, tokens outer");
+    o.gs = 8;
+    o.qhs_extra = 3; o.vhs_extra = 2; o.qpad = 1; o.vpad = 3; o.gpad = 1;
+    gdn(s, 128, 4, 8, 2, 1, o, "T = 2, q / k head stride L + 3, v head stride L + 2 (one LD per row)");
+    gdn(s, 128, 4, 8, 1, 2, o, "T = 1, two sequences, the same strides");
+    o = gdn_opts{};
+    o.inplace = true;
+    o.gs = 6;
+    gdn(s, 128, 2, 6, 3, 2, o, "T = 3, two sequences, in-place state");
+    gdn(s, 64, 2, 6, 1, 3, o, "T = 1, three sequences, in-place state");
+    o.gs = 8;
+    gdn(s, 64, 4, 8, 5, 1, o, "T = 5, in-place state");
+    o = gdn_opts{};
+    o.gs = 2;
+    gdn(s, 256, 2, 2, 3, 1, o, "S_v 256, T = 3");
+    o.gs = 8;
+    gdn(s, 256, 4, 8, 1, 2, o, "S_v 256, T = 1, two sequences");
+    o.gs = 6;
+    gdn(s, 64, 2, 6, 2, 3, o, "T = 2, three sequences");
+    gdn_opts sp;
+    sp.specials = true;
+    sp.gs = 20;
+    gdn(s, 64, 4, 20, 1, 2, sp, "specials, H_v = 20, T = 1, two sequences");
+    sp.inplace = true;
+    sp.gs = 6;
+    gdn(s, 128, 2, 6, 3, 1, sp, "specials, T = 3, in place");
+    return s;
+}
+// A small SPM: the groups of Gs heads (Gs below H_v, down to one head, a last group of one head) and the records whose
+// block does not fit the budget (the head by head pipeline).
+suite suite_gdn_tok_small() {
+    suite s{};
+    s.name = "gdn_tok_small";
+    s.cfg = base_cfg(512u << 10);   // ring budget 3,376 lines
+    s.seed = 0x6D04;
+    gdn_opts o;
+    o.gs = 12;
+    gdn(s, 64, 5, 25, 3, 1, o, "H_v = 25: groups of 12, 12 and 1 head, T = 3");
+    o.inplace = true;
+    gdn(s, 64, 5, 25, 2, 2, o, "H_v = 25, T = 2, two sequences, in place");
+    o = gdn_opts{};
+    o.gs = 3;
+    gdn(s, 128, 2, 4, 2, 1, o, "S_v 128: groups of 3 and 1 head (the head by head block does not fit)");
+    o.gs = 4;
+    gdn(s, 128, 2, 4, 1, 1, o, "S_v 128, T = 1 (two tiles and the block of the head by head pipeline do not both fit)");
+    o.gs = 4;
+    gdn(s, 64, 128, 128, 2, 1, o, "128 key heads: 32 groups of 4 heads");
+    o.gs = 1;
+    gdn(s, 64, 176, 176, 2, 1, o, "176 key heads: 176 groups of one head");
+    o.gs = 1;
+    gdn(s, 64, 1, 1, 3, 2, o, "one head, T = 3, two sequences");
+    o.gs = 0;
+    gdn(s, 64, 128, 128, 1, 1, o, "T = 1: the block does not fit, the head by head pipeline");
+    gdn(s, 64, 256, 256, 2, 1, o, "T > 1: not even one head fits, the head by head pipeline");
+    return s;
+}
+// Chains of T = 1 records that pass the state on (the verification batch, §7.11): each record's state in is the state out of
+// the one before; in place, a record's state out is its state in.
+suite suite_gdn_chain() {
+    suite s{};
+    s.name = "gdn_chain";
+    s.cfg = base_cfg(4u << 20);
+    s.seed = 0x6D05;
+    gdn_opts o;
+    o.gs = 8;
+    int prev = gdn(s, 128, 4, 8, 1, 1, o, "decode token 0");
+    o.from = prev;
+    prev = gdn(s, 128, 4, 8, 1, 1, o, "decode token 1 (state from the record before)");
+    o.from = prev;
+    o.inplace = true;
+    prev = gdn(s, 128, 4, 8, 1, 1, o, "decode token 2, in place on the state of token 1's out");
+    o.from = prev;
+    o.inplace = false;
+    prev = gdn(s, 128, 4, 8, 1, 1, o, "decode token 3");
+    o = gdn_opts{};
+    o.gs = 12;
+    int q = gdn(s, 64, 4, 12, 1, 2, o, "two sequences, record 0");
+    o.from = q;
+    gdn(s, 64, 4, 12, 1, 2, o, "two sequences, record 1");
+    return s;
+}
 suite suite_chain() {
     suite s{};
     s.name = "chain";
@@ -570,10 +695,12 @@ int main(int argc, char ** argv) {
     }
     if (mode == "suite") {
         suite (*suites[])() = {suite_softplus, suite_softplus_small, suite_sconv, suite_sconv_small,
-                               suite_gdn, suite_gdn_small, suite_chain};
+                               suite_gdn, suite_gdn_small, suite_gdn_tok, suite_gdn_tok_small, suite_gdn_chain, suite_chain};
         for (auto mk : suites) {
             if (!g_gdn_caps && (mk == suite_softplus || mk == suite_softplus_small || mk == suite_sconv || mk == suite_sconv_small))
                 continue;   // the same on both devices: --gdn 1 runs them
+            if (!g_gdn_caps && mk == suite_gdn_tok_small)
+                continue;   // its two S_v 128 records do not plan on the composition
             suite s = mk();
             run_scheds(s, n_sched);
         }

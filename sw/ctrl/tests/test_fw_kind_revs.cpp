@@ -125,8 +125,9 @@ const char * const WATCH[] = {
     "get_rows_general(", "cpy_general(", "set_rows_any(", "mulmat_any(", "route_general(", "mmid_general(",
     // the Gated DeltaNet kinds (one general function each: they have no fast entry)
     "softplus_run(", "sconv_run(", "gdn_run(",
-    // the two token steps of GATED_DELTA_NET (SW-78): the composition and the fused GDN op
-    "gdn_step_composed(", "gdn_step_fused(",
+    // GATED_DELTA_NET's token block pipeline (the fused path, SW-70) and the two token steps of the head by head
+    // pipeline (SW-78): the composition and the fused GDN op
+    "gdn_run_tok(", "gdn_step_composed(", "gdn_step_fused(",
     // fast entries
     "kind_add_fast(", "kind_mul_fast(", "kind_scale_fast(", "kind_unary_fast(", "kind_glu_fast(", "kind_rms_norm_fast(",
     "kind_rope_fast(", "kind_get_rows_fast(", "kind_cpy_fast(", "kind_set_rows_kv_fast(", "mulmat_t1_fast(",
@@ -903,7 +904,7 @@ void corpus_gdn(launch_ctx & c, bool fused_dev, bool extras) {
         rows_region(out, so, q.ns * q.hv * q.sv, L, L);
         const bool fused = fused_dev && tsr::plan::gdn::use_fused(tsr_sim_config(c.sim)->caps, q.sv);
         run(c, opl::K_GATED_DELTA_NET, q.what, w, out, true,
-            fused ? path_exp{ { "gdn_run(", "gdn_step_fused(" }, { "gdn_step_composed(" }, {} }
+            fused ? path_exp{ { "gdn_run_tok(" }, { "gdn_run(", "gdn_step_composed(", "gdn_step_fused(" }, {} }
                   : path_exp{ { "gdn_run(", "gdn_step_composed(" }, { "gdn_step_fused(" }, {} });
     }
 }

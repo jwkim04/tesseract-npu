@@ -9,6 +9,8 @@
 #   fw_gdn_rv_composed the same with CAPS bit 8 clear (a device without the fused GDN op): GATED_DELTA_NET takes the
 #                     composition (numerics revision 1's bits) for every S_v, SW-78
 #   fw_gdn_rv_errors  refused records answer BAD_RECORD
+#   fw_gdn_host       the token block pipeline of GATED_DELTA_NET compiled for the host (SW §6.8) under ASan + UBSan: the plans,
+#                     the push sequence of a record of one token and of two tokens, random records (test_fw_gdn_host.cpp)
 #   fw_gdn_ggml       the reference (composed and fused path) against float64 math and the pinned ggml-cpu ops
 
 if (NOT TARGET tsr_fw_ref)
@@ -43,6 +45,17 @@ add_test(NAME fw_gdn_rv_composed COMMAND test_fw_gdn_rv ${TSR_FW_ELF} suite --gd
 set_tests_properties(fw_gdn_rv_composed PROPERTIES LABELS fw TIMEOUT 1800 SKIP_RETURN_CODE 77)
 add_test(NAME fw_gdn_rv_errors COMMAND test_fw_gdn_rv ${TSR_FW_ELF} errors)
 set_tests_properties(fw_gdn_rv_errors PROPERTIES LABELS fw TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+# --- host build of the kernels under ASan + UBSan (SW §6.8) --------------------------------------
+if (NOT TARGET tsr_fw_host_kern_san)
+    tsr_fw_host_lib(tsr_fw_host_kern_san SANITIZE)
+endif()
+add_executable(test_fw_gdn_host ${_gd_dir}/test_fw_gdn_host.cpp)
+_tsr_gd_cxx(test_fw_gdn_host)
+target_link_libraries(test_fw_gdn_host PRIVATE tsr_fw_host_kern_san tsr_ref)
+add_test(NAME fw_gdn_host COMMAND test_fw_gdn_host)
+set_tests_properties(fw_gdn_host PROPERTIES LABELS fw TIMEOUT 600
+                     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 
 # --- the reference against the pinned ggml-cpu (KL / ulp level) and float64 -----------------------
 if (TSR_WITH_LLAMA)

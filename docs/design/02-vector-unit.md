@@ -961,7 +961,7 @@ cost per head is (rows + 1) × m / 8 cycles when heads follow each other (§7.12
 | k, q | m f32 each | SPM vectors (earlier VU ops L2-normalize them) |
 | v | d_v f32 | SPM vector |
 | o | d_v f32 | SPM vector, tail rule of §4.2 |
-| α, β | f32 | s registers (`SOP.EXP` gives α = exp(g)) |
+| α, β | f32 | s registers (`SOP.LDS` loads them; α = exp(g) comes from `SOP.EXP` or from `VOP.EXP` on a vector of g) |
 
 The state tile comes through the SPM and the existing DMA, not through a direct stream (VU-31).
 

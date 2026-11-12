@@ -28,13 +28,16 @@
 // VOP.MUL TMP = window rows w .. w+T-1 * tap w, VOP.ADD ACC += TMP; with FLAG_SILU VOP.SILU ACC;
 // ST the T output rows and the last d_conv - 1 window rows (the new state).
 //
-// GATED_DELTA_NET, per head (sequence, head) in order and per token, on one of two paths chosen at run time
-// from CAPS (plan::gdn::use_fused, SW-78): the composition of revision 1 (gdn_ref_step in ref/gdn_ref.hpp: the
-// numerics, 13 VU ops per head and token), or, when the device has the fused op (CAPS_GDN) and S_v >= 64, the
-// VU's GDN op (VU §7.12; gdn_ref_step_fused: the state update and the output in one op, then the scale). The
-// pipeline is the same: one ring block for the whole op holds two state tiles (the next head's state loads
-// while the VU works on this head's), the product tile P (composed path only) and two token slots (token
-// i + 2 loads while token i computes). The loads, the stores and the planner do not depend on the path.
+// GATED_DELTA_NET, on one of two paths chosen at run time from CAPS (plan::gdn::use_fused, SW-78): the composition of
+// revision 1 (gdn_ref_step in ref/gdn_ref.hpp: the numerics, 13 VU ops per head and token), or, when the device has
+// the fused op (CAPS_GDN) and S_v >= 64, the VU's GDN op (VU §7.12; gdn_ref_step_fused: the state update and the
+// output in one op, then the scale). Two pipelines push them, chosen by the plan (plan_gdn.hpp, kp.aux[2] = R):
+//   - gdn_run, head by head (the composition, and a fused record whose token block pipeline block does not fit the
+//     budget): one ring block holds two state tiles (the next head's state loads while the VU works on this head's),
+//     the product tile (composition only) and two token slots (token i + 2 loads while token i computes);
+//   - gdn_run_tok, the token block pipeline of a fused record (below, before its definition): the operands of a group
+//     of heads load together, so a head is two SOP.LDS and one GDN op and the units pace the loop.
+// The numerics do not depend on the pipeline: every (head, token) runs the same op on the same operands.
 #include "k_elem.hpp"
 
 #include "tsr/plan_gdn.hpp"
@@ -408,6 +411,182 @@ struct step_out {
     return last;
 }
 
+// ---------------------------------------------------------------------------------------------
+// GATED_DELTA_NET, the token block pipeline of the fused path (SW-70, plan_gdn.hpp)
+// ---------------------------------------------------------------------------------------------
+// One block of the ring for the record: R state tiles of S_v L lines, then two token blocks of
+//   [ g (Lg) | beta (Lg) | alpha (Lg) | k (H_k L) | q (H_k L) | v (Gs L) | o (Gs L) ]      Lg = ceil(H_v / 16)
+// (kp.aux[1] lines each). A step is one (sequence, token) of a group of Gs heads: the operands of all its heads load
+// together (g and beta: one LD each of Lg lines; k and q: the H_k key rows; v: the rows of the group's heads), VOP.EXP
+// turns the H_v words of g into alpha (the function SOP.EXP computes, so the head step's SOP.LDS reads the bits that
+// SOP.LDS then SOP.EXP gives), and each head is SOP.LDS alpha, SOP.LDS beta and one GDN op, whose output row goes to
+// row (h - h0) of the o rows. After the last head one VOP.MULC scales all the o rows and one ST writes them (the
+// rows of a token are contiguous in the result). The step after the next loads into the block when this step's VOP.MULC,
+// the last VU op that reads the block, is done. A GDN op depends on the latest DMA op of what it reads (the state
+// LD, the last LD of the block and, which the LD already implies, the ST that last read the o rows): q and v are not
+// among the op's extents (VU-35), so these dependencies order them.
+// T = 1: R = 2, Gs = H_v, a step is a sequence; the head after next loads into a tile after the ST of the state of
+// the head that used it (DMA queue order). T > 1: R = Gs, the state tiles of a group stay in the SPM while the T
+// tokens run, tokens outer and heads inner. During the first token the state of head j + 2 loads after the step of
+// head j (the first two load before the group's first step); during the last token the state ST follows each GDN
+// op. The next group's first state LDs come after those STs in the DMA queue, as do the LDs of the rows of
+// a step into a block after the ST of its o rows. Nothing in the head loop divides or multiplies by a run-time
+// value: lines and addresses are carried along.
+// Cannot deadlock: every dependency names an op that was pushed earlier, so the oldest op that has not
+// completed has every dependency and every op ahead of it in its queue done, whatever the queue depths (DMA 8, VU 16)
+// make the pushes wait for.
+struct tblk {
+    uint32_t g, b, a, k, q, v, o;   // lines
+    ticket ld_g, ld_b, ld;          // the LDs of g and beta, the last LD of the block's rows
+    ticket mulc;                    // the VOP.MULC of the block's last step (the last VU op that reads it)
+    ticket st_o;                    // the ST that last read the o rows
+};
+struct gcur {
+    uint32_t sq, h0, gn, t;         // the step: sequence, first head of the group, its heads, token
+};
+
+[[gnu::noinline, gnu::cold]] ticket gdn_run_tok(const uint32_t * a, const kind_plan & kp, deps d, kind_ctx & ctx) {
+    const uint32_t pf = ctx.push_flags;
+    const uint32_t sv = a[gd::S_V], hk = a[gd::H_K], hv = a[gd::H_V], T = a[gd::N_TOKENS], ns = a[gd::N_SEQS];
+    const uint32_t L = kp.row_lines, SL = sv * L, Lg = (hv + 15u) >> 4, Gs = kp.aux[3];
+    const bool res = T > 1u;                    // the state tiles stay for the tokens (R = Gs), else two tiles in turn
+    const uint32_t nheads = ns * hv;
+    const dram dst = from_handle(a[gd::DST]), sout = from_handle(a[gd::STATE_OUT]), sin = from_handle(a[gd::STATE_IN]),
+               qd = from_handle(a[gd::Q]), kd = from_handle(a[gd::K]), vd = from_handle(a[gd::V]),
+               gd_ = from_handle(a[gd::G]), bd = from_handle(a[gd::BETA]);
+    spm_ring & ring = *ctx.ring;
+    deps rd{};
+    const spm B = alloc_g(ring, kp.scratch_lines, &rd);
+    if (!valid(B)) return ctx.fail(opl::RET_SCRATCH);
+    tblk tb[2] = {};
+    for (uint32_t i = 0; i < 2u; ++i) {
+        tblk & b = tb[i];
+        b.g = B.line + kp.aux[2] * SL + i * kp.aux[1];
+        b.b = b.g + Lg;
+        b.a = b.b + Lg;
+        b.k = b.a + Lg;
+        b.q = b.k + hk * L;
+        b.v = b.q + hk * L;
+        b.o = b.v + Gs * L;
+    }
+    ek::sreg_set(true, ctx, S_SCALE, a[gd::SCALE], pf);
+    kf::sreg_clobber(ctx, S_BETA);
+    kf::sreg_clobber(ctx, S_ALPHA);
+
+    // The step after c; gn is the heads of its group.
+    auto adv = [&](gcur & c) {
+        if (++c.t == T) {
+            c.t = 0;
+            c.h0 += Gs;
+            if (c.h0 >= hv) {
+                c.h0 = 0;
+                ++c.sq;
+            }
+        }
+        c.gn = min_u(Gs, hv - c.h0);
+    };
+    // The rows of step c into block b: g, beta, k, q, v in this DMA order; the first LD carries `first`.
+    auto load_block = [&](tblk & b, const gcur & c, deps first) {
+        const uint32_t n = c.sq * T + c.t;
+        b.ld_g = pld(spm{b.g}, gd_ + n * a[gd::G_TOKEN_STRIDE], Lg, first, pf);
+        b.ld_b = pld(spm{b.b}, bd + n * a[gd::BETA_TOKEN_STRIDE], Lg, deps{}, pf);
+        load_rows(spm{b.k}, kd + n * a[gd::K_TOKEN_STRIDE], a[gd::K_HEAD_STRIDE], L, 0u, hk, deps{}, pf);
+        load_rows(spm{b.q}, qd + n * a[gd::Q_TOKEN_STRIDE], a[gd::Q_HEAD_STRIDE], L, 0u, hk, deps{}, pf);
+        b.ld = load_rows(spm{b.v}, vd + n * a[gd::V_TOKEN_STRIDE], a[gd::V_HEAD_STRIDE], L, c.h0, c.gn, deps{}, pf);
+    };
+    ticket ldc{}, ldn{};                        // the state LDs of the current head and of the next one
+    // The states of the first two heads of a group into tiles 0 and 1 (T = 1: of the record).
+    auto group_start = [&](uint32_t x0, uint32_t gn) {
+        const uint32_t lim = res ? gn : nheads;
+        ldc = pld(B, sin + x0 * SL, SL, deps{}, pf);
+        ldn = lim > 1u ? pld(B + SL, sin + (x0 + 1u) * SL, SL, deps{}, pf) : ticket{};
+    };
+
+    gcur lc{0u, 0u, min_u(Gs, hv), 0u};         // the step whose rows load next
+    load_block(tb[0], lc, ek::first_deps(d, rd));
+    adv(lc);
+    group_start(0u, lc.gn);
+    if (lc.sq < ns) {
+        load_block(tb[1], lc, deps{});
+        adv(lc);
+    }
+
+    ticket last{};
+    uint32_t bi = 0u, x0 = 0u;                  // the block of the step, the first head of the group (over sequences)
+    for (uint32_t sq = 0; sq < ns; ++sq) {
+        for (uint32_t h0 = 0; h0 < hv; h0 += Gs) {
+            const uint32_t gn = min_u(Gs, hv - h0), hq0 = h0 % hk;
+            if (res && x0 != 0u) group_start(x0, gn);
+            for (uint32_t t = 0; t < T; ++t) {
+                tblk & b = tb[bi];
+                bi ^= 1u;
+                const bool ft = t == 0u, lt = t + 1u == T;
+                const uint32_t n = sq * T + t;
+                vop_f e{};                      // alpha = exp(g) over the H_v words of g
+                e.cmode = NOC;
+                e.func = VOP_FUNC_EXP;
+                e.d = b.a;
+                e.a = b.g;
+                e.m = hv;
+                e.rows = 1u;
+                push_g(kf::vop_fast(e), deps{b.ld_g}, pf);
+                uint32_t hq = hq0, kq = hq0 * L, tl = B.line, xl = x0 * SL, vo = 0u;
+                for (uint32_t j = 0; j < gn; ++j) {
+                    if (!res) tl = B.line + (((x0 + j) & 1u) != 0u ? SL : 0u);
+                    psop(SOP_SUB_LDS, S_ALPHA, 0u, 16u * b.a + h0 + j, deps{}, pf);
+                    psop(SOP_SUB_LDS, S_BETA, 0u, 16u * b.b + h0 + j, j == 0u ? deps{b.ld_b} : deps{}, pf);
+                    gdn_f f{};
+                    f.sa = S_ALPHA;
+                    f.sb = S_BETA;
+                    f.d = f.a = tl;
+                    f.k = b.k + kq;
+                    f.q = b.q + kq;
+                    f.v = b.v + vo;
+                    f.o = b.o + vo;
+                    f.m = sv;
+                    f.rows = sv;
+                    ticket dma = j == 0u ? later(b.ld, b.st_o) : ticket{};
+                    if (ft) dma = later(dma, ldc);
+                    const ticket gt = push_g(GDN(f), deps{dma}, pf);
+                    if (lt) pst(spm{tl}, sout + xl, SL, deps{gt}, pf);
+                    // The state of the head two on, into the tile this head's ST has read (T = 1) or into its own.
+                    ticket nl{};
+                    if (res ? (ft && j + 2u < gn) : (x0 + j + 2u < nheads))
+                        nl = pld(spm{res ? tl + 2u * SL : tl}, sin + (xl + 2u * SL), SL, deps{}, pf);
+                    ldc = ldn;
+                    ldn = nl;
+                    if (res) tl += SL;
+                    xl += SL;
+                    vo += L;
+                    kq += L;
+                    if (++hq == hk) {
+                        hq = 0u;
+                        kq = 0u;
+                    }
+                }
+                vop_f m{};                      // o = o' * scale over the Gs rows (one vector of Gs S_v words)
+                m.cmode = SR;
+                m.func = VOP_FUNC_MULC;
+                m.si = S_SCALE;
+                m.d = b.o;
+                m.a = b.o;
+                m.m = gn * sv;
+                m.rows = 1u;
+                b.mulc = push_g(kf::vop_fast(m), deps{}, pf);
+                last = b.st_o = pst(spm{b.o}, dst + (n * hv + h0) * L, gn * L, deps{b.mulc}, pf);
+                if (lc.sq < ns) {               // the step after the next one, into this block
+                    load_block(b, lc, deps{b.mulc});
+                    adv(lc);
+                }
+            }
+            x0 += gn;
+        }
+    }
+    // The last DMA op is the o rows' ST of the last step; the state STs of the last token precede it in the queue.
+    ring.release(B, last);
+    return last;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -437,7 +616,7 @@ ticket kind_gated_delta_net(const volatile uint32_t * args, uint32_t n_args, uin
     if (kflags != 0u) return ctx.fail(opl::RET_BAD_RECORD);
     kind_plan kp{};
     if (!plan_gated_delta_net(w, n_args, ctx.pl, &kp)) return ctx.fail(kp.status);
-    return gdn_run(w, kp, d, ctx);
+    return kp.aux[2] != 0u ? gdn_run_tok(w, kp, d, ctx) : gdn_run(w, kp, d, ctx);
 }
 
 }  // namespace tsr
