@@ -147,6 +147,7 @@ struct phase {
 struct result {
     std::vector<llama_token> ids;       // the generated tokens, exactly n_gen of them (or up to the end of generation)
     int steps = 0, drafted = 0, accepted = 0;
+    int last_acc = 0;                   // drafts accepted by the last step of each prompt, summed over the prompts
     std::vector<int> hist;              // steps that accepted 0, 1, .. K drafts
     std::vector<int> pos_drafted, pos_accepted;   // by draft position
     phase prefill, draft, verify, process, other, decode;   // decode: the whole loop, the sum of the above
@@ -254,6 +255,7 @@ result run_set(engine & e, bool spec, int K, const std::vector<std::string> & pr
     for (const std::string & prompt : prompts) {
         ++ip;
         result r;
+        int last_step_acc = 0;
         r.hist.assign((size_t) Kh + 1, 0);
         r.pos_drafted.assign((size_t) std::max(Kh, 1), 0);
         r.pos_accepted.assign((size_t) std::max(Kh, 1), 0);
@@ -345,6 +347,7 @@ result run_set(engine & e, bool spec, int K, const std::vector<std::string> & pr
             r.steps++;
             r.drafted += (int) n_draft;
             r.accepted += n_acc;
+            last_step_acc = n_acc;
             if (spec) {
                 r.hist[(size_t) std::min(n_acc, Kh)]++;
                 for (size_t i = 0; i < n_draft && i < r.pos_drafted.size(); ++i) {
@@ -381,7 +384,7 @@ result run_set(engine & e, bool spec, int K, const std::vector<std::string> & pr
         fflush(stdout);
         if (per_prompt) per_prompt->push_back(r.ids);
         total.ids.insert(total.ids.end(), r.ids.begin(), r.ids.end());
-        total.steps += r.steps; total.drafted += r.drafted; total.accepted += r.accepted;
+        total.last_acc += last_step_acc; total.steps += r.steps; total.drafted += r.drafted; total.accepted += r.accepted;
         for (size_t i = 0; i < r.hist.size(); ++i) total.hist[i] += r.hist[i];
         for (size_t i = 0; i < r.pos_drafted.size(); ++i) { total.pos_drafted[i] += r.pos_drafted[i]; total.pos_accepted[i] += r.pos_accepted[i]; }
         total.prefill.add(r.prefill); total.draft.add(r.draft); total.verify.add(r.verify); total.process.add(r.process);
@@ -627,10 +630,10 @@ int main(int argc, char ** argv) {
         fprintf(f, "{\"prompts\":%zu,\"runs\":[", prompts.size());
         for (size_t i = 0; i < sums.size(); ++i) {
             const summary & s = sums[i];
-            fprintf(f, "%s{\"config\":\"%s\",\"tokens\":%" PRIu64 ",\"steps\":%d,\"drafted\":%d,\"accepted\":%d,\"accepted_per_step\":%.6f,"
+            fprintf(f, "%s{\"config\":\"%s\",\"tokens\":%" PRIu64 ",\"steps\":%d,\"drafted\":%d,\"accepted\":%d,\"last_accepted\":%d,\"accepted_per_step\":%.6f,"
                        "\"cycles_per_token\":%.1f,\"cycles\":{\"draft\":%" PRIu64 ",\"verify\":%" PRIu64 ",\"process\":%" PRIu64 ",\"prefill\":%" PRIu64 "},"
                        "\"launches\":{\"draft\":%" PRIu64 ",\"verify\":%" PRIu64 ",\"process\":%" PRIu64 "},\"wall_decode_s\":%.3f,\"hist\":[",
-                    i ? "," : "", s.tag.c_str(), s.tokens, s.r.steps, s.r.drafted, s.r.accepted, s.acc_step, s.cyc_tok, s.r.draft.cycles,
+                    i ? "," : "", s.tag.c_str(), s.tokens, s.r.steps, s.r.drafted, s.r.accepted, s.r.last_acc, s.acc_step, s.cyc_tok, s.r.draft.cycles,
                     s.r.verify.cycles, s.r.process.cycles, s.r.prefill.cycles, s.r.draft.launches, s.r.verify.launches, s.r.process.launches, s.r.t_decode);
             for (size_t j = 0; j < s.r.hist.size(); ++j) fprintf(f, "%s%d", j ? "," : "", s.r.hist[j]);
             fprintf(f, "]}");

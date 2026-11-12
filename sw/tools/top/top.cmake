@@ -14,6 +14,8 @@
 #                      a record that changes while tsr-top samples it
 #   tools_top_live     a tiny model on the simulator with the publisher on: the record while it runs and the
 #                      one it leaves (TSR_MON_KEEP), tokens, model, the JSON snapshot, TSR_MON=0, the probe
+#   tools_top_spec     tsr-mtp on the tiny model with an MTP head (K = 1 and 3, forced rejections): the kept record counts
+#                      the tokens of the target context, not those of the draft context
 #   tools_top_identity klcheck on the tiny model, M6 and M7, with TSR_MON=0 and with the publisher on and a PERF
 #                      read after every launch: every logits row bit-identical, and the publishing run did publish
 #   tools_top_curses   the curses screen in a pseudo-terminal (tmux; skipped, 77, without it): the frame,
@@ -55,6 +57,11 @@ if (TSR_TOP_PYTHON)
                  COMMAND ${_py} ${_t} live $<TARGET_FILE:llama-completion>
                          ${CMAKE_BINARY_DIR}/models/tiny/qwen2-tiny-q4_k.gguf $<TARGET_FILE:tsr-mon-probe>)
         set_tests_properties(tools_top_live PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        if (TARGET tsr-mtp)
+            add_test(NAME tools_top_spec
+                     COMMAND ${_py} ${_t} spec $<TARGET_FILE:tsr-mtp> ${CMAKE_BINARY_DIR}/models/tiny/qwen35-tiny-mtp-q8_0.gguf)
+            set_tests_properties(tools_top_spec PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+        endif()
         if (TARGET klcheck)
             add_test(NAME tools_top_identity
                      COMMAND ${_py} ${_t} identity $<TARGET_FILE:klcheck> ${CMAKE_BINARY_DIR}/models/tiny/qwen2-tiny-q4_k.gguf

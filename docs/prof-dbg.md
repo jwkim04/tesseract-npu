@@ -383,9 +383,20 @@ why the probe is off by default.
 
 - The counters are read after a launch, not during it. A long prefill ubatch is one launch of seconds, and the
   screen shows the previous values and `LAUNCH t` until it ends.
-- Tokens are counted from the graph. A scheduler pass whose first split starts with a matrix product of one token is
-  one decoded token, and a pass of more tokens is prefill (so the batch of a speculative verification counts as
-  prefill). The tokens of a pass are counted when it starts, so a pass longer than the 3 s window shows as a spike.
+- Tokens are counted from the graph. `tok_decode` (the `TOK/S` column) counts the tokens the main model generates, and
+  `tok_prefill` (`pp n`) its prompt tokens. A pass of one token is one decoded token, and a pass of more tokens whose
+  rows are not all outputs is prefill. With speculative decoding (SW §7.11) a verification batch (at most 16 tokens, every
+  row an output, the positions one run) is one decoded token, and the drafts the previous batch accepted are added when
+  the next batch of the same context shows where it starts: the accepted drafts of the last batch of a generation are
+  never counted. A batch of at most 16 tokens with every row an output whose positions are not one run (several
+  sequences, one row each) counts one decoded token per row. Any other batch of at most 16 tokens with every row an
+  output, such as a perplexity ubatch of 16 or fewer, counts as decoded tokens too. The position of a pass comes from
+  the `inp_pos` input and the output rows from `out_ids`. A pass of the draft model's context, recognised by
+  streaming less than 0.9 of the weight bytes of the largest pass, counts only in `passes`. When `inp_pos` stays on
+  the CPU (matmul mode, or ROPE on the CPU) the positions are unknown: a speculative run then shows no decode rate
+  and its verification batches may count as prefill. The first pass after the scheduler re-splits a graph can be
+  missed in `passes`. The tokens of a pass are counted when its position is known, so a pass longer than the 3 s
+  window shows as a spike.
 - Before the first launch the record has the process, the memory in use and the configuration but no PERF read, so
   the meters that come from PERF show `n/a`. On a simulated transport the clock is simulated, so `ACT` and the GB/s
   over wall time are not hardware figures. An owner started with `TSR_MON=0` is visible only as a process that holds

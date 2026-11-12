@@ -398,11 +398,17 @@ struct tsr_device {
     tsr_msum_store msum;
 
     // The live monitor record (tsr_mon.h): device weight bytes by ggml type (the dominant one is the
-    // quantization shown), and the splits of the scheduler pass in progress (a split seen again starts
-    // the next pass, as in the TSR_STATS pass count, which this does not depend on)
+    // quantization shown), the largest weight volume of a pass seen so far (the main context's: a draft
+    // context streams far less) and the start position of the pass about to run, from the host data of the
+    // last "inp_pos" write (-1: none), and the length of the run p0, p0 + 1, .. at its start. The splits of a
+    // pass in progress are kept per context (tsr_mon_ctx).
     uint64_t mon_wbytes[GGML_TYPE_COUNT] = {};
     int      mon_wtype = -1;
-    std::set<const ggml_cgraph *> mon_splits;
+    uint64_t mon_pass_wmax = 0;
+    int64_t  mon_pos0 = -1;
+    uint32_t mon_run = 0;
+    bool     mon_new_pass = false;     // an "inp_pos" write came with no pass waiting for it: the next graph starts a pass
+    struct tsr_mon_ctx * mon_pend = nullptr;   // the context whose pass in progress was opened before its "inp_pos" write
 
     // TSR_STATS=1
     uint64_t st_graphs = 0;        // graph_compute calls
@@ -692,19 +698,136 @@ static uint32_t tsr_mon_pass_tokens(const ggml_cgraph * g) {
     return 0;
 }
 
-static void tsr_mon_note_graph(tsr_device * d, const ggml_cgraph * g) {
+// The position input of llama.cpp: "inp_pos", or the copy of it that the scheduler makes for a split of this backend
+// ("<backend>#inp_pos#<pipeline copy>"). The copy goes to the first split that reads it, which is not always the first
+// split of the pass.
+static bool tsr_mon_is_pos(const char * name) {
+    const char * p = strstr(name, "inp_pos");
+    return p != nullptr && (p[7] == 0 || strcmp(p + 7, "#0") == 0);
+}
+
+// What the token counts need of a pass of one context (one backend instance): the splits seen in the pass in progress,
+// the pass in progress (its tokens, whether every row was an output, and whether it is the main context's), and the
+// previous counted pass of the main context (start position, tokens, whether it had the shape of a verification batch).
+struct tsr_mon_ctx {
+    std::set<const ggml_cgraph *> splits;
+    uint32_t cur_n = 0;
+    bool     cur_all_out = false;
+    bool     cur_main = false;
+    int64_t  last_pos0 = -1;
+    uint32_t last_n = 0;
+    bool     last_verif = false;
+};
+
+// A verification batch of speculative decoding has at most this many tokens (K + 1); a larger batch with every row an
+// output counts as prompt. A batch of at most this many tokens with every row an output counts as generated tokens,
+// perplexity work with a ubatch of that size included.
+static const uint32_t TSR_MON_VERIFY_MAX = 16;
+
+// One walk over the first split of a pass: the bytes of the weight operands of its matrix products, and whether the
+// rows of the pass are all outputs (the "out_ids" input of llama.cpp has one entry per output row; none found: a pass
+// of one token).
+static void tsr_mon_scan_pass(const ggml_cgraph * g, uint32_t n, uint64_t * wbytes, bool * all_out) {
+    uint64_t wb = 0;
+    int64_t n_out = -1;
+    for (int i = 0; i < g->n_nodes; ++i) {
+        const ggml_tensor * t = g->nodes[i];
+        if ((t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID) && t->src[0] != nullptr && t->src[0]->op == GGML_OP_NONE) {
+            wb += ggml_nbytes(t->src[0]);
+        }
+        if (n_out < 0) {
+            for (int k = 0; k < GGML_MAX_SRC && t->src[k] != nullptr; ++k) {
+                const ggml_tensor * s = t->src[k];
+                if (s->type == GGML_TYPE_I32 && strstr(s->name, "out_ids") != nullptr) {
+                    n_out = s->ne[0];
+                    break;
+                }
+            }
+        }
+    }
+    *wbytes = wb;
+    *all_out = n_out >= 0 ? (uint64_t) n_out == n : n == 1;
+}
+
+// Count the tokens of the pass of the main context that tsr_mon_note_graph opened, once its start position is known
+// (pos0 < 0: unknown, no "inp_pos" write came; run: the length of the run pos0, pos0 + 1, .. at the start of "inp_pos").
+// Prompt tokens are the passes whose rows are not all outputs. Generated tokens are one per decode pass or verification
+// batch (every row an output, at most TSR_MON_VERIFY_MAX tokens, the positions one run), plus the drafts the previous
+// verification batch accepted: the batch after it starts at the position that tells how many (one more after a
+// rejection, the length of the batch after full acceptance). A batch of several tokens whose positions are not one run
+// is several sequences with one row each: every row is a generated token. Without positions a pass of one token is a
+// generated token, a longer one prompt.
+static void tsr_mon_resolve(tsr_mon_ctx * c, int64_t pos0, uint32_t run) {
+    if (!c->cur_main) {
+        return;
+    }
+    const uint32_t n = c->cur_n;
+    const bool known = pos0 >= 0;
+    uint32_t dec = 0, pre = 0;
+    bool verif = false;
+    if (n > 1 && (!c->cur_all_out || n > TSR_MON_VERIFY_MAX)) {
+        pre = n;
+    } else if (n > 1 && known && run < n) {
+        dec = n;
+    } else if (n >= 1) {
+        dec = 1;
+        verif = n > 1;
+        if (c->last_verif && known && c->last_pos0 >= 0) {
+            const int64_t acc = pos0 - c->last_pos0 - 1;
+            if (acc >= 1 && acc <= (int64_t) c->last_n - 1) {
+                dec += (uint32_t) acc;
+            }
+        }
+    }
+    tsr_mon_add_tokens(dec, pre, 0u);
+    c->last_pos0 = pos0;
+    c->last_n = n;
+    c->last_verif = verif;
+}
+
+// Open the pass whose first split this is: it counts in `passes` now. A pass of the main context counts its tokens when
+// its start position is known: at once if the "inp_pos" write came before this split, else with the write (the
+// scheduler gives the copy to the first split that reads it), else at the next pass. A pass of another context (the
+// draft model) counts in `passes` only.
+static void tsr_mon_note_graph(tsr_device * d, tsr_mon_ctx * c, const ggml_cgraph * g) {
     if (!tsr_mon_enabled()) {
         return;
     }
-    if (d->mon_splits.size() > 4096) {
-        d->mon_splits.clear();
+    if (c->splits.size() > 4096) {
+        c->splits.clear();
     }
-    if (d->mon_splits.empty() || d->mon_splits.count(g) != 0) {
-        d->mon_splits.clear();
-        const uint32_t n = tsr_mon_pass_tokens(g);
-        tsr_mon_add_tokens(n == 1 ? 1u : 0u, n > 1 ? n : 0u, 1u);
+    const bool first = d->mon_new_pass || c->splits.empty() || c->splits.count(g) != 0;
+    if (first) {
+        c->splits.clear();
     }
-    d->mon_splits.insert(g);
+    c->splits.insert(g);
+    if (!first) {
+        return;
+    }
+    if (d->mon_pend != nullptr) {      // the previous pass never got a position
+        tsr_mon_resolve(d->mon_pend, -1, 0);
+        d->mon_pend = nullptr;
+    }
+    const bool known = d->mon_new_pass;
+    const int64_t pos0 = known ? d->mon_pos0 : -1;
+    const uint32_t run = known ? d->mon_run : 0;
+    d->mon_new_pass = false;
+    d->mon_pos0 = -1;
+    d->mon_run = 0;
+    const uint32_t n = tsr_mon_pass_tokens(g);
+    uint64_t wbytes = 0;
+    bool all_out = false;
+    tsr_mon_scan_pass(g, n, &wbytes, &all_out);
+    d->mon_pass_wmax = std::max(d->mon_pass_wmax, wbytes);
+    c->cur_main = wbytes >= d->mon_pass_wmax - d->mon_pass_wmax / 10;
+    c->cur_n = n;
+    c->cur_all_out = all_out;
+    tsr_mon_add_tokens(0u, 0u, 1u);
+    if (known) {
+        tsr_mon_resolve(c, pos0, run);
+    } else {
+        d->mon_pend = c;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1785,6 +1908,23 @@ static void tsr_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * te
         tsr_placed_write(d, b, addr, (const uint8_t *) data, size);
     }
     tsr_msum_on_write(d, b, tensor, data, offset, size);   // a KQ mask's summary (AT §7.3)
+    if (offset == 0 && size >= 4 && tensor->type == GGML_TYPE_I32 && tsr_mon_enabled() && tsr_mon_is_pos(tensor->name)) {
+        int32_t p0;
+        memcpy(&p0, data, 4);       // the start position of the pass about to run (host data: no device access)
+        uint32_t run = 1;
+        const int32_t * pp = (const int32_t *) data;
+        while ((size_t) run * 4 < size && pp[run] == p0 + (int32_t) run) {
+            run++;
+        }
+        if (d->mon_pend != nullptr) {      // the pass in progress is waiting for it
+            tsr_mon_resolve(d->mon_pend, p0, run);
+            d->mon_pend = nullptr;
+        } else {
+            d->mon_pos0 = p0;
+            d->mon_run = run;
+            d->mon_new_pass = true;
+        }
+    }
     if (tsr_stats_on()) {
         d->st_set_ns += tsr_now_ns() - t0;
         d->st_set_bytes += size;
@@ -3485,6 +3625,7 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
 
 struct tsr_backend_ctx {
     tsr_device * dev;
+    tsr_mon_ctx  mon;
 };
 
 static const char * tsr_backend_get_name(ggml_backend_t backend) {
@@ -3564,6 +3705,12 @@ static void tsr_backend_free(ggml_backend_t backend) {
         std::lock_guard<std::mutex> lock(d->mtx);
         tsr_prof::session_close(d->tp);
     }
+    {
+        std::lock_guard<std::mutex> lock(d->mtx);
+        if (d->mon_pend == &((tsr_backend_ctx *) backend->context)->mon) {
+            d->mon_pend = nullptr;
+        }
+    }
     delete (tsr_backend_ctx *) backend->context;
     delete backend;
 }
@@ -3617,10 +3764,11 @@ static void tsr_check_imrope_pos(tsr_device * d, const ggml_cgraph * cg) {
 }
 
 static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
-    tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
+    tsr_backend_ctx * bc = (tsr_backend_ctx *) backend->context;
+    tsr_device * d = bc->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
     tsr_check_imrope_pos(d, cgraph);
-    tsr_mon_note_graph(d, cgraph);
+    tsr_mon_note_graph(d, &bc->mon, cgraph);
     const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
     const uint64_t launches0 = d->odev.launches;
     const uint64_t key = tsr_graph_key(cgraph, d->plan_epoch);
@@ -3740,7 +3888,7 @@ static ggml_backend_t tsr_dev_init_backend(ggml_backend_dev_t dev, const char * 
         /* .guid    = */ tsr_backend_guid(),
         /* .iface   = */ tsr_backend_iface,
         /* .device  = */ dev,
-        /* .context = */ new tsr_backend_ctx { d },
+        /* .context = */ new tsr_backend_ctx { d, {} },
     };
 }
 

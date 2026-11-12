@@ -11,6 +11,10 @@
 #                                a tiny model on the simulator with the publisher on: the record while it runs
 #                                (never torn, counters never go back), the record it leaves with TSR_MON_KEEP,
 #                                tokens, model name, the JSON snapshot, TSR_MON=0 makes no file, the probe on sim
+#   spec    TSR_MTP MODEL        tsr-mtp on the simulator with a tiny model and its MTP head, the publisher on: the kept record
+#                                counts the generated tokens of the target context (accepted drafts included) and the prompt
+#                                tokens of a plain run, and nothing of the draft context, for K = 1 and 3 and with forced
+#                                rejections; a plain run counts one token per pass
 #   identity KLCHECK MODEL PROMPTS
 #                                klcheck 1 prompt x 16 tokens on the simulator with TSR_MON=0 and with the publisher on,
 #                                M6 and M7: every logits row bit-identical, and the second run did publish
@@ -702,6 +706,46 @@ def test_live(llama, model, probe):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def run_mtp(tsr_mtp, model, mode, k, n_gen, extra=()):
+    """One tsr-mtp run on the simulator with the publisher on: (the kept record, its JSON summary)."""
+    d = tempfile.mkdtemp(prefix="tsr-top-spec-")
+    try:
+        js = os.path.join(d, "run.json")
+        env = dict(os.environ, TSR_DEVICE="sim", TSR_SIM_TMAX="4", LLAMA_ATTN_ROT_DISABLE="1", TSR_MON_DIR=d, TSR_MON_KEEP="1",
+                   TSR_MON_PERF_MS="0")
+        env.pop("TSR_MON", None)
+        cmd = [tsr_mtp, "-m", model, "--spec-type", "draft-mtp", "--spec-draft-n-max", str(k), "-n", str(n_gen), "-c", "512",
+               "--mtp-mode", mode, "--mtp-n-prompts", "3", "--mtp-json", js] + list(extra)
+        r = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=500)
+        check(r.returncode == 0, "tsr-mtp %s K=%d %s exit %d" % (mode, k, " ".join(extra), r.returncode))
+        recs = tsr_top.scan_records(d, include_dead=True)
+        check(len(recs) == 1, "one kept record (%d)" % len(recs))
+        run = json.load(open(js))["runs"][0]
+        return recs[0], run
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_spec(tsr_mtp, model):
+    n_gen = 40
+    rec_p, run_p = run_mtp(tsr_mtp, model, "plain", 1, n_gen)
+    check(rec_p["tok_decode"] == run_p["tokens"] and rec_p["passes"] > run_p["tokens"],
+          "plain: tok_decode %d is one per token (%d), passes %d" % (rec_p["tok_decode"], run_p["tokens"], rec_p["passes"]))
+    check(rec_p["tok_prefill"] > 0, "plain: tok_prefill %d" % rec_p["tok_prefill"])
+    for k, extra in ((1, ()), (3, ()), (3, ("--mtp-force-reject", "cycle")), (1, ("--mtp-force-reject", "cycle"))):
+        tag = "K=%d %s" % (k, " ".join(extra))
+        rec, run = run_mtp(tsr_mtp, model, "spec", k, n_gen, extra)
+        gen = run["tokens"]
+        # One token per verification step, and the drafts that step accepted once the next step of the prompt shows where
+        # it starts: the last step of a prompt has no next step, so its accepted drafts are not counted.
+        want = run["steps"] + run["accepted"] - run["last_accepted"]
+        check(rec["tok_decode"] == want, "%s: tok_decode %d, steps %d + accepted %d - last steps' %d = %d (generated %d, 3 prompts)"
+              % (tag, rec["tok_decode"], run["steps"], run["accepted"], run["last_accepted"], want, gen))
+        check(rec["tok_decode"] <= gen, "%s: tok_decode %d, generated %d" % (tag, rec["tok_decode"], gen))
+        check(rec["tok_prefill"] == rec_p["tok_prefill"], "%s: tok_prefill %d, plain run %d" % (tag, rec["tok_prefill"], rec_p["tok_prefill"]))
+        check(rec["passes"] > rec_p["passes"], "%s: passes %d include the draft context (plain %d)" % (tag, rec["passes"], rec_p["passes"]))
+
+
 def test_identity(klcheck, model, prompts):
     d = tempfile.mkdtemp(prefix="tsr-top-ident-")
     try:
@@ -880,6 +924,11 @@ def main():
             print("tiny model %s not built: skipped" % sys.argv[3])
             return 77
         test_live(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
+    elif which == "spec":
+        if not os.path.exists(sys.argv[3]):
+            print("tiny model %s not built: skipped" % sys.argv[3])
+            return 77
+        test_spec(sys.argv[2], sys.argv[3])
     elif which == "identity":
         if not os.path.exists(sys.argv[3]):
             print("model %s not built: skipped" % sys.argv[3])
