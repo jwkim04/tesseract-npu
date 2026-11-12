@@ -7,7 +7,8 @@
 // with exclusive access (EX §2.4): register access is xrt::ip::read_register / write_register (an
 // mmap'ed MMIO access); no xrt::kernel and no xrt::run exist, so a halted RISC-V cannot break
 // XRT's scheduler. EX §9.1's fallback form (ap_ctrl_hs with interrupt="false", never started) opens
-// the same way. The only kernel arguments are the channel buffers ch<c> at 0x040 + 8c; a kernel
+// the same way. The kernel arguments are the channel buffers ch<c> at 0x040 + 8c and, with the dual weight stream,
+// chb<c> at 0x100 + 8c (the read-only second ports, no register behind them, each on the memory of ch<c>); a kernel
 // with other arguments (cmd_addr / cmd_count / arg0-7) is refused at open. The buffer of channel c is a device-only
 // xrt::bo in the memory bank of arg ch<c> from xrt::xclbin::arg::get_mems() (EX §9.1; *confirm* on
 // the card that this equals the group id of the kernel argument). idle() sleeps (the

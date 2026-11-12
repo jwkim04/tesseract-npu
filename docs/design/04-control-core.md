@@ -827,9 +827,12 @@ EX §9.1–§9.3 are normative (CC-19): the control protocol is `ap_ctrl_none`; 
 0x03C reserved and reading 0, `ch<c>_base` at 0x040 + 8c, `ADAPTER_CTRL.MEM_EN` at 0x0E0 (latches and
 alignment-checks all bases on its rising edge, locks them while set, holds core memory requests while 0),
 `ADAPTER_STATUS` at 0x0F0, `ADAPTER_VERSION` at 0x0F4 and the core CSR window at 0x1000 + off. `plat_err_i` =
-`ADAPTER_STATUS` bits 0–2 or error count ≠ 0; `host_irq_o` is unconnected. The kernel arguments are only
-`ch<c>`. `tsr_u200_k1` and `tsr_u200_k4` take a second clock `ap_clk_2` and `ap_rst_n_2` (`gen_tops.py`,
-`kernel_k*.xml`); `tsr_xrt_reset` serves `ap_clk` and `ap_rst_n_2` passes to the core as `rst_rv_n`.
+`ADAPTER_STATUS` bits 0–2 or error count ≠ 0; `host_irq_o` is unconnected. The kernel arguments are `ch<c>` and, in a
+kernel with the dual weight stream, `chb<c>` at 0x100 + 8c: the argument of the read-only port `m_axi_chb<c>` of the second
+weight stream of channel c. It has no register behind it and must be connected to the memory bank of `ch<c>`
+([platform-u200.md](../platform-u200.md) §1, §4). `tsr_u200_k1` and `tsr_u200_k4` take a second clock `ap_clk_2` and
+`ap_rst_n_2` (`gen_tops.py`, `kernel_k*.xml`); `tsr_xrt_reset` serves `ap_clk` and `ap_rst_n_2` passes to the core as
+`rst_rv_n`.
 
 ### 13.4 One register table
 

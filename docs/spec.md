@@ -728,10 +728,11 @@ numbers (EX §8.5). There is no forced release of a stuck unit; recovery is a ca
 
 XRT adapter (EX §9). The kernel is `ap_ctrl_none` and has no interrupt. The host accesses the registers with
 `xrt::ip` and polls; it never uses `xrt::run`, so a control core halted by the debugger cannot break the XRT
-scheduler. The kernel arguments are the channel buffers `ch<c>` (base address at 0x040 + 8c). Setting
-`ADAPTER_CTRL.MEM_EN` checks the 4 KiB alignment of the bases and latches them; while it is clear, memory
-requests are held. The memory bridges and the reset scheme are in [platform-u200.md](platform-u200.md)
-§4–§5. The control core receives a second clock `ap_clk_2`.
+scheduler. The kernel arguments are the channel buffers `ch<c>` (base address at 0x040 + 8c) and, in a kernel with
+the dual weight stream, `chb<c>` at 0x100 + 8c, the arguments of the read-only ports `m_axi_chb<c>`, which have no
+register behind them. Setting `ADAPTER_CTRL.MEM_EN` checks the 4 KiB alignment of the bases and latches them; while it
+is clear, memory requests are held. The memory bridges and the reset scheme are in
+[platform-u200.md](platform-u200.md) §4–§5. The control core receives a second clock `ap_clk_2`.
 
 ## 11. ISA
 

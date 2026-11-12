@@ -140,8 +140,11 @@ and the `Q_*` queue state. Its interface to the issue path is the credit, the qu
 ### 3.6 Perf events (to `tsr_csr`)
 
 `perf_mvm_busy` comes from the MVM unit, `perf_ch_rd_beat[c]` from arbiter c (a memory read beat transferred) and
-`perf_ch_wait[c]` from arbiter c (at least one read outstanding and no read beat this cycle). The other counters are EX §6 and the
-unit blocks that count them.
+`perf_ch_wait[c]` from arbiter c (at least one read outstanding and no read beat this cycle). With `MVM_DUAL`
+([rtl-mvm.md](rtl-mvm.md) §15) port B of channel c adds its own beat event, `perf_ch_rd_beat_b[c]`, and `tsr_core_dp` then
+forms `perf_ch_wait[c]` from both ports: at least one read outstanding on either port and no read beat on either. `tsr_csr`
+adds both beat events to `PERF_CH_RD_BEATS[c]`, so a cycle with a beat on each port counts 2. A wait cycle counts 1 in
+`PERF_CH_WAIT[c]`. The other counters are EX §6 and the unit blocks that count them.
 
 ## 4. Memory ports
 

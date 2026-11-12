@@ -206,9 +206,10 @@ overlap in time, and `act_ready` orders them.
 ### 6.2 Cluster
 
 `tsr_mvm_cluster #(CH)` has the §3.1 input, §3.2 setup and gating, `tsr_mvm_front`, `tsr_mvm_actbuf`, `tsr_mvm_back`, §3.5 result
-tagging (a row counter) and the WS port pass-through. A cluster processes one MVM at a time, and the bc items of the next MVM
-arrive only after its last result was taken. Clusters with `rows_c = 0` stay silent. A cluster sits in an SLR with room, and its
-weights reach it through the weight-stream pipes (§14.5).
+tagging (a row counter) and the WS port pass-through. With `MVM_DUAL` it also has a second `tsr_mvm_front`, `u_front_b`, on the
+read-only port `rdb_*`, and `tsr_mvm_back` takes the beats of both fronts in lockstep (§15.2, §15.3). A cluster processes one MVM
+at a time, and the bc items of the next MVM arrive only after its last result was taken. Clusters with `rows_c = 0` stay silent.
+A cluster sits in an SLR with room, and its weights reach it through the weight-stream pipes (§14.5).
 
 ### 6.3 Gather (`tsr_mvm_gather`): partial lines, byte enables, ACC, tails
 
