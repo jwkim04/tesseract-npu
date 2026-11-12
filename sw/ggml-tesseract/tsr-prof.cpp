@@ -203,12 +203,25 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
         if (n < opl::mmid::NARGS) break;
         const uint32_t fmt = a[opl::mmid::FMT], N = a[opl::mmid::N], K = a[opl::mmid::K], T = a[opl::mmid::T], U = a[opl::mmid::N_USED];
         pl::kind_plan kp{};
+        uint32_t group = 0;
         if (pl::plan_kind(pl::plan_limits_of(cfg), r->kind, a, n, &kp)) {
             r->n_tiles = kp.n_tiles;
             r->tile_rows = kp.tile_rows;
             r->scratch_lines = kp.scratch_lines;
+            group = kp.aux[3];
         }
-        add_mvm_passes(fmt, N, K, (uint64_t) T * U, 1u);   // per (token, used expert) the MUL_MAT sequence with T = 1 (SW §7.5)
+        const uint64_t pairs = (uint64_t) T * U;
+        if (group >= 2u) {
+            // Grouped record (SW-62, SW-66): the pairs of one expert run in tiles of `group` rows. The ideal is the lower bound,
+            // the pairs in full tiles and one tile of the rest; the routing decides the real passes, one partial tile per expert
+            // at the end, so a real run reads more weight bytes.
+            add_mvm_passes(fmt, N, K, pairs / group, group);
+            add_mvm_passes(fmt, N, K, pairs % group != 0 ? 1u : 0u, (uint32_t) (pairs % group));
+            r->mvm_passes.clear();   // the trace's MVMs are the real tiles, not these passes: no one-to-one match
+            r->grouped = true;
+        } else {
+            add_mvm_passes(fmt, N, K, pairs, 1u);   // per (token, used expert) the MUL_MAT sequence with T = 1 (SW §7.5)
+        }
         r->rd_bytes = r->w_bytes + (uint64_t) T * U * (K / 16u) * 64ull + (uint64_t) T * U * 4ull;
         r->wr_bytes = (uint64_t) T * U * ((N + 15u) / 16u) * 64ull;
         break;
@@ -314,7 +327,8 @@ void write_plan(const plan & p) {
                 for (size_t k = 0; k < r.mvm_passes.size(); ++k) app(s, "%s[%" PRIu64 ",%.1f]", k ? "," : "", r.mvm_passes[k].first, r.mvm_passes[k].second);
                 s += "]";
             }
-            app(s, ",\"tiles\":%u,\"tile_rows\":%u,\"scratch_lines\":%u}", r.n_tiles, r.tile_rows, r.scratch_lines);
+            app(s, ",\"tiles\":%u,\"tile_rows\":%u,\"scratch_lines\":%u%s}", r.n_tiles, r.tile_rows, r.scratch_lines,
+                r.grouped ? ",\"grouped\":1" : "");
         }
         s += "\n]}";
     }

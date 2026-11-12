@@ -5,13 +5,15 @@
 #   fw_kernels_moe_rv        the kinds in tsr-fw.elf on tsr_rv through the graph executor: routing of 128 experts
 #                            (tiles of 16 tokens, strided rows, ties, NaN / inf logits), the gate-up and down
 #                            forms of MUL_MAT_ID with and without the scale table, ids from the host and from
-#                            a MOE_ROUTE of the same list, several ids chunks, a small SPM; fixed + 7 random
+#                            a MOE_ROUTE of the same list, several ids chunks, small SPMs, the grouped path of
+#                            MUL_MAT_ID under T_MAX 8, 4, 3 and 1 (routings, a tight ring); fixed + 7 random
 #                            schedules with TSR_SIM_RACE fatal, every output bit-exact against
 #                            sw/ctrl/ref/moe_ref.cpp, SW §4.7 observables equal, written DRAM = the outputs
-#   fw_kernels_moe_rv_errors an expert number outside the tensor ends the launch with TILE_ERR, refused
+#   fw_kernels_moe_rv_errors an expert number outside the tensor (also in a grouped record) ends the launch with TILE_ERR, refused
 #                            records with BAD_RECORD
 #   fw_kernels_moe_host      the kinds compiled for the host (SW §6.8) under ASan + UBSan: the planners, the
-#                            selection against tsr_ref_topk, records against moe_ref (test_fw_moe_host.cpp)
+#                            selection against tsr_ref_topk, the grouping plans, the push sequence of a grouped
+#                            record and its tiles under random routings (test_fw_moe_host.cpp)
 
 if (NOT TARGET tsr_fw_ref)
     return()

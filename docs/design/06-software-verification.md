@@ -1102,20 +1102,50 @@ ranks first, and ties by the smaller index. The firmware insertion loop (`select
 in an unspecified order and NaN breaks the strict weak ordering; the device's order is the defined one.
 
 SW-62 MUL_MAT_ID (0x1F, 17 words `DST, DST_STRIDE, X, X_SLOT_STRIDE, X_TOK_STRIDE, IDS, IDS_STRIDE (bytes), W_OFF,
-EXP_STRIDE, FMT, N, K, T, N_USED, N_EXPERT, SCALE, FLAGS`; `opl::mmid`). One MUL_MAT of T = 1 per (token, slot)
-against `W_OFF + id × EXP_STRIDE`. The x rows are shared by the slots (`X_SLOT_STRIDE` 0: gate-up) or one per
+EXP_STRIDE, FMT, N, K, T, N_USED, N_EXPERT, SCALE, FLAGS`; `opl::mmid`). A (token, slot) pair is one row of a
+MUL_MAT against `W_OFF + id × EXP_STRIDE`. The x rows are shared by the slots (`X_SLOT_STRIDE` 0: gate-up) or one per
 slot (down); y row (token, slot) is row `token × N_USED + slot` of the dense dst. With a `SCALE` table (F32
-`[n_expert]`) the y block is multiplied by `table[id]` (VOP.MULC with an s register) before its ST. The handler
-LDs a chunk of the ids rows (up to 128 lines) and the scale table into the one-tile block, joins, and reads the
-numbers with the RISC-V. Per token it takes one ring block `[x | QA | y_0 … y_(k-1)]` and pushes LD, QACT and
-MVM of slot j + 1 before the ST of slot j (MUL_MAT's double buffering). An id outside [0, N_EXPERT) gets W_OFF
-0xFFFF_FFFF: the MVM fails with DRAM_RANGE and the launch ends with TILE_ERR on this op. The returned ticket
-is the last ST. The numerics are the dense MUL_MAT's (`mulmat_ref_token`), then `tsr_ref_vop_elem(MULC)` with
-the scale.
+`[n_expert]`) a y row is multiplied by `table[id]` (VOP.MULC with an s register) before its ST. The handler LDs a
+chunk of the ids rows (up to 128 lines) and the scale table into the one-tile block, joins, and reads the numbers
+with the RISC-V. An id outside [0, N_EXPERT) gets W_OFF 0xFFFF_FFFF: the MVM fails with DRAM_RANGE and the launch
+ends with TILE_ERR on this op. The returned ticket is the last ST. The numerics are the dense MUL_MAT's
+(`mulmat_ref_token`), then `tsr_ref_vop_elem(MULC)` with the scale. A row does not depend on the other rows of its
+tile, on T or on the number of weight streams, so every path gives the same bits. The planner
+(`tsr/plan_moe.hpp`: `mmid_geometry`, `mmid_grouping`, shared with the host's `supports_op`) names the path of a
+record.
+
+The per-token path takes T = 1 (a decode token) and every record without a grouped geometry. It takes one ring block
+per token, `[x | QA | y_0 … y_(k-1)]`, runs one MVM of one row per slot, and pushes LD, QACT and MVM of slot j + 1
+before the ST of slot j (MUL_MAT's double buffering).
+
+The grouped path takes a record with T > 1 when a tile of at least two rows plans. `group`, the rows of a full tile,
+is the T-tile of `mm_plan` for T tokens: at most T_MAX, at most T, two tiles in the ring budget. The head block in
+the one-tile block then holds the ids chunk, the scale table and a pending table. The pending table has, for each of
+the first 256 experts, a slot of the least power of two of at least `group − 1` words for the pairs
+`(token << 4) | slot` that wait for a full tile. A byte count per expert on the stack says which entries are valid.
+The handler visits the pairs in order, token by token and slot by slot. A pair of an expert at or above 256, or with
+a bad id, runs alone in a tile of one row. A pair of an expert with fewer than `group − 1` pending pairs is stored.
+Any other pair runs in one tile with the `group − 1` pending pairs of its expert. After the last token the experts in
+order run their pending pairs, one tile each. So every expert runs in full tiles except one partial tile per record,
+whatever the size of the ids chunk. A planner that finds no tile of two rows (T_MAX 1, or a ring budget below four rows) or
+a head block above the one-tile block gives the per-token path.
+
+A tile of m rows of expert e is one ring block `[x_0 … x_(m−1) | QA_0 … QA_(m−1) | y_0 … y_(m−1)]`. Its front is m LDs
+(row i from `X + token × X_TOK_STRIDE + slot × X_SLOT_STRIDE`; with a shared x row each pair still loads the row of
+its token), one QACT of m rows and one MVM of m rows against the weights of e. Its back is, with a scale table,
+`SOP.MOVI` of the scale of e and one VOP.MULC over the m rows (one per row when the rows are further apart than a VU
+stride reaches), then m STs. The pushes follow `mulmat_tiles`: the front of tile 0; for every further tile its
+front, then the back of the tile before; the back of the last tile at the end. The DMA queue so sees the LDs of tile
+i + 1 before the STs of tile i, and they run while the MVM of tile i streams. The handler holds the one tile whose
+back is not pushed. When the ring has no room for the next block beside it, the back of the held tile goes first.
+Every op depends only on ops pushed before it, so no queue depth can make the pushes wait for an op that is pushed
+later. The pending table needs no dep: only the RISC-V touches it, after the join of the first ids LD. The pushes
+depend only on the record, the ids and the ring (§4.7).
 
 Joins. Both kinds wait inside the op stream, which the executor contract forbids to other kinds
 (`tsr/exec.hpp`): MOE_ROUTE twice per tile of 64 tokens, MUL_MAT_ID once per chunk of ids. The wait is on the
-handler's own ops; records already pushed keep running and only the issue of later records stops.
+handler's own ops; records already pushed keep running and only the issue of later records stops. A grouped
+MUL_MAT_ID joins with a tile held: its MVM is queued and runs during the join.
 
 SW-64 Backend: fusion of the router and the scale chain. supports_op takes MUL_MAT_ID and, with the kinds in
 the image, the nodes of the two chains by their local shape. `tsr_build_fusion` finds the groups node for node
@@ -1132,10 +1162,13 @@ softmax, the top-k, the renormalization, the GLU, the scale, the weights and the
 is the reference. Full mode: the whole layer is part of the one launch per token. The selection is software on the
 RISC-V in both modes: nothing needs the TOPK RTL (`CAPS` bit 3), which the release image leaves off.
 
-SW-66 Prefill. The kinds run an MVM of T = 1 per (token, slot), so a prefill of T tokens reads T × k experts
-of every layer once each, with no reuse. A grouping by expert (a counting sort of the (token, slot) pairs per
-ids chunk, one MVM of up to T_MAX gathered rows per expert) pays when T × k / n_expert is at least T_MAX and
-does not change the numerics; it is not built.
+SW-66 Prefill and token grouping. A record with T > 1 groups its (token, slot) pairs by expert (SW-62), so the
+weights of an expert are read once per tile of up to `group` pairs and not once per pair, as a dense matrix is read
+once per T-tile. The routing decides the tiles: an expert that few pairs choose runs a smaller tile at the end of the
+record, and an expert at or above 256 runs one pair at a time. A tile of m rows of one expert takes the weight phase
+of an MVM of m rows, so the grouping pays most when T × k / n_expert is at least T_MAX; it also shortens a
+verification batch of a few tokens, which share experts. A decode token (T = 1) keeps the per-token path. The numerics do not
+change.
 
 SW-76 Outputs of a route with several tiles. A route of more than 64 tokens does not write the ids and the
 weights where the graph has them: the MOE_ROUTE record writes them to a scratch window of the device (`T`
@@ -1865,11 +1898,11 @@ cut into several launches by the 256-line preload area, and a FLASH_ATTN of more
 | SW-54 | Versions (§6.9, EX §7.5, EX-12): four numbers: the Tesseract Core capability in `VERSION`; the Tesseract Basis SemVer in `tsr/version.h` (`.note.tsr` word 6, HELLO r6); the Basis ABI; a numerics revision per kind (`opl::kind_rev`, `.tsr_kinds`, HELLO r4[31:16] = the kind table signature), guarded by `fw_kind_revs`. Images name the capability they need (`cap_min`); a core without the control core is refused by `CTL_ID` = 0; the backends refuse an image of an older Basis (major, minor) and route only the booted image's kinds | The capability is the hardware contract and the Basis version the software's, so a software release never regenerates RTL packages. The bit-exact tests compare kernels with references that move with them, so only a digest guard makes (kind, revision) a reproducibility key; recording revisions in reports is enough for reproducibility, and enforcing them would break subset images. |
 | SW-60 | Expert tensors: a 3D tensor whose name contains `_exps` is a DEVWEIGHT of n_expert matrices at `W_OFF + e × EXP_STRIDE` per channel (`EXP_STRIDE` = `R × ROW_BEATS`), stored, read back and converted lazily per expert; other 3D tensors stay raw | Every expert MVM keeps the four-channel stream of a dense MUL_MAT and the address is one multiply; per-expert allocations would give no stride. The name is the only information at upload time, and a wrong guess only costs a lazy conversion. |
 | SW-61 | MOE_ROUTE: one kind: softmax on the VU, top-k by integer compares on the RISC-V, weights renormalized on the VU, two joins per tile of 64 tokens, ids into the argsort tensor's first line per row, weights packed | No RTL change and no float in the firmware. The VU already holds the exact softmax pieces (RED, EXPSUB, RC), and the unit tests compare the firmware with `tsr_ref_moe_route`, built from the same VU references. |
-| SW-62 | MUL_MAT_ID: one MUL_MAT of T = 1 per (token, slot) at `W_OFF + id × EXP_STRIDE`, ids read by the RISC-V from DRAM (a chunk in the one-tile block, one join), optional scale `table[id]` applied by VOP.MULC after the dot product, an out-of-range id gives DRAM_RANGE on the MVM | The op list stays static and cacheable (the ids change per token, the list does not). ggml's order (scale, weight after the down MVM, slot-order adds) keeps the CPU a fair reference. |
+| SW-62 | MUL_MAT_ID: a (token, slot) pair is one MUL_MAT row at `W_OFF + id × EXP_STRIDE`; a decode token (T = 1) and a record without a grouped geometry run one MVM of one row per pair, a batch runs the pairs of one expert as the rows of one tile of up to T_MAX rows; ids read by the RISC-V from DRAM (a chunk in the one-tile block, one join), optional scale `table[id]` applied by VOP.MULC after the dot product, an out-of-range id gives DRAM_RANGE on the MVM | The op list stays static and cacheable (the ids change per token, the list does not). The row of a tile does not depend on the other rows, so the path does not change the bits. ggml's order (scale, weight after the down MVM, slot-order adds) keeps the CPU a fair reference. |
 | SW-63 | Selection order: the order of the VU TOPK: DAZ'd value under the total order, larger first, NaN first, equal values by the smaller index | A rule that does not depend on a library's sort; the firmware loop and `tsr_ref_topk` agree on ties, NaN, ±0 and subnormals. |
 | SW-64 | Graph fusion of the MoE chains: `tsr_build_fusion` takes the router chain (SOFT_MAX to DIV, six nodes) into one MOE_ROUTE record and the scale chain into the MUL_MAT_ID record plus a CPY into the MUL's tensor; supports_op accepts the chain nodes by their own sources; a member that did not fuse aborts at graph_compute naming it | The router is one data-dependent step. The allocator may put the MUL's result over the MUL_MAT_ID's inputs (no in-place write is safe), so the record writes its own tensor and a CPY moves it. supports_op cannot see consumers, so an unusual graph fails loudly instead of reading unwritten tensors. |
 | SW-65 | MoE paths in matmul mode and full mode: `--phase m6` (klcheck, numcheck) sets `TSR_KINDS=m6,+MUL_MAT_ID`: the device runs the matrix products and the CPU selects; full mode runs everything in one launch; no path needs the TOPK RTL | The matmul-mode baseline for a MoE model is llama.cpp's own selection, so the full-mode delta measures the firmware selection. Matmul mode needs the firmware image with the MUL_MAT_ID kind but no bitstream change. |
-| SW-66 | Prefill and token grouping: per-token expert MVMs (T = 1) in prefill; grouping by expert designed (counting sort of the (token, slot) pairs per ids chunk, MVMs of up to T_MAX rows), not built | Grouping pays when T × k / n_expert is at least T_MAX; it needs a pair list in SPM and a second push order; numerics are unchanged either way. |
+| SW-66 | Prefill and token grouping: the pairs of a batch are grouped by expert while the ids are read (streaming: up to `group − 1` pending pairs per expert below 256 in the head block, a full tile when the next pair completes it, one partial tile per expert at the end of the record, experts at or above 256 alone); the per-token path when no tile of two rows plans or the pending table does not fit the one-tile block; the decode token keeps its code | A tile of several rows reads the weights of an expert once. Streaming needs no sort and no pair list beyond the pending table, works for every ids chunk size, and the pushes depend only on the ids (§4.7). The numerics are the same either way. |
 | SW-67 | Gated DeltaNet recurrence: `GATED_DELTA_NET` (0x2F) composes the delta rule from existing VU operations (`SOP.EXP`, `VOP.MULC`, `VOP.MUL` + `RED.SUM`, `VOP.SUB`, `VOP.MULCADD`) per head and token, FP32 state in DRAM, head tiles in the SPM; order and rounding are `gdn_ref_step` | No RTL, no new opcode, the numerics are the oracle's, and it runs on any image with the VU. It is the baseline against which the fused op (SW-78) is measured. |
 | SW-68 | Convolution kind and conv state: `SSM_CONV` (0x2E) works on channel vectors: the window of `d_conv - 1 + T` rows of C channels, taps as `d_conv` rows of C, summed in tap order, SILU optional; the state cache holds `d_conv - 1` rows of C per cell and belongs to the device; the taps are re-laid out at weight upload | Channel vectors are what the VU lanes take, and the state needs no transpose. llama.cpp only copies, clears and saves whole cells, which are byte copies. |
 | SW-69 | Softplus: `SOFTPLUS` (0x2D) is the stable composition `max(x, 0) + log1p(exp(-|x|))` with `log1p` from the odd atanh series: 20 VOPs; UNARY gains SIGMOID (func 5) | The VU has no log. The composition is within 5 ulp of float64 (above 1e-3) and costs one launch's worth of cycles per layer; a new VU function would be RTL for H_v values per layer. |

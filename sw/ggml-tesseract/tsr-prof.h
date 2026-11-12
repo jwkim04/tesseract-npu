@@ -46,6 +46,8 @@ struct rec {
                                              // half the rows rounded up on two weight streams (T <= T_MAX / 2, CAPS bit 16, TSR_MVM_DUAL not 0)
     std::vector<std::pair<uint64_t, double>> mvm_passes;   // the MVMs of the record in issue order: (count, ideal cycles of one)
     uint32_t n_tiles = 0, scratch_lines = 0, tile_rows = 0;   // the firmware's plan of the record (SPM ring tiles)
+    bool grouped = false;                    // a MUL_MAT_ID that runs its pairs in tiles per expert: the routing decides the MVMs, so w_bytes and
+                                             // ideal_cycles are the lower bound (full tiles of tile_rows pairs and one with the rest), mvm_passes is empty
 };
 
 struct list {

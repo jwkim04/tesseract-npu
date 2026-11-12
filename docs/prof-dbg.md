@@ -187,10 +187,16 @@ weights once. A weight stream takes one beat per cycle, and the slowest channel 
 rows of the matrix, each of ROW_BEATS beats. On one stream the MVM takes `rows x ROW_BEATS` cycles. An MVM of T ≤ T_MAX / 2
 tokens runs on two streams when the core has the dual weight stream (`CAPS` bit 16, [rtl-mvm.md](rtl-mvm.md) §15) and
 `TSR_MVM_DUAL` is not 0. It then takes `ceil(rows / 2) x ROW_BEATS` cycles. A MUL_MAT record has one MVM per token tile of
-the firmware's plan, the last tile with the remaining tokens. A MUL_MAT_ID record has one MVM of one token per token and
-used expert. So a record can mix MVMs on one and on two streams, and its ideal is the sum. `meta.json` has `mvm_dual`, 1
-when MVMs of T ≤ T_MAX / 2 ran on two streams, and the Summary tab shows it (a dump without the field is read as one
-stream). The bytes of an MVM op are the weight bytes of its record over its MVMs. The stream rate ceiling of the Summary
+the firmware's plan, the last tile with the remaining tokens. A MUL_MAT_ID record of a decode token has one MVM of one
+token per used expert, and so does a batch record that the planner does not group. A MUL_MAT_ID record of a batch (`T > 1`)
+that the planner groups runs the pairs of one expert as the rows of one tile, and the routing decides the tiles. Its ideal
+and weight bytes are the lower bound: the `T x N_USED` pairs in full tiles of the plan's `tile_rows` rows and one tile with
+the rest. The real run reads the weights of more tiles when the pairs spread over many experts, so its MVM time is further
+above the ideal than a dense record's, and the record's tile count in the report is the planned least. The trace's MVMs of
+the record are the tiles of the routing, so no MVM op is matched to a planned pass: the plan file has `grouped` and no
+`mvm_passes` for the record, and an MVM op of it has no ideal of its own. Any other record can mix MVMs on one and on two
+streams, and its ideal is the sum. `meta.json` has `mvm_dual`, 1 when MVMs of T ≤ T_MAX / 2 ran on two streams, and the
+Summary tab shows it (a dump without the field is read as one stream). The bytes of an MVM op are the weight bytes of its record over its MVMs. The stream rate ceiling of the Summary
 tab (E at clock) is the rate the streams ask for over the `tsr_bw` bandwidth: the weight bytes per ideal cycle, `NUM_CH` x
 64 B on one stream and up to twice that on two, at the core clock. The ideal is the limit of the streams, not of the
 memory. On the card two streams ask for more than the memory gives ([performance.md](performance.md)), so E at clock is

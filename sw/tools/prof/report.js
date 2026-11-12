@@ -655,7 +655,7 @@
     h += section("Cycles", table([["Metric", ""], ["Unit", "u"], ["Card", "n"]].concat(sim ? [["Simulator", "n"]] : []), rows.map(function (x) { return [esc(x[0]), esc(x[1]), x[2]].concat(sim ? [x[3] == null ? "" : x[3]] : []); })));
     h += section("Traffic", table(H3, [mrow("DRAM read", "B", fint(r.rd)), mrow("DRAM written", "B", fint(r.wr)), mrow("Weights", "B", fint(r.w)), mrow("Rate", "GB/s", r.cost ? fx((r.rd + r.wr) / (r.cost / F) / 1e9, 2) : "-")]));
     var ring = D.spm_lines - 16 - 4096 - 256 - 1024;
-    h += section("SPM tiles", table(H3, [mrow("Tiles", "", fint(r.tiles)), mrow("Rows per tile", "", fint(r.tile_rows)), mrow("Scratch", "line", fint(r.scratch)), mrow("Share of the scratch ring", "%", fpct(r.scratch / ring))]));
+    h += section("SPM tiles", table(H3, [mrow(r.grouped ? "Tiles (planned least)" : "Tiles", "", fint(r.tiles)), mrow("Rows per tile", "", fint(r.tile_rows)), mrow("Scratch", "line", fint(r.scratch)), mrow("Share of the scratch ring", "%", fpct(r.scratch / ring))]));
     h += section("Arguments", table([["Word", ""], ["Value", "n"]], r.args.map(function (a) { return [esc(a[0]), esc(a[1])]; })));
     function rng(dir, x) { return [dir, "ch" + x.ch, "0x" + x.off.toString(16), fint(x.bytes), esc(x.region), x.rows ? x.rows[0] + " of " + x.rows[1] : ""]; }
     var rr = r.rdr.map(function (x) { return rng("Read", x); }).concat(r.wrr.map(function (x) { return rng("Write", x); }));

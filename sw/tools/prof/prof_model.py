@@ -237,7 +237,10 @@ class LaunchView:
         # tag ops: record index, ordinal within (record, unit), ideal cycles and weight bytes of an MVM op. The record's MVMs run in issue
         # order, with the ideal of each from "mvm_passes" ([count, ideal cycles of one] runs: the T-tiles of a MUL_MAT can differ in their
         # streams). Every MVM streams the record's weights once, so the weight bytes split evenly. A plan without "mvm_passes", or with
-        # another count than the trace has, splits the ideal evenly too.
+        # another count than the trace has, splits the ideal evenly too. A grouped MUL_MAT_ID ("grouped": the pairs of an expert run in tiles,
+        # SW-62) has no passes: the record's ideal is the lower bound of its weight phase (full tiles and one with the rest), the trace's MVMs are
+        # the tiles the routing made, and the trace does not say how many rows each has, so no op takes a share of the ideal (an op's ideal is
+        # never above its run time). The weight bytes of the record split evenly over its MVMs.
         for i in order:
             t_mark, ops = by_idx.get(i, (None, []))
             cnt = collections.Counter()
@@ -247,7 +250,9 @@ class LaunchView:
                 cnt[o.unit] += 1
             mvm = [o for o in ops if o.unit == 2 and o.opcode == 0x20]
             ideal = [c for n, c in self.recs[i].get("mvm_passes", []) for _ in range(n)]
-            if len(ideal) != len(mvm):
+            if self.recs[i].get("grouped"):
+                ideal = [0.0] * len(mvm)
+            elif len(ideal) != len(mvm):
                 ideal = [self.recs[i].get("ideal", 0.0) / len(mvm)] * len(mvm) if mvm else []
             for o, c in zip(mvm, ideal):
                 o.ideal = c
@@ -324,7 +329,7 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
         if kn == "SET_ROWS_KV" and len(r["a"]) >= 7:           # K or V rows into the Q8_0 plane: the plane extents are not the traffic
             rd_b, wr_b = r["a"][5] * r["a"][6] * 4, r["a"][5] * r["a"][6] * 34 // 32
         row = {"i": i, "kind": r["kind"], "kn": kn, "node": r["node"], "name": r["name"], "layer": rlayer[i], "group": rgroup[i],
-               "shape": shape_of(kn, r["a"]), "dep": r["dep"], "tiles": r["tiles"], "tile_rows": r["tile_rows"],
+               "shape": shape_of(kn, r["a"]), "dep": r["dep"], "tiles": r["tiles"], "tile_rows": r["tile_rows"], "grouped": 1 if r.get("grouped") else 0,
                "scratch": r["scratch_lines"], "rd": rd_b, "wr": wr_b, "w": r["w_bytes"], "ideal": r["ideal"],
                "cost": st["cost"], "n_ops": st["n"], "first": st["first"], "last": st["last"], "busy": st["busy"],
                "args": decode_args(spec, r["a"]),

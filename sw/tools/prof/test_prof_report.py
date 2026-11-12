@@ -81,9 +81,11 @@ def load_dump(dump):
 
 def pass_tokens(name, arg, r):
     """The tokens of each MVM of a record in issue order. MUL_MAT: one MVM per T-tile of the firmware's plan (SW §7.4), the last tile with
-    the rest of the tokens. MUL_MAT_ID: one MVM of one token per token and used expert (SW §7.5)."""
+    the rest of the tokens. MUL_MAT_ID: one MVM of one token per token and used expert (SW §7.5); a grouped record (the plan names tile_rows >= 2)
+    counts the lower bound of its passes, full tiles of tile_rows pairs and one with the rest (SW-62, docs/prof-dbg.md §3.1)."""
     if name == "MUL_MAT_ID":
-        return [1] * (arg["T"] * arg["N_USED"])
+        pairs, g = arg["T"] * arg["N_USED"], max(r["tile_rows"], 1)
+        return [g] * (pairs // g) + ([pairs % g] if pairs % g else [])
     return [r["tile_rows"]] * (r["tiles"] - 1) + [arg["T"] - r["tile_rows"] * (r["tiles"] - 1)]
 
 
@@ -100,8 +102,11 @@ def check_ideal(tag, dump, dual):
         one = r["w_bytes"] // (len(toks) * meta["num_ch"] * 64)          # cycles of one MVM on one stream: rows x ROW_BEATS
         want = [-(-rows // 2) * (one // rows) if dual and t <= half else one for t in toks]
         got = [c for n, c in r.get("mvm_passes", []) for _ in range(n)]
+        grouped = bool(r.get("grouped"))
+        if grouped:                      # no passes: the trace's MVMs are the tiles of the routing
+            got = want
         n_two += sum(1 for t in toks if dual and t <= half)
-        if r["ideal"] != sum(want) or got != want:
+        if r["ideal"] != sum(want) or got != want or ("mvm_passes" in r) == grouped:
             bad.append("%s %s: ideal %s, per MVM %s, want %s" % (name, r["name"], r["ideal"], got[:3], want[:3]))
     rule = "two-stream rule (%d MVMs with T <= %d on two streams)" % (n_two, half) if dual else "one-stream rule: the weight bytes over num_ch x 64 B"
     check(recs and not bad and (n_two > 0 or not dual),
@@ -120,6 +125,13 @@ def report_of(dump, out, launch=None):
         return {"summary": {}}, {}
     summ = json.load(open(os.path.join(out, "summary.json")))
     ev = json.load(open(os.path.join(out, "trace.perfetto.json")))["traceEvents"]
+    # the "weights streamed" counter of the card's launch ends at the weight bytes of the plan, grouped MUL_MAT_ID records included
+    lq = [json.loads(l) for l in open(os.path.join(dump, "launches.jsonl")) if l.strip()]
+    pl = json.load(open(os.path.join(dump, "plan_%d.json" % lq[summ["launch"]]["plan"])))
+    want = sum(r.get("w_bytes", 0) for lst in pl["lists"] for r in lst["recs"])
+    cnt = [e["args"]["MB"] for e in ev if e["ph"] == "C" and e["name"] == "weights streamed (MB, model)"]
+    check(cnt and abs(cnt[-1] * 1e6 - want) <= 1e3 and want > 0,
+          "%s: the weights streamed counter ends at the plan's weight bytes (%.3f MB, plan %d B)" % (os.path.basename(out), cnt[-1] if cnt else -1, want))
     return summ, {e["args"]["id"]: e["args"] for e in ev if e["ph"] == "X" and e["args"].get("op") == "MVM"}
 
 

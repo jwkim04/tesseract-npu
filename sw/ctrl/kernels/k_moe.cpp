@@ -24,18 +24,25 @@
 //      one ST per token unless the rows are dense) and the weights.
 // The numerics are tsr_ref_moe_route's: sw/ctrl/ref/moe_ref.cpp composes the same references.
 //
-// MUL_MAT_ID: per (token, slot) the MUL_MAT sequence of SW §7.4 with T = 1 (LD x, QACT, MVM, ST) against
-// the weights of expert ids[token][slot], i.e. W_OFF + id * EXP_STRIDE (a 64-bit sum; an id outside
+// MUL_MAT_ID: a (token, slot) pair is one MUL_MAT row of the MUL_MAT sequence of SW §7.4 (LD x, QACT, MVM, ST)
+// against the weights of expert ids[token][slot], i.e. W_OFF + id * EXP_STRIDE (a 64-bit sum; an id outside
 // [0, N_EXPERT) gets W_OFF 0xFFFF_FFFF, so the MVM fails with DRAM_RANGE and the launch ends with
-// TILE_ERR on this op), optionally followed by VOP.MULC with s14 = SCALE[id] on the y block (one f32
+// TILE_ERR on this op), optionally followed by VOP.MULC with s14 = SCALE[id] on the y rows (one f32
 // multiply, ggml's `res * s`). The ids come from DRAM: the handler LDs a chunk of them (and the scale
-// table) into the one-tile block, joins, and reads them with the RISC-V; a token's pushes follow its
-// ids. A token takes one ring block [x | QA | y_0 .. y_(k-1)] (the x row and the QA image are shared by
-// the k slots when X_SLOT_STRIDE is 0), pushed so that the LD, QACT and MVM of slot j + 1 are queued
-// before the ST of slot j (MUL_MAT's double buffering: the DMA queue is in order, an ST that waits for
-// its MVM must not hold back the next LD), and the next token's block is allocated while this one's STs
-// are pending (the ring's release tickets order its reuse). The returned ticket is the last ST.
-// Per-token weight reuse is not attempted (SW-65: prefill reads each token's experts separately).
+// table) into the one-tile block, joins, and reads them with the RISC-V; the pushes of a pair follow its ids.
+// Two paths, the planner (tsr/plan_moe.hpp mmid_geometry, mmid_grouping) names the one a record takes:
+//   T = 1 (a decode token) and the per-token path: one ring block per token, [x | QA | y_0 .. y_(k-1)] (the
+//     x row and the QA image are shared by the k slots when X_SLOT_STRIDE is 0), one MVM of one row per slot,
+//     pushed so that the LD, QACT and MVM of slot j + 1 are queued before the ST of slot j (MUL_MAT's double
+//     buffering: the DMA queue is in order, an ST that waits for its MVM must not hold back the next LD),
+//     the next token's block allocated while this one's STs are pending (the ring's release tickets order
+//     its reuse). The returned ticket is the last ST. Taken when T = 1 (the planner's grouping is not evaluated for it: the
+//     decode token pays one compare of T per record) or when the planner finds no tile of two rows or no room for the
+//     pending table in the one-tile block (mmid_grouped's head block).
+//   grouped (T > 1): the pairs of one expert run as one MVM of up to `group` rows, so the weights of an expert
+//     are read once per tile and not once per pair (SW-62, SW-66). See mmid_grouped.
+// The outputs do not depend on the path: the dot product, the QACT and the scale of a row do not depend on the
+// other rows of a tile or on the number of weight streams.
 #include "k_mulmat.hpp"
 #include "tsr/plan_moe.hpp"
 
@@ -266,6 +273,211 @@ ticket mmid_token(const mmid_op & m, kind_ctx & ctx, uint32_t t, const uint32_t 
     return last;
 }
 
+// The ids chunk that starts at token c0 (the grouped path; mmid_general's loop spells out the same arithmetic, which the
+// decode token's record must not pay a call for): the first row's byte offset in the chunk's first line, the lines
+// to LD (ID_CHUNK_LINES at most) and the tokens whose ids rows lie in them.
+struct id_chunk {
+    uint64_t b0;
+    uint32_t off0, lines, tc;
+};
+id_chunk ids_chunk(const mmid_op & m, uint32_t c0) {
+    id_chunk c;
+    c.b0 = uint64_t(c0) * m.ids_stride;
+    c.off0 = uint32_t(c.b0 & 63u);
+    const uint32_t room = plan::ID_CHUNK_LINES * 64u - c.off0 - 4u * m.nu;
+    c.tc = 1u + room / (m.ids_stride != 0u ? m.ids_stride : 1u);
+    if (c.tc > m.T - c0) c.tc = m.T - c0;
+    c.lines = (c.off0 + (c.tc - 1u) * m.ids_stride + 4u * m.nu + 63u) >> 6;
+    return c;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The grouped path (SW-62, SW-66)
+//
+// The pairs (t, j) of a record are visited in order, token by token and slot by slot, with e = ids[t][j]. The
+// handler keeps for each expert e < ng = min(N_EXPERT, GROUP_MAX_EXPERTS) the pairs that wait for a full tile:
+// cnt[e] of them (a byte array on the stack, zeroed at the start), as the words (t << 4) | j of the expert's
+// slot of the pending table in the head block (the RISC-V writes an entry with one bridge store, reads a slot
+// through the line buffer; cnt says which entries are valid, so the table needs no initialization). A pair
+//   - of an expert beyond ng (or a bad id) runs as a tile of this one pair at once;
+//   - of an expert with fewer than group - 1 pending pairs is stored;
+//   - else runs in one tile with the group - 1 pending pairs of its expert, in arrival order, and cnt[e] = 0.
+// After the last token the experts in order run the pairs that are left, one tile each. So every expert runs in
+// full tiles except one partial tile at the end of the record, whatever the ids chunk size: the chunk only sets
+// how often the handler joins.
+//
+// A tile of m rows of expert e is one ring block [x_0 .. x_(m-1) | QA_0 .. QA_(m-1) | y_0 .. y_(m-1)]:
+//   front: m LDs (row i from X + t_i X_TOK_STRIDE + j_i X_SLOT_STRIDE; with a shared x row each pair still
+//     loads its token's row: the LD and the QACT run while the previous tile's MVM streams), one QACT of m
+//     rows, one MVM of m rows against the weights of e;
+//   back: with a scale table the SOP.MOVI of s14 and one VOP.MULC over the m rows (one per row when the rows
+//     are further apart than a VU stride reaches), then m STs, row i to DST + (t_i N_USED + j_i) DST_STRIDE.
+// Push order as mulmat_tiles: front of tile 0; for every further tile its front, then the back of the one
+// before; the back of the last at the end. So the DMA queue sees the LDs of tile i + 1 before the STs of tile
+// i, which run while the MVM of tile i streams its weights. The handler holds one tile whose back is not
+// pushed yet; when the ring has no room for the next block beside it, the back of the held tile goes first.
+// A chunk boundary (the LD of the next ids chunk, the join) happens with a held tile: its MVM is queued and
+// runs during the join.
+//
+// No deadlock at the queue depths of the device (DMA 8, QACT 4, MVM 4, VU 16): every op carries deps on ops
+// pushed before it (an LD only the ring's DMA tickets, which the queue order implies; a QACT its last LD; an
+// MVM its QACT; the VOP its MVM; the first ST its VOP or MVM; the rest of the STs none), so the first unfinished
+// op in push order is at the head of its queue with its deps done; a push that waits for a credit waits for
+// ops that are all in front of the one it will push, never for one pushed after it.
+//
+// The pending table needs no dep: only the RISC-V touches its lines. It first writes them after join(LD of the
+// first ids chunk), which the DMA queue orders after every DMA op of the records before (a DMA-bracketed
+// tile's last access to the one-tile block, exec.hpp), and no tile op of this record reads or writes them.
+// ---------------------------------------------------------------------------------------------
+constexpr uint32_t GROUP_ROWS_MAX = T_MAX_ARCH;
+
+struct gtile {
+    spm blk;
+    ticket mv;
+    uint32_t e, m, sb;                // the expert, the rows, the scale bits of the expert
+    uint32_t pr[GROUP_ROWS_MAX];      // the pairs: (token << 4) | slot
+};
+struct gsink {
+    gtile a, b;
+    gtile * held;                     // the tile whose back is not pushed (nullptr: none)
+    gtile * nt;                       // where the next tile is built
+    ticket last;                      // the last ST pushed
+};
+
+// The LDs, QACT and MVM of the tile; rd: its block's ring deps.
+void grp_front(const mmid_op & m, gtile & g, deps rd) {
+    const plan::mm_tiling & tl = m.g.tl;
+    const spm X = g.blk, Q = X + g.m * tl.x_lines;
+    ticket ld{};
+    for (uint32_t i = 0; i < g.m; ++i) {
+        const uint32_t t = g.pr[i] >> 4, j = g.pr[i] & 15u;
+        ld = kf::push_g(LD(X + i * tl.x_lines, m.x + t * m.x_tok_stride + j * m.x_slot_stride, tl.x_lines),
+                        i == 0u ? mmk::first_deps(deps{}, rd) : deps{}, m.pf);
+    }
+    const ticket qt = kf::push_g(QACT(qa_for_fmt(m.fmt), Q, X, m.K, g.m, tl.x_lines), deps{ld}, m.pf);
+    g.mv = kf::push_g(MVM(Q + g.m * tl.qa_lines, Q, wref{expert_off(m, g.e), uint8_t(m.fmt)}, m.N, m.K, g.m, tl.y_lines,
+                          false), deps{qt}, m.pf);
+}
+
+// The scale, the STs and the release of the tile's block. Returns the last ST.
+ticket grp_back(const mmid_op & m, kind_ctx & ctx, const gtile & g) {
+    const plan::mm_tiling & tl = m.g.tl;
+    const spm Y = g.blk + g.m * (tl.x_lines + tl.qa_lines);
+    ticket t = g.mv;
+    if (m.has_scale) {
+        kf::sreg_movi(kf::chk_t{}, ctx, S_SCALE, g.sb, m.pf);
+        vop_f f{};
+        f.cmode = 1u;
+        f.func = VOP_FUNC_MULC;
+        f.si = S_SCALE;
+        f.d = Y.line;
+        f.a = Y.line;
+        f.m = m.N;
+        f.rows = g.m;
+        f.d_stride = tl.y_lines;
+        f.a_stride = tl.y_lines;
+        if (tl.y_lines <= plan::VU_STRIDE_MAX) {
+            t = kf::push_g(VOP(f), deps{g.mv}, m.pf);
+        } else {
+            f.rows = 1u;
+            for (uint32_t i = 0; i < g.m; ++i) {
+                f.d = Y.line + i * tl.y_lines;
+                f.a = f.d;
+                t = kf::push_g(VOP(f), i == 0u ? deps{g.mv} : deps{}, m.pf);
+            }
+        }
+    }
+    ticket last{};
+    for (uint32_t i = 0; i < g.m; ++i) {
+        const uint32_t t_i = g.pr[i] >> 4, j = g.pr[i] & 15u;
+        last = kf::push_g(ST(Y + i * tl.y_lines, m.dst + (t_i * m.nu + j) * m.dst_stride, tl.y_lines), i == 0u ? deps{t} : deps{},
+                          m.pf);
+    }
+    ctx.ring->release(g.blk, last);
+    return last;
+}
+
+// Pushes the tile built in *s.nt (its pairs, expert, rows and scale filled in): its block, its front, then the
+// back of the held tile; it becomes the held tile. False: no room in the ring even after the back of the held tile.
+[[gnu::noinline]] bool grp_emit(const mmid_op & m, kind_ctx & ctx, gsink & s) {
+    gtile & n = *s.nt;
+    deps rd;
+    n.blk = kf::alloc_g(*ctx.ring, n.m * m.g.tl.lpt, &rd);
+    if (!valid(n.blk) && s.held != nullptr) {          // no room beside the held tile: its back first (as mulmat_tiles)
+        s.last = grp_back(m, ctx, *s.held);
+        s.held = nullptr;
+        n.blk = kf::alloc_g(*ctx.ring, n.m * m.g.tl.lpt, &rd);
+    }
+    if (!valid(n.blk)) return false;
+    grp_front(m, n, rd);
+    if (s.held != nullptr) s.last = grp_back(m, ctx, *s.held);
+    s.nt = &n == &s.a ? &s.b : &s.a;
+    s.held = &n;
+    return true;
+}
+
+[[gnu::noinline, gnu::cold]] ticket mmid_grouped(const mmid_op & m, const plan::mmid_grp & gr, kind_ctx & ctx, deps d) {
+    const uint32_t group = gr.group, pw = gr.pw;
+    const uint32_t ng = m.ne < plan::GROUP_MAX_EXPERTS ? m.ne : plan::GROUP_MAX_EXPERTS;
+    // The head block: the ids chunk, the scale table, the pending table.
+    const spm idspm = ctx.one, tbl = ctx.one + plan::ID_CHUNK_LINES;
+    const spm pend = tbl + (m.has_scale ? plan::vu_lines(m.ne) : 0u);
+    uint8_t cnt[plan::GROUP_MAX_EXPERTS];
+    for (uint32_t e = 0; e < ng; ++e) cnt[e] = 0u;
+    gsink s{};
+    s.nt = &s.a;
+    deps first = mmk::first_deps(d, deps{});
+    if (m.has_scale) {
+        kf::push_g(LD(tbl, m.scale, plan::vu_lines(m.ne)), first, m.pf);
+        first = deps{};
+    }
+    auto scale_of = [&](uint32_t e) -> uint32_t { return m.has_scale && e < m.ne ? spm_lb_ptr<uint32_t>(tbl)[e] : 0u; };
+    for (uint32_t c0 = 0; c0 < m.T;) {
+        const id_chunk ch = ids_chunk(m, c0);
+        const ticket ldi = kf::push_g(LD(idspm, m.ids + uint32_t(ch.b0 >> 6), ch.lines), first, m.pf);
+        first = deps{};
+        join(ldi);
+        for (uint32_t t = c0; t < c0 + ch.tc; ++t) {
+            uint32_t e[mi::MAX_USED];
+            const volatile uint32_t * ip = spm_lb_ptr<uint32_t>(idspm, ch.off0 + (t - c0) * m.ids_stride);
+            for (uint32_t j = 0; j < m.nu; ++j) e[j] = ip[j];
+            for (uint32_t j = 0; j < m.nu; ++j) {
+                const uint32_t x = e[j], pair = (t << 4) | j;
+                if (x < ng && cnt[x] + 1u < group) {          // wait for a full tile
+                    *spm_ptr<uint32_t>(pend, 4u * (x * pw + cnt[x])) = pair;
+                    ++cnt[x];
+                    continue;
+                }
+                gtile & n = *s.nt;
+                n.e = x;
+                n.m = 1u;
+                if (x < ng) {                                  // a full tile: the pending pairs, then this one
+                    const volatile uint32_t * pp = spm_lb_ptr<uint32_t>(pend, 4u * x * pw);
+                    for (uint32_t i = 0; i + 1u < group; ++i) n.pr[i] = pp[i];
+                    n.m = group;
+                    cnt[x] = 0u;
+                }
+                n.pr[n.m - 1u] = pair;
+                n.sb = scale_of(x);
+                if (!grp_emit(m, ctx, s)) return ctx.fail(opl::RET_SCRATCH);
+            }
+        }
+        c0 += ch.tc;
+    }
+    for (uint32_t x = 0; x < ng; ++x) {                        // the pairs that never filled a tile
+        if (cnt[x] == 0u) continue;
+        gtile & n = *s.nt;
+        const volatile uint32_t * pp = spm_lb_ptr<uint32_t>(pend, 4u * x * pw);
+        n.e = x;
+        n.m = cnt[x];
+        for (uint32_t i = 0; i < n.m; ++i) n.pr[i] = pp[i];
+        n.sb = scale_of(x);
+        if (!grp_emit(m, ctx, s)) return ctx.fail(opl::RET_SCRATCH);
+    }
+    if (s.held != nullptr) s.last = grp_back(m, ctx, *s.held);
+    return s.last;
+}
+
 [[gnu::noinline, gnu::cold]] ticket mmid_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d,
                                                  kind_ctx & ctx) {
     uint32_t w[mi::NARGS];
@@ -296,6 +508,10 @@ ticket mmid_token(const mmid_op & m, kind_ctx & ctx, uint32_t t, const uint32_t 
     if (plan::mmid_geometry(ctx.mml, m.fmt, m.N, m.K, m.nu, m.shared, m.ne, m.has_scale, &m.g) != opl::RET_OK ||
         m.g.head_lines > ctx.one_lines)
         return ctx.fail(opl::RET_SCRATCH);
+    if (m.T > 1u) [[unlikely]] {   // a batch: the pairs of one expert run in tiles when the planner finds one (a decode token never gets here)
+        const plan::mmid_grp gr = plan::mmid_grouping(ctx.mml, m.fmt, m.N, m.K, m.ne, m.has_scale, m.T, ctx.one_lines);
+        if (gr.group != 0u) return mmid_grouped(m, gr, ctx, d);
+    }
     // The head block is the executor's one-tile block: the ids chunk (ID_CHUNK_LINES) and the scale table.
     const spm idspm = ctx.one, tbl = ctx.one + plan::ID_CHUNK_LINES;
     deps first = mmk::first_deps(d, deps{});

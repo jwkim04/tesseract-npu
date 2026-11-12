@@ -960,16 +960,16 @@ Execution
 | --- | --- | --- |
 | Device selection (full mode) | The device does the router, softmax, top-k and the expert MVMs by itself, one launch per token | Control core: reads the selection from the SPM window, computes the expert addresses, issues asynchronously. The top-k is integer compares on the RISC-V; the TOPK op is not needed. Firmware kinds MOE_ROUTE and MUL_MAT_ID (SW §7.9) |
 | Host selection (matmul mode) | The host issues the matrix products; llama.cpp's own CPU ops select the experts | `TSR_KINDS=m6,+MUL_MAT_ID` |
-| Prefill | One MVM of T = 1 per (token, slot). Grouping the tokens per expert would need a sort of the (token, slot) pairs per ids chunk and is not implemented (SW-66) | none |
+| Prefill and batches | The (token, slot) pairs of a batch are grouped by expert while the ids are read: one MVM of up to T_MAX rows per tile of pairs of one expert, so the weights of an expert are read once per tile (SW-62, SW-66). A decode token runs one MVM of one row per slot | none |
 
 Implementation (SW §7.9, SW-60 to SW-66). The expert tensors are placed with the `EXP_STRIDE` layout of
 section 4: expert e of a tensor at `W_OFF + e × EXP_STRIDE` on every channel, each expert split by rows over
 the channels. The router is an ordinary 2D weight converted to Q8_0 at load. Two firmware kinds do the rest:
 MOE_ROUTE (0x1E) computes the softmax on the VU, selects the k largest probabilities by integer compares on
 the RISC-V (the order of the VU TOPK: larger value first, equal values by the smaller index, NaN first) and
-renormalizes their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs a MUL_MAT of T = 1 per (token,
-slot) against the weights of the expert whose number it reads from DRAM, with an optional per-expert output
-scale. The backend fuses llama.cpp's router nodes (softmax, argsort, get_rows, sum_rows, clamp, div and their
+renormalizes their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs the (token, slot) pairs against the
+weights of the experts whose numbers it reads from DRAM, the pairs of one expert as the rows of one MUL_MAT tile, with
+an optional per-expert output scale. The backend fuses llama.cpp's router nodes (softmax, argsort, get_rows, sum_rows, clamp, div and their
 views) into one MOE_ROUTE record, and the scale nodes (reshape, repeat, get_rows, mul) into the MUL_MAT_ID
 record of the down projection. The combine follows ggml's order: the expert output is multiplied by its scale
 and then by its router weight after the down MVM, and the outputs are added in slot order, so the

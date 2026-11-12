@@ -12,12 +12,20 @@
 //                x row per slot, Q8_0, scale table), 16 experts, 4 and 8 used, T = 1 .. 9, ids written by
 //                the host and by a MOE_ROUTE of the same list (the dependency), K and N not multiples of 16
 //                lines, more tokens than one ids chunk, a 512 KiB SPM
+//       mmid_group_t*  the grouped path (SW-62, SW-66; T_MAX 8, 4, 3 and 1 = the per-token path): T = 2, 3, 5, 9, 37
+//                      and 70 (several ids chunks), routings uniform / skewed / every pair on one expert / every
+//                      pair on its own expert / the same expert twice in a token / experts above 256 (they run
+//                      alone), shared and per-slot x, with and without the scale table, padded rows, ids from a
+//                      MOE_ROUTE of the list, one slot (k = 1)
+//       mmid_small_spm further: 4,096 experts with a table on a 512 KiB SPM (the pending table does not fit at
+//                      T_MAX 8: the per-token path; at T_MAX 4 it fits the one-tile block exactly), and an SPM whose
+//                      ring holds a little over two full tiles (a tile that has no room beside the held one)
 //       Every output (ids lines, packed weights, dst rows) is compared bit for bit with the references
 //       (sw/ctrl/ref/moe_ref.cpp on a twin simulator), DONE must be OK / RET 0, the SW §4.7 observables
 //       must be equal under every schedule, and the written DRAM must be exactly the output ranges.
 //   test_fw_moe_rv IMAGE errors
-//       an expert number outside [0, N_EXPERT) or negative ends the launch with TILE_ERR on the
-//       MUL_MAT_ID (RET = op + 1), a refused MOE_ROUTE / MUL_MAT_ID record ends it with BAD_RECORD.
+//       an expert number outside [0, N_EXPERT) or negative (also as the first, a middle and the last pair of a
+//       grouped record) ends the launch with TILE_ERR on the MUL_MAT_ID (RET = op + 1), a refused MOE_ROUTE / MUL_MAT_ID record ends it with BAD_RECORD.
 // Exit 0 when everything passed, 1 on a failure, 77 (skipped) when the image is missing.
 #undef _GNU_SOURCE
 #include "test_sim_obs.h"
@@ -326,11 +334,18 @@ rec make_route(suite & s, alloc & al, uint32_t n, uint32_t k, uint32_t T, uint32
     return r;
 }
 
+// The routings of the host ids: uniform, a few experts most of the time, every pair on one expert, every pair on
+// its own expert (modulo n_expert), the same expert in both slots of a pair of slots, experts above 256 mixed in,
+// bursts of nine pairs (one on an expert of 256 or above, which runs alone, then four on each of two experts of 16:
+// a one-row tile followed by two full tiles; needs n_expert > 256).
+enum { R_UNIFORM = 0, R_SKEWED, R_ONE, R_OWN, R_TWICE, R_HIGH, R_BURST };
+
 // A MUL_MAT_ID record. ids: host-written random expert numbers (ids_h == 0 allocates and fills them) or the
 // ids of the given MOE_ROUTE record (route_ids handle and stride in bytes).
 rec make_mmid(suite & s, alloc & al, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T, uint32_t nu, uint32_t ne,
               bool shared_x, bool scale, uint32_t ids_h, uint32_t ids_stride_bytes, uint32_t xch, uint32_t ych,
-              uint32_t x_pad = 0, uint32_t y_pad = 0, uint32_t bad_id = 0xFFFFFFFFu, bool bad_neg = false) {
+              uint32_t x_pad = 0, uint32_t y_pad = 0, uint32_t bad_id = 0xFFFFFFFFu, bool bad_neg = false, int route = 0,
+              uint32_t bad_at = 0xFFFFFFFFu) {
     rec r{};
     r.kind = tsr::opl::K_MUL_MAT_ID;
     const uint32_t C = s.cfg.num_ch, xl = K / 16u, yl = (N + 15u) / 16u;
@@ -375,8 +390,23 @@ rec make_mmid(suite & s, alloc & al, uint32_t fmt, uint32_t N, uint32_t K, uint3
         s.fills.push_back([=](tsr_sim * sim, rng_t * rg) {
             std::vector<uint32_t> w((uint64_t(T) * ib) / 4u + nu, 0u);
             for (uint32_t t = 0; t < T; ++t)
-                for (uint32_t j = 0; j < nu; ++j) w[t * (ib / 4u) + j] = rng_below(rg, ne);
-            if (bad_id != 0xFFFFFFFFu) w[(T - 1u) * (ib / 4u)] = bad_neg ? 0xFFFFFFFEu : bad_id;
+                for (uint32_t j = 0; j < nu; ++j) {
+                    uint32_t e = rng_below(rg, ne);
+                    if (route == R_SKEWED) e = rng_below(rg, 5u) < 4u ? rng_below(rg, 3u) : e;
+                    if (route == R_ONE) e = 3u % ne;
+                    if (route == R_OWN) e = (t * nu + j) % ne;
+                    if (route == R_TWICE && j % 2u == 1u) e = w[t * (ib / 4u) + j - 1u];
+                    if (route == R_HIGH) e = rng_below(rg, 4u) == 0u ? 256u + rng_below(rg, ne - 256u) : e % 256u;
+                    if (route == R_BURST) {
+                        const uint32_t i = t * nu + j, r9 = i % 9u, blk = i / 9u;
+                        e = r9 == 0u ? 256u + blk % (ne - 256u) : (2u * blk + (r9 > 4u ? 1u : 0u)) % 16u;
+                    }
+                    w[t * (ib / 4u) + j] = e;
+                }
+            if (bad_id != 0xFFFFFFFFu) {
+                const uint32_t pair = bad_at != 0xFFFFFFFFu ? bad_at : (T - 1u) * nu;
+                w[(pair / nu) * (ib / 4u) + pair % nu] = bad_neg ? 0xFFFFFFFEu : bad_id;
+            }
             put_words(sim, ih, w);
         });
     }
@@ -452,6 +482,69 @@ suite suite_mmid_small() {
     return s;
 }
 
+// The grouped path (SW-62, SW-66) under one T_MAX: the tile of a full group has `t_max` rows (T_MAX 1: the
+// per-token path). Routings, shapes and forms of the header comment.
+suite suite_mmid_group(uint32_t t_max) {
+    static const char * const names[] = { "mmid_group_t8", "mmid_group_t4", "mmid_group_t3", "mmid_group_t1" };
+    suite s{};
+    s.name = names[t_max == 8 ? 0 : t_max == 4 ? 1 : t_max == 3 ? 2 : 3];
+    s.cfg = base_cfg(4u << 20);
+    s.cfg.t_max = t_max;
+    s.seed = 0x6A0 + t_max;
+    alloc al;
+    const uint32_t Q8 = TSR_FMT_Q8_0, Q4 = TSR_FMT_Q4_K;
+    s.recs.push_back(make_mmid(s, al, Q4, 128, 256, 2, 4, 16, true, false, 0, 16, 0, 1));                           // T = 2, uniform
+    s.recs.push_back(make_mmid(s, al, Q8, 96, 128, 3, 8, 16, false, true, 0, 32, 1, 2, 0, 0, NONE, false, R_SKEWED));
+    s.recs.push_back(make_mmid(s, al, Q8, 64, 64, 5, 4, 8, true, true, 0, 16, 2, 3, 0, 0, NONE, false, R_ONE));     // every pair on one expert
+    s.recs.push_back(make_mmid(s, al, Q4, 64, 256, 9, 8, 64, false, false, 0, 32, 3, 0, 0, 0, NONE, false, R_OWN)); // every pair on its own expert
+    s.recs.push_back(make_mmid(s, al, Q8, 64, 96, 9, 4, 8, true, true, 0, 16, 0, 1, 0, 0, NONE, false, R_TWICE));   // the same expert twice in a token
+    s.recs.push_back(make_mmid(s, al, Q8, 192, 128, 37, 8, 16, false, true, 0, 32, 1, 2, 2, 1));                    // padded rows
+    s.recs.push_back(make_mmid(s, al, Q4, 128, 256, 70, 3, 16, true, false, 0, 520, 2, 3, 0, 0, NONE, false, R_SKEWED));   // ids chunks
+    s.recs.push_back(make_mmid(s, al, Q8, 64, 64, 24, 8, 300, true, true, 0, 32, 3, 0, 0, 0, NONE, false, R_HIGH)); // experts above 256
+    s.recs.push_back(make_mmid(s, al, Q8, 64, 64, 6, 1, 4, true, true, 0, 4, 0, 1));                                // k = 1
+    {   // the ids from a MOE_ROUTE of the list
+        rec rt = make_route(s, al, 16, 4, 33, 0, 8, L_RANDOM, 2, 3, 0);
+        s.recs.push_back(rt);
+        const uint32_t ri = uint32_t(s.recs.size()) - 1u;
+        rec m1 = make_mmid(s, al, Q4, 256, 256, 33, 4, 16, true, false, rt.a[mr::IDS], rt.a[mr::IDS_STRIDE] * 64u, 3, 0);
+        m1.deps = { ri };
+        s.recs.push_back(m1);
+        rec m2 = make_mmid(s, al, Q8, 128, 64, 33, 4, 16, false, true, rt.a[mr::IDS], rt.a[mr::IDS_STRIDE] * 64u, 0, 1);
+        m2.deps = { ri };
+        s.recs.push_back(m2);
+    }
+    return s;
+}
+
+// Small SPMs. The pending table of 4,096 experts (256 slots) does not fit the one-tile block (448 lines) at T_MAX 8
+// and fits it exactly at T_MAX 4. The tight SPM has a ring of 2,896 lines for tiles of 4 rows of 329 lines (a
+// little under nine rows): two full tiles fit, but after a one-row tile (an expert above 256) a full tile and the
+// next full one do not, so the handler must push the back of the held tile before it can allocate (grp_emit).
+suite suite_mmid_pending(uint32_t t_max) {
+    suite s{};
+    s.name = t_max == 8 ? "mmid_pending_nofit" : "mmid_pending_exact";
+    s.cfg = base_cfg(512u << 10);
+    s.cfg.t_max = t_max;
+    s.seed = 0x7E + t_max;
+    alloc al;
+    s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 32, 64, 9, 8, 4096, true, true, 0, 32, 0, 1));
+    s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 32, 64, 12, 4, 4096, false, true, 0, 16, 1, 2, 0, 0, NONE, false, R_SKEWED));
+    return s;
+}
+suite suite_mmid_tight() {
+    suite s{};
+    s.name = "mmid_tight_ring";
+    s.cfg = base_cfg(7328u * 64u);
+    s.cfg.t_max = 4;
+    s.seed = 0x71;
+    alloc al;
+    // experts 256 and above run alone: a one-row tile, then two full tiles
+    s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 16, 4096, 36, 4, 300, true, false, 0, 16, 0, 1, 0, 0, NONE, false, R_BURST));
+    s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 16, 4096, 48, 3, 300, false, true, 0, 12, 1, 2, 0, 0, NONE, false, R_BURST));
+    s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 16, 4096, 40, 4, 300, true, false, 0, 16, 2, 3, 0, 0, NONE, false, R_HIGH));
+    return s;
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -523,6 +616,18 @@ suite err_suite(int which) {
         s.recs.push_back(r);
         break;
     }
+    case 6:   // a grouped record (T_MAX 8, tiles of 8 rows): a bad id as the first pair
+        s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 64, 64, 9, 4, 8, true, false, 0, 16, 0, 1, 0, 0, 8, false, R_UNIFORM, 0));
+        break;
+    case 7:   // ... in the middle (it would fill no tile: it runs alone as a bad id)
+        s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 64, 64, 9, 4, 8, false, true, 0, 16, 0, 1, 0, 0, 8, false, R_UNIFORM, 17));
+        break;
+    case 8:   // ... as the last pair, a negative number, with a scale table
+        s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 64, 64, 9, 4, 8, true, true, 0, 16, 0, 1, 0, 0, 8, true, R_UNIFORM, 35));
+        break;
+    case 9:   // ... N_EXPERT itself (above 256: such an id never takes a pending slot) fails
+        s.recs.push_back(make_mmid(s, al, TSR_FMT_Q8_0, 64, 64, 9, 4, 300, true, false, 0, 16, 0, 1, 0, 0, 300, false, R_HIGH, 20));
+        break;
     default: { // MUL_MAT_ID with a scale table and an ids stride that is not a multiple of 4
         rec r = make_mmid(s, al, TSR_FMT_Q8_0, 64, 64, 2, 2, 8, true, true, 0, 8, 0, 1);
         r.a[mi::IDS_STRIDE] = 9;
@@ -557,6 +662,16 @@ int main(int argc, char ** argv) {
         run_scheds(a, n_sched);
         run_scheds(b, n_sched);
         run_scheds(c, 2u);
+        for (const uint32_t t_max : { 8u, 4u, 3u, 1u }) {
+            suite g = suite_mmid_group(t_max);
+            run_scheds(g, n_sched);
+        }
+        for (const uint32_t t_max : { 8u, 4u }) {
+            suite g = suite_mmid_pending(t_max);
+            run_scheds(g, 2u);
+        }
+        suite tt = suite_mmid_tight();
+        run_scheds(tt, n_sched);
     } else if (mode == "errors") {
         const uint32_t BAD = tsr::opl::RET_BAD_RECORD;
         const err_case cases[] = {
@@ -565,7 +680,11 @@ int main(int argc, char ** argv) {
             { "ROUTE flags", [] { return err_suite(2); }, BAD, TSR_LCQ_R0_STATUS_KERNEL_ERR },
             { "ROUTE k > n", [] { return err_suite(3); }, BAD, TSR_LCQ_R0_STATUS_KERNEL_ERR },
             { "MUL_MAT_ID fmt", [] { return err_suite(4); }, BAD, TSR_LCQ_R0_STATUS_KERNEL_ERR },
-            { "MUL_MAT_ID ids stride", [] { return err_suite(5); }, BAD, TSR_LCQ_R0_STATUS_KERNEL_ERR },
+            { "MUL_MAT_ID ids stride", [] { return err_suite(10); }, BAD, TSR_LCQ_R0_STATUS_KERNEL_ERR },
+            { "grouped: bad id, first pair", [] { return err_suite(6); }, 1u, TSR_LCQ_R0_STATUS_TILE_ERR },
+            { "grouped: bad id, middle pair", [] { return err_suite(7); }, 1u, TSR_LCQ_R0_STATUS_TILE_ERR },
+            { "grouped: negative id, last pair", [] { return err_suite(8); }, 1u, TSR_LCQ_R0_STATUS_TILE_ERR },
+            { "grouped: id 300 of 300 experts", [] { return err_suite(9); }, 1u, TSR_LCQ_R0_STATUS_TILE_ERR },
         };
         for (const err_case & c : cases) run_err(c);
     } else {
