@@ -35,6 +35,9 @@ deps first_deps_slow(deps dd, deps rr);
 // Host builds only (k_mulmat.cpp): kind_mulmat without the decode fast path (fw_kernels_host compares
 // the two paths' pushes for T = 1 records).
 ticket mulmat_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+// Likewise MUL_MAT_BEGIN's and MUL_MAT_END's general paths (fw_kernels_host compares them with their fast entries).
+ticket mulmat_begin_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket mulmat_end_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 #endif
 
 // The deps of a tile's first LD: the op's deps and the block's ring deps, without DMA tickets.
@@ -65,19 +68,31 @@ TSR_HOT ticket push_qact(qa kind, spm q, spm x, uint32_t K, uint32_t tt, uint32_
 #endif
 }
 
-// The pushes of a T = 1 op whose block is blk (CHK: issue() with its credit wait, else issue_nc).
+// The pushes of a T = 1 op up to its MVM (the LD of x, the LD of the addend or old y, the QACT, the MVM) in a
+// block blk (CHK: issue() with its credit wait, else issue_nc): the tickets of the last LD and the MVM.
+struct t1_tickets {
+    ticket ld, mv;
+};
+template <bool CHK>
+TSR_HOT t1_tickets t1_ops(spm blk, uint32_t xl, uint32_t ql, uint32_t yl, uint32_t ax, uint32_t ay, uint32_t aadd,
+                          bool has_add, bool acc, wref w, uint32_t N, uint32_t K, deps first, uint32_t pf) {
+    const spm q = blk + xl;
+    const spm yb = q + ql;
+    ticket ld = issue_c<CHK>(LD(blk, from_handle(ax), xl), first, pf);
+    const ticket ld_x = ld;
+    ticket ld_add{};
+    if (acc) ld = ld_add = issue_c<CHK>(LD(yb, from_handle(has_add ? aadd : ay), yl), deps{}, pf);
+    const ticket qt = push_qact<CHK>(qa_for(w), q, blk, K, 1u, xl, ld_x, pf);
+    // after(qt, ld_add) = {qt, ld_add}: qt is a QACT ticket, ld_add none or a DMA one.
+    return t1_tickets{ld, issue_c<CHK>(MVM(yb, q, w, N, K, 1u, yl, acc), deps{qt, ld_add}, pf)};
+}
+
+// All of the T = 1 op's pushes: t1_ops, then the ST of the y row.
 template <bool CHK>
 TSR_HOT ticket t1_push(spm blk, uint32_t xl, uint32_t ql, uint32_t yl, uint32_t ax, uint32_t ay, uint32_t aadd,
                        bool has_add, bool acc, wref w, uint32_t N, uint32_t K, deps first, uint32_t pf) {
-    const spm q = blk + xl;
-    const spm yb = q + ql;
-    const ticket ld_x = issue_c<CHK>(LD(blk, from_handle(ax), xl), first, pf);
-    ticket ld_add{};
-    if (acc) ld_add = issue_c<CHK>(LD(yb, from_handle(has_add ? aadd : ay), yl), deps{}, pf);
-    const ticket qt = push_qact<CHK>(qa_for(w), q, blk, K, 1u, xl, ld_x, pf);
-    // after(qt, ld_add) = {qt, ld_add}: qt is a QACT ticket, ld_add none or a DMA one.
-    const ticket mv = issue_c<CHK>(MVM(yb, q, w, N, K, 1u, yl, acc), deps{qt, ld_add}, pf);
-    return issue_c<CHK>(ST(yb, from_handle(ay), yl), deps{mv}, pf);
+    const t1_tickets t = t1_ops<CHK>(blk, xl, ql, yl, ax, ay, aadd, has_add, acc, w, N, K, first, pf);
+    return issue_c<CHK>(ST(blk + xl + ql, from_handle(ay), yl), deps{t.mv}, pf);
 }
 
 // The decode fast path (header comment). kflags = word0 [23:16]; the executor has checked n_args.

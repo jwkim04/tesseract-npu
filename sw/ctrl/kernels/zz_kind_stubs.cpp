@@ -27,6 +27,8 @@ namespace {
     }
 TSR_KIND_STUB(kind_mulmat_scale)
 TSR_KIND_STUB(kind_mulmat_softcap)
+TSR_KIND_STUB(kind_mulmat_begin)
+TSR_KIND_STUB(kind_mulmat_end)
 TSR_KIND_STUB(kind_add)
 TSR_KIND_STUB(kind_mul)
 TSR_KIND_STUB(kind_scale)
@@ -59,6 +61,8 @@ TSR_FAST_STUB(kind_get_rows_fast)
 TSR_FAST_STUB(kind_set_rows_kv_fast)
 TSR_FAST_STUB(kind_cpy_fast)
 TSR_FAST_STUB(kind_unary_fast)
+TSR_FAST_STUB(kind_mulmat_begin_fast)
+TSR_FAST_STUB(kind_mulmat_end_fast)
 #undef TSR_FAST_STUB
 
 }  // namespace tsr

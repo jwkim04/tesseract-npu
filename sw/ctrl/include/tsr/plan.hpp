@@ -490,6 +490,34 @@ constexpr op_plan mul_mat_plan(const dev_cfg & c, const uint32_t * a, uint32_t) 
     return st == opl::RET_OK ? op_plan{st, t.t_tile * t.lpt} : op_plan{st, SCRATCH_UNSUPPORTED};
 }
 
+// MUL_MAT_BEGIN (0x20): MUL_MAT's plan (mm_plan) of a record with one T-tile; more than one tile is
+// BAD_RECORD. scratch_lines: the tile's block, T x (x + QA + y) lines. MUL_MAT_END (0x21) needs no scratch.
+constexpr bool plan_mul_mat_begin(const uint32_t * a, uint32_t n_args, const plan_limits & l, kind_plan * out) {
+    mm_tiling t{};
+    if (n_args != opl::mm::NARGS) return plan_fail(out, opl::RET_BAD_RECORD);
+    const uint32_t st = mm_plan(mm_limits{l.k_max, l.t_max, l.budget}, a[opl::mm::FMT], a[opl::mm::N], a[opl::mm::K],
+                                a[opl::mm::T], &t);
+    if (st != opl::RET_OK) return plan_fail(out, st);
+    if (t.n_tiles != 1u) return plan_fail(out, opl::RET_BAD_RECORD);
+    out->status = opl::RET_OK;
+    out->scratch_lines = t.t_tile * t.lpt;
+    out->row_lines = t.y_lines;
+    out->tile_rows = t.t_tile;
+    out->n_tiles = 1u;
+    out->flags = KP_ONE_TILE;
+    return true;
+}
+constexpr bool plan_mul_mat_end(const uint32_t *, uint32_t n_args, const plan_limits &, kind_plan * out) {
+    if (n_args != opl::mmend::NARGS) return plan_fail(out, opl::RET_BAD_RECORD);
+    out->status = opl::RET_OK;
+    out->scratch_lines = 0u;
+    out->row_lines = 0u;
+    out->tile_rows = 0u;
+    out->n_tiles = 0u;
+    out->flags = 0u;
+    return true;
+}
+
 // The M7 planner of `kind` (false with status BAD_RECORD for a kind that is not M7's).
 constexpr bool plan_kind(const plan_limits & l, uint32_t kind, const uint32_t * args, uint32_t n_args, kind_plan * out) {
     switch (kind) {
@@ -506,6 +534,8 @@ constexpr bool plan_kind(const plan_limits & l, uint32_t kind, const uint32_t * 
         case opl::K_UNARY:       return plan_unary(args, n_args, l, out);
         case opl::K_MOE_ROUTE:   return plan_moe_route(args, n_args, l, out);
         case opl::K_MUL_MAT_ID:  return plan_mul_mat_id(args, n_args, l, out);
+        case opl::K_MUL_MAT_BEGIN: return plan::plan_mul_mat_begin(args, n_args, l, out);
+        case opl::K_MUL_MAT_END: return plan::plan_mul_mat_end(args, n_args, l, out);
         case opl::K_SOFTPLUS:    return plan_softplus(args, n_args, l, out);
         case opl::K_SSM_CONV:    return plan_ssm_conv(args, n_args, l, out);
         case opl::K_GATED_DELTA_NET: return plan_gated_delta_net(args, n_args, l, out);

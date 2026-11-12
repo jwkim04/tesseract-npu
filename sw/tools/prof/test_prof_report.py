@@ -301,7 +301,7 @@ def main():
                 bad += 1
             stack.append(t1)
     check(bad == 0, "Perfetto: slices of a track never overlap without nesting (%d tracks)" % len(per))
-    sl = [e for e in xs if e["args"].get("kind") == "MUL_MAT" and "ideal_cycles" in e["args"]]
+    sl = [e for e in xs if e["args"].get("kind") in ("MUL_MAT", "MUL_MAT_BEGIN") and "ideal_cycles" in e["args"]]
     check(len(sl) > 0 and all("efficiency" in e["args"] for e in sl if e["args"].get("cycles")), "Perfetto: MVM slices carry the ideal cycles and the efficiency")
     dual_checks(a, dump, summ)
     if FAILS:

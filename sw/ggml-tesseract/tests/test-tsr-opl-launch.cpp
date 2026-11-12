@@ -24,6 +24,9 @@
 //      exact kinds equal the spec model, every output equals a SERIAL run of the same records; then
 //      new positions and ids through the same list (an OPL cache hit) give the new results.
 //   H. A GET_ROWS with a negative id answers TILE_ERR DRAM_RANGE at its record, named by its tag.
+//   I. Deferred MUL_MAT (SW §7.4, §9.3): random chains of MUL_MATs (T 1 to 3, an addend now and then, y over x or the addend) and
+//      CPYs between six slots, built twice, as MUL_MAT records and with set_defer (MUL_MAT_BEGIN / MUL_MAT_END, as many as the
+//      builder lowers); both lists equal the spec model bit for bit in every slot, and DONE STATUS OK.
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -63,10 +66,10 @@ struct weight {
     std::vector<tsr_block_q8_0> blk;   // N * K / 32
 };
 
-static weight make_weight(tsr_transport * tp, uint32_t num_ch, uint32_t N, uint32_t K, uint64_t w_off) {
+static weight make_weight(tsr_transport * tp, uint32_t num_ch, uint32_t N, uint32_t K, uint64_t w_off, uint32_t d0 = 0x2000u) {
     weight w{ N, K, w_off, std::vector<tsr_block_q8_0>((size_t) N * K / 32) };
     for (auto & b : w.blk) {
-        b.d = (uint16_t) (0x2000u + (g_rng() & 0x3FFu));   // positive f16 scales around 2^-7
+        b.d = (uint16_t) (d0 + (g_rng() & 0x3FFu));   // positive f16 scales around 2^-7 (d0 0x2000)
         for (int i = 0; i < 32; ++i) b.qs[i] = (int8_t) (g_rng() & 0xFF);
     }
     const size_t rb = (size_t) K / 32 * sizeof(tsr_block_q8_0);
@@ -333,6 +336,91 @@ static void test_m7(tsr_transport * tp, const tsr_config & cfg, tsr_opl_dev & de
     }
 }
 
+// I. Random chains of MUL_MATs and CPYs on six slots, eager and deferred, against the spec model.
+static void test_defer(tsr_transport * tp, const tsr_config & cfg, tsr_opl_dev & dev, const tsr_dram_write_fn & write) {
+    const uint64_t IO = TSR_REGION_IO_OFF + 0x400000;
+    const uint32_t N = 64, K = 64, NS = 6, NW = 3;
+    uint64_t woff = TSR_REGION_WEIGHT_OFF + 0x2000000;
+    std::vector<weight> ws;
+    for (uint32_t i = 0; i < NW; ++i) {
+        ws.push_back(make_weight(tp, cfg.num_ch, N, K, woff, 0x1800u));       // scales around 2^-9: the chains stay bounded
+        woff += (tsr_tensor_ch_beats(TSR_FMT_Q8_0, N, K, cfg.num_ch) * 64 + 4095) / 4096 * 4096;
+    }
+    std::mt19937 rng(99);
+    uint64_t n_begin = 0, n_end = 0, n_lists = 0;
+    for (int round = 0; round < 24; ++round) {
+        const uint32_t T = 1 + (uint32_t) (rng() % 3), len = 6 + (uint32_t) (rng() % 26);
+        const size_t row = (size_t) T * N;
+        auto slot = [&](uint32_t s) { return IO + 0x2000ull * s; };
+        std::vector<std::vector<float>> init(NS);
+        for (uint32_t s = 0; s < NS; ++s) {
+            init[s].resize(row);
+            for (float & v : init[s]) v = std::uniform_real_distribution<float>(-1.0f, 1.0f)(rng);
+        }
+        struct step { bool copy; uint32_t w, x, y, add; };       // add: slot, or NS for none
+        std::vector<step> prog;
+        for (uint32_t i = 0; i < len; ++i) {
+            step st{};
+            st.copy = rng() % 6 == 0;
+            st.w = (uint32_t) (rng() % NW);
+            st.x = (uint32_t) (rng() % NS);
+            st.y = (uint32_t) (rng() % NS);
+            st.add = rng() % 4 == 0 ? (uint32_t) (rng() % NS) : NS;
+            if (st.copy && st.y == st.x) st.y = (st.y + 1) % NS;
+            prog.push_back(st);
+        }
+        // the spec model
+        std::vector<std::vector<float>> want = init;
+        for (const step & st : prog) {
+            if (st.copy) {
+                want[st.y] = want[st.x];
+                continue;
+            }
+            std::vector<float> y = ref_mm(ws[st.w], want[st.x].data(), T, K);
+            if (st.add < NS) {
+                for (size_t i = 0; i < y.size(); ++i) y[i] = tsr_fadd(y[i], want[st.add][i]);
+            }
+            want[st.y] = y;
+        }
+        for (int mode = 0; mode < 2; ++mode) {
+            for (uint32_t s = 0; s < NS; ++s) write_f32(tp, slot(s), init[s]);
+            tsr_opl_builder b(cfg.num_ch);
+            b.set_defer(mode == 1);
+            int32_t tag = 0;
+            for (const step & st : prog) {
+                uint32_t a[mm::NARGS];
+                if (st.copy) {
+                    add_m7(b, opl::K_CPY, opl::cpy_args{ H0(slot(st.y)), N / 16, H0(slot(st.x)), N / 16, N / 16, T }, tag++);
+                    continue;
+                }
+                mm_args(a, slot(st.x), K / 16, slot(st.y), N / 16, ws[st.w], K, T);
+                if (st.add < NS) {
+                    a[mm::ADD] = H0(slot(st.add));
+                    a[mm::ADD_STRIDE] = N / 16;
+                }
+                tsr::plan::mm_tiling pt{};     // what the backend asks before it defers: one T-tile of the firmware's plan
+                const bool one_tile = tsr::plan::mm_plan(tsr_plan_cfg(cfg), TSR_FMT_Q8_0, N, K, T, &pt) == opl::RET_OK && pt.n_tiles == 1u;
+                const uint32_t r = b.mul_mat(a, tag++, opl::K_MUL_MAT, one_tile);
+                CHECK(r != tsr_opl_builder::NO_ROOM && r != tsr_opl_builder::FAILED, "I: add: %s", b.error());
+            }
+            CHECK(b.settle(), "I: settle: %s", b.error());
+            n_begin += b.n_of_kind(opl::K_MUL_MAT_BEGIN);
+            n_end += b.n_of_kind(opl::K_MUL_MAT_END);
+            n_lists++;
+            CHECK((mode == 1 || b.n_of_kind(opl::K_MUL_MAT_BEGIN) == 0) && b.n_of_kind(opl::K_MUL_MAT_BEGIN) == b.n_of_kind(opl::K_MUL_MAT_END),
+                  "I: round %d mode %d: %u BEGIN, %u END", round, mode, b.n_of_kind(opl::K_MUL_MAT_BEGIN), b.n_of_kind(opl::K_MUL_MAT_END));
+            run_list(dev, b.finish(), write, mode == 0 ? "I eager list" : "I deferred list");
+            for (uint32_t s = 0; s < NS; ++s) {
+                const size_t bad = bit_diff(read_f32(tp, slot(s), row), want[s]);
+                CHECK(bad == 0, "I: round %d (T %u, %u steps) %s: slot %u differs from the spec model in %zu values", round, T, len,
+                      mode == 0 ? "eager" : "deferred", s, bad);
+            }
+        }
+    }
+    CHECK(n_begin > 10 && n_begin == n_end, "I: %" PRIu64 " BEGIN, %" PRIu64 " END records in %" PRIu64 " lists", n_begin, n_end, n_lists);
+    printf("  I: %" PRIu64 " lists, %" PRIu64 " MUL_MAT_BEGIN / MUL_MAT_END pairs  %s\n", n_lists, n_begin, g_fail == 0 ? "ok" : "FAILED");
+}
+
 int main() {
     tsr_transport * tp = tsr_transport_open(nullptr);
     if (tp == nullptr) {
@@ -471,6 +559,9 @@ int main() {
     CHECK(r.rc == 0 && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0, "E: rc %d status %u", r.rc, r.res.status);
     CHECK(bit_diff(read_f32(tp, Y4, want4.size()), want4) == 0, "E: y4 differs after the failed launches");
     printf("  E: valid list after the errors  %s\n", g_fail == 0 ? "ok" : "FAILED");
+
+    // ---- I: deferred MUL_MAT ----
+    test_defer(tp, cfg, dev, write);
 
     // ---- M7 (SW §9.3): the builder's fusion, preload table, kind ranges and error mapping ----
     test_m7(tp, cfg, dev, write, next_w);

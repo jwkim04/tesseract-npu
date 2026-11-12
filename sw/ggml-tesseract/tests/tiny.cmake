@@ -166,6 +166,40 @@ if (TARGET llama)
         endif()
         set_tests_properties(${_name} PROPERTIES TIMEOUT ${_timeout} ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
+    # SW-92, SW-94: the device output with and without the MUL_MAT deferral (TSR_MM_DEFER=0 lowers every MUL_MAT as one record) is bit-identical:
+    # klcheck generates two prompts (prefill in ubatches of 16 tokens, then single-token decodes) with the default and with the knob off on the
+    # dense (Qwen2), Gemma 4, Qwen3.5 (Gated DeltaNet) and MoE tiny models, and `klcheck compare --expect-identical` compares the logits. The default run
+    # must have launched MUL_MAT_BEGIN / MUL_MAT_END records, the other none, with the same launches and the same other records.
+    foreach (_m qwen2-tiny-q8_0 gemma4-tiny-q8_0 qwen35-tiny-q8_0 qwen3moe-tiny-q8_0)
+        string(REPLACE "-tiny-q8_0" "" _short ${_m})
+        # T_MAX 4 with ubatches of 16 tokens (a prefill ubatch is several T-tiles: those MUL_MATs stay one record), and T_MAX 8 with ubatches of
+        # 8 (a prefill ubatch is one tile, so its MUL_MATs are split too)
+        foreach (_v "|16|" "_tmax8|8|TSR_SIM_TMAX=8")
+            string(REPLACE "|" ";" _vf "${_v}")
+            list(GET _vf 0 _sfx)
+            list(GET _vf 1 _ub)
+            list(GET _vf 2 _tm)
+            add_test(NAME ggml_tesseract_defer_${_short}${_sfx}
+                     COMMAND ${_tiny_py} ${_tiny_m7} defer --klcheck $<TARGET_FILE:klcheck>
+                             --model ${TSR_TINY_MODEL_DIR}/${_m}.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                             --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/ggml_tesseract_defer_${_short}${_sfx}
+                             --n-prompts 2 -n 9 --prompt-tail 8 -ub ${_ub} -t 4 --min-pairs 1)
+            set_tests_properties(ggml_tesseract_defer_${_short}${_sfx} PROPERTIES TIMEOUT 900
+                                 ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;${_tm}")
+        endforeach()
+    endforeach()
+    # The same with the lists cut after 7 records (TSR_OPL_SPLIT, T_MAX 8, ubatches of 8): the builder adds the END of every open BEGIN before each
+    # cut, so a BEGIN and its END are always in one list, and the output does not depend on where the lists are cut.
+    foreach (_m gemma4-tiny-q8_0 qwen35-tiny-q8_0 qwen3moe-tiny-q8_0)
+        string(REPLACE "-tiny-q8_0" "" _short ${_m})
+        add_test(NAME ggml_tesseract_defer_${_short}_split
+                 COMMAND ${_tiny_py} ${_tiny_m7} defer --klcheck $<TARGET_FILE:klcheck>
+                         --model ${TSR_TINY_MODEL_DIR}/${_m}.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                         --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/ggml_tesseract_defer_${_short}_split
+                         --n-prompts 2 -n 9 --prompt-tail 8 -ub 8 -t 4 --min-pairs 1 --split)
+        set_tests_properties(ggml_tesseract_defer_${_short}_split PROPERTIES TIMEOUT 900
+                             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=8;TSR_OPL_SPLIT=7")
+    endforeach()
     # SW-83: klcheck's verification windows (--verify-k 3): the recorded tokens of the plain device run decoded in windows of 4
     # tokens, every row an output, the accepted length cycling through 0 .. 3 (wrong tokens behind it, a rollback to the
     # recurrent snapshot). The rows must meet klcheck's criterion against the CPU (the openTPU absolute bound: the tiny

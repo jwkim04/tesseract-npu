@@ -732,7 +732,7 @@ word2..: args[n_args]                  (n_args <= 16 * n_slots - 2)
 
 Kinds and argument words. Matmul mode uses 0x01 and 0x10 (and 0x1F with MUL_MAT_ID); full mode uses every kind. The
 Gated DeltaNet kinds (0x2D to 0x2F) are numbered from the top of the free range downward. Rev is the kind's
-numerics revision at Tesseract Basis 1.2.0 (`opl::kind_rev`, §6.9). Shapes are flattened to rows: `rows` =
+numerics revision (`opl::kind_rev`, §6.9). Shapes are flattened to rows: `rows` =
 ne1·ne2·ne3, and every row of a tensor starts on a line (ensured by `supports_op`).
 
 | Kind | Name | Rev | Args (word index: meaning) | ggml source |
@@ -755,7 +755,9 @@ ne1·ne2·ne3, and every row of a tensor starts on a line (ensured by `supports_
 | 0x1D | MUL_MAT_SOFTCAP | 1 | same restricted MUL_MAT words 0–11; words 12/13 exact FP32 pre/post scales | MUL_MAT → SCALE → TANH → SCALE |
 | 0x1E | MOE_ROUTE | 1 | 0 logits, 1 logits stride (lines), 2 ids (first line of each row of the ARGSORT tensor), 3 ids stride (lines), 4 weights (packed f32, k per token), 5 n_expert (≤ 512), 6 n_used k (≤ 16), 7 T, 8 flags (0) | SOFT_MAX, ARGSORT + VIEW, GET_ROWS, SUM_ROWS, CLAMP, DIV of `build_moe_ffn` (§7.9, SW-61) |
 | 0x1F | MUL_MAT_ID | 1 | 0 dst, 1 dst stride, 2 x, 3 x slot stride (0: one x row per token), 4 x token stride, 5 ids, 6 ids stride (bytes), 7 W_OFF of expert 0 (beats), 8 EXP_STRIDE (beats per channel), 9 fmt, 10 N, 11 K, 12 T, 13 n_used, 14 n_expert, 15 scale table handle (0xFFFF_FFFF none), 16 flags (0) | MUL_MAT_ID; with the per-expert scale chain REPEAT + GET_ROWS + MUL (§7.9, SW-62) |
-| 0x20–0x2C | free (MOE_ROUTE and MUL_MAT_ID take 0x1E and 0x1F, the lowest free numbers; the Gated DeltaNet kinds take 0x2D–0x2F, numbered downward from the top of the free range) | none | | |
+| 0x20 | MUL_MAT_BEGIN | 1 | words 0–11 as MUL_MAT, with the same checks, and T no larger than the T-tile of `mm_plan` (one tile; else BAD_RECORD). It pushes LD x, the LD of the addend or old y, QACT and MVM, keeps its ring block held and returns the ticket of its last LD. Its ST is its MUL_MAT_END's (§7.4) | MUL_MAT; the builder emits it with its END |
+| 0x21 | MUL_MAT_END | 1 | 0 BEGIN: the op index of a MUL_MAT_BEGIN record of this list. It pushes the ST of that record's y rows with a dependency on its MVM, releases the block and returns the ST | the ST of a MUL_MAT_BEGIN |
+| 0x22–0x2C | free (MOE_ROUTE and MUL_MAT_ID take 0x1E and 0x1F, the lowest free numbers, and MUL_MAT_BEGIN and MUL_MAT_END the two after them; the Gated DeltaNet kinds take 0x2D–0x2F, numbered downward from the top of the free range) | none | | |
 | 0x2D | SOFTPLUS | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows | UNARY SOFTPLUS (§7.10, SW-69) |
 | 0x2E | SSM_CONV | 1 | 0 dst, 1 dst token stride, 2 x (token rows), 3 x token stride, 4 state in, 5 state out, 6 taps (d_conv rows of C), 7 C, 8 d_conv, 9 T, 10 n_seqs, 11 flags (bit0 SILU) | SSM_CONV with its CONCAT window, state CPY and SILU (§7.10, SW-68, SW-71) |
 | 0x2F | GATED_DELTA_NET | 2 | 0 dst, 1 state out, 2 state in, 3 q, 4 q head stride, 5 q token stride, 6 k, 7 k head stride, 8 k token stride, 9 v, 10 v head stride, 11 v token stride, 12 g, 13 g token stride, 14 beta, 15 beta token stride, 16 S_v, 17 H_k, 18 H_v, 19 T, 20 n_seqs, 21 scale (f32) | GATED_DELTA_NET, scalar gate; K > 1 state snapshots are a chain of these records (§7.10, §7.11, SW-67, SW-83) |
@@ -834,7 +836,8 @@ SPM layout (U200 defaults; L = `SPM_BYTES`/64 = 65,536 lines):
 
 DTCM tables: `ticket[4096]` (the op's done ticket) and `pidx[4096]` (the op's first push index), 32 KiB in
 total. The ticket table has one sentinel word in front (`TICKET_NONE`: a dep is looked up as entry dep + 1
-with 0xFFFF wrapping to 0). The scratch ring's record table holds 128 blocks (2 KiB).
+with 0xFFFF wrapping to 0). The scratch ring's record table holds 128 blocks (2 KiB). The table of open
+MUL_MAT_BEGIN records (below) takes 0.8 KiB.
 
 Algorithm:
 
@@ -855,11 +858,12 @@ Algorithm:
       allocates scratch (its writes also wait for the ring's release deps), pushes its tile ops, and returns
       one ticket T_i whose completion implies every tile op of op i is done (I1, CC §7). A MUL_MAT record
       first goes to the decode fast path, a short full-mode record to its kind's fast entry (both below).
-   4. `ticket[i]` = T_i. The handler releases its scratch blocks with `after` = T_i.
+   4. `ticket[i]` = T_i. The handler releases its scratch blocks with `after` = T_i. A MUL_MAT_BEGIN keeps its
+      block until its END (below).
    5. Every 16 ops, and before every software join, read `QSTATUS` error bits. If an error is seen and
       STOP_ON_ERROR is set, stop pushing. This decision is timing-dependent but changes only which later ops
       are skipped; the result is an error either way.
-3. Run `join_all()`.
+3. Close the BEGIN records that are still open (below), then run `join_all()`.
 4. Read `first_error()`. If it is nonzero, find the op i whose `pidx[i]` <= `ERR_PIDX` < `pidx[i+1]` and return
    i + 1. Otherwise return 0.
 
@@ -883,6 +887,40 @@ Codes from 0x8000_0000 up are negative as int32, so the runtime answers DONE STA
 Overlap (D3). The executor runs ahead of the units, limited only by credits and the ring. Independent ops
 overlap on different units: Q, K and V projections, gate and up, and a ST of one op beside the MVM of the next.
 
+Open MUL_MAT records (SW-90, SW-91). The DMA unit runs its queue in order, so the ST of a MUL_MAT holds back every
+LD pushed after it until the MVM is done. A MUL_MAT_BEGIN leaves its ST to a later MUL_MAT_END, and the records
+between them run under its MVM (§7.4). BEGIN keeps its ring block held and enters itself in the table of open records
+(`exec.hpp` `mm_open`, reached through the ring, cleared at every launch, SW-4): its op index, the SPM lines of its y
+rows, the block's release slot, the destination handle and stride, T, the lines per row and the MVM's ticket. END
+finds its BEGIN by the op index, pushes the ST with a dependency on that MVM, releases the block with the ST and
+returns the ST. BEGIN's own ticket is its last LD, a DMA ticket: a record that overwrites the x rows or the addend
+waits for it (the DMA queue order implies it), and a record that reads y depends on END. Records between BEGIN and
+END do not read or write the BEGIN's y rows (the builder's rule, §9.3; the race detector reports a violation).
+The table has eight entries. Four rules make every list legal, whatever the order of its records (the builder
+pairs BEGIN and END, the rules are the safety net):
+
+1. END of an open BEGIN pushes the STs, releases the block and frees the entry.
+2. A BEGIN that finds eight entries open closes the oldest first: it pushes its STs and releases its block as its
+   END would. The BEGIN is marked closed (a bit per op) and its last ST replaces its ticket in the ticket table. Its
+   END then pushes nothing and returns that ticket.
+3. A ring allocation that is refused (`spm_ring::alloc` answers `SPM_NONE`, which ends a launch with SCRATCH) while
+   BEGINs are open closes every open BEGIN and allocates once more. Every kind allocates through `kf::alloc_g`, and
+   a fast path whose allocation fails returns to its general path, so this is one function. The retry's deps are the
+   closed blocks' release tickets, as for any released block. The rule does not ask whether a held block caused the
+   refusal: a multi-tile record's probe for a second buffer that finds no room beside its live block closes the open
+   BEGINs too, and their overlap with the records after them is lost (the result stays correct). A list that
+   wants the overlap keeps the held blocks and the distance from BEGIN to END small against the ring's budget (§6.7).
+4. At the end of the list, and when the loop stops on a refused record, every open BEGIN is closed before
+   `join_all()`. When the executor stopped on a unit error (STOP_ON_ERROR) or a failed executor load, nothing more
+   is pushed and the open BEGINs stay open: the next launch starts with an empty table.
+
+An END that names no open or closed BEGIN (none at that index, END twice, a MUL_MAT, a later record) is BAD_RECORD,
+as is a BEGIN of more than one T-tile, with kind flags, or with a flag combination MUL_MAT refuses. An ST pushed by
+rule 2, 3 or 4 lies in the push-index range of the record that triggered it, and an error of that ST is reported
+against that record. END's own ST lies in END's range: a DRAM error on the y rows names END, an error of the LD,
+QACT or MVM names BEGIN. All four rules depend on the list and the ring only, so the pushes are the same under
+every schedule (§4.7).
+
 Hot path (SW-35). The per-record RISC-V cost sets how far the executor runs ahead (§7.8). The rules:
 
 - Records are read in place. The kind table in .rodata holds per kind the handler, word0's expected n_args and
@@ -896,6 +934,12 @@ Hot path (SW-35). The per-record RISC-V cost sets how far the executor runs ahea
   for the op's 4–5 pushes when the per-unit fields and the issue-FIFO bound cover them, and pushes exactly the
   ops, words and deps of `kind_mulmat`. Every other case (T not 1, a record `kind_mulmat` refuses, a ring
   wrap, reused blocks released by another unit) returns before changing anything, and `kind_mulmat` runs it.
+- MUL_MAT_BEGIN and MUL_MAT_END have fast entries of the same form (`kind_mulmat_begin_fast`, `kind_mulmat_end_fast`,
+  called through the kind table). BEGIN's takes T = 1 and the cases `mulmat_t1_fast` takes, with a free table
+  entry. END's takes an open BEGIN whose rows are one ST (T = 1 or dense rows) and a record with no dependency
+  but DMA ones. Everything else is the handler's general path. END meets the 350-cycle requirement of §7.8, BEGIN
+  does not: it pushes what MUL_MAT's fast path pushes except the ST, and costs about as much as MUL_MAT, which is
+  not one of the short kinds of §7.8 either (SW-95).
 - `spm_ring` (§6.7) is O(1) amortized (a power-of-two table of 4-word records, 128 blocks): the executor can
   run further ahead before a full table makes `alloc` join its oldest block.
 - `exec_state` (`opl.hpp`, symbol `__tsr_exec_state`) counts the MUL_MAT records that left the fast path and
@@ -905,7 +949,7 @@ A fast path never changes what is pushed: the tile-op order, operand words, deps
 every record are fixed by the kind. The tests pin it: `fw_m6_e2e` and `fw_exec_rv` compare digests of their
 captured launch traces (push records, DONE, expect regions; `tests/fw_trace_digest.h`) with recorded ones;
 `fw_kernels_host` runs T = 1 records through `mulmat_t1_fast` and through the general path on twin simulators
-and compares every push; `fw_hdr_host` compares the ring's blocks, deps and joined tickets with the reference
+and compares every push, and a MUL_MAT_BEGIN followed by its END (fast entries and general paths) with the MUL_MAT; `fw_hdr_host` compares the ring's blocks, deps and joined tickets with the reference
 algorithm; `fw_exec_rv`, `fw_m6_e2e` and `fw_m6_perf` assert PERF PUSH_STALL = 0 (CC §7.3). A deliberate
 change of these pushes is a decision: record it here and update the digests. Planning stays in the firmware
 (SW-20).
@@ -961,6 +1005,17 @@ buffering below). Per T tile (`plan.hpp`, T_MAX and the ring budget):
 Fusing a bias or residual through ACC gives y = addend + W·x with one f32 addition. f32 addition is commutative, so
 this is bit-identical to ggml's separate ADD on the device. Tiles are double-buffered in the ring: the LD of tile
 t+1 waits only for the QACT that read its buffer.
+
+MUL_MAT_BEGIN and MUL_MAT_END (0x20 and 0x21) split a MUL_MAT of one T-tile into two records. BEGIN pushes steps 1 to
+4 with the ops, words, deps and order of MUL_MAT's, in one ring block of T × lpt lines that it does not release, and
+returns the ticket of its last LD. END pushes step 5, the ST of the y rows (one ST for dense rows, else one per row,
+the first with a dependency on the MVM), releases the block with the last ST and returns it. The numerics are
+MUL_MAT's: the same tile ops on the same operands. A BEGIN and an END that follow each other push exactly the ops of
+a MUL_MAT record. The records between them run under the MVM, which streams the weights, while the DMA queue is free
+for their LDs. The executor keeps the open records in a table and closes them when a rule needs it (§7.3). A BEGIN
+closed before its END pushes its ST without END's dependencies, so every dependency of the ST (an earlier reader or
+writer of the y rows) belongs on the BEGIN: the ST follows the BEGIN's LDs in the DMA queue, so what the BEGIN waits
+for the ST waits for too.
 
 ### 7.5 Full-mode kernels
 
@@ -1037,7 +1092,7 @@ test (`fw_prof.h`).
   stays ahead of the MVM, which never idles on issue. The design requirement is the issue rate, not the cycle
   count.
 - Short full-mode kinds: at most 350 RISC-V cycles of work per decode record for ADD, MUL, SCALE (also with a bias),
-  RMS_NORM, GLU, ROPE, UNARY, GET_ROWS, CPY and SET_ROWS_KV at the decode shapes, checked by `fw_exec_perf_m7`
+  RMS_NORM, GLU, ROPE, UNARY, GET_ROWS, CPY, SET_ROWS_KV and MUL_MAT_END at the decode shapes, checked by `fw_exec_perf_m7`
   (`--strict` asserts it for every kind). Records outside those shapes may exceed it: per-head norms with more
   than one row, ROPE with a freq-factor table or freq_scale other than 1, and records whose s-register values
   change (each MOVI is one push more).
@@ -1584,6 +1639,36 @@ Full mode. Builder passes:
 
 The result is cached per graph identity (R7, SW-45).
 
+Deferred MUL_MAT (SW-92, SW-93). The ST of a MUL_MAT holds back the DMA queue until its MVM is done (§7.3), so the
+builder lowers a MUL_MAT as a MUL_MAT_BEGIN and a MUL_MAT_END (§7.4) when the records after it can run under its
+MVM. A node is eligible when the booted image has MUL_MAT_BEGIN, MUL_MAT_END and JOIN, the record is a plain
+MUL_MAT (a fused bias or residual ADD included; not MUL_MAT_SCALE or MUL_MAT_SOFTCAP) of one weight part, it is
+not staged, the firmware's plan for it (`mm_plan` on the device's CFG values) is one T-tile, and `TSR_MM_DEFER` is
+not 0. The builder keeps an eligible record pending until the next record is added. The next record decides: if its
+ranges touch the y rows of the pending record, the pending record is emitted as a MUL_MAT; otherwise it is
+emitted as a MUL_MAT_BEGIN. A pending record with nothing after it (a cut, the end of the graph) is a MUL_MAT.
+
+The END of an open BEGIN is added lazily: before the first record whose ranges touch the BEGIN's y rows, before
+every cut of the list (`tsr_flush`, whatever its reason) and at the end of the graph. So no record between a BEGIN
+and its END touches the y rows (the rule of §7.3), and a BEGIN and its END are always in one list. At most eight
+BEGINs are open at once: the END of the oldest comes before a ninth BEGIN. `add` answers NO_ROOM early enough that
+the pending record and the ENDs of the open BEGINs still fit the 4096 records of the list.
+
+Dependencies of a split MUL_MAT. A BEGIN has the ranges and the dependencies of its MUL_MAT: it reads x, the addend,
+y with ACC_DST and the weight rows, and writes y. The write is there for the records before it: a BEGIN that the
+executor closes early (§7.3) pushes its ST without END's dependencies, so an earlier reader or writer of the y rows
+belongs before the BEGIN. An END reads nothing, writes y and has its BEGIN as an explicit predecessor
+(`tsr_opl_builder::add`'s `pred`). The ranges give the same edge, since the END's write of y overlaps the BEGIN's
+write; the explicit one is kept so that the edge does not depend on the ranges. The BEGIN is its only dependency. A
+record that reads or writes y depends on the END (which implies the BEGIN). A record that overwrites x or the addend
+depends on the BEGIN, whose ticket is its last LD. BEGIN and END carry the tag of the node, so an error in either
+names the node. The profile (`TSR_DUMP_PLAN`) gives the BEGIN the reads, the weight bytes and the ideal MVM cycles
+and the END the write bytes; the ST joins to the END, and the sum of the two records is the node's.
+
+`TSR_STATS` counts the records of each kind, BEGIN and END included; the MUL_MAT count of a launch line and of the
+statistics is the number of matrix products (MUL_MAT and MUL_MAT_BEGIN records), and the line names the BEGIN and END
+counts after it.
+
 supports_op (full mode). Every condition below also requires every operand's base offset and row stride to be
 multiples of 64 bytes.
 
@@ -1650,7 +1735,8 @@ Compute heap (R6, SW-46). `get_alloc_size` pads to 64 bytes only where ggml allo
 leaves, views, quantized types, MUL_MAT, FLASH_ATTN_EXT); ggml-alloc pads every block to the 64-byte alignment,
 which holds a single row's whole-line store.
 
-Knobs. `TSR_KINDS=m6` restricts the device to MUL_MAT (the matmul mode; the matmul-mode e2e ctests run with it and
+Knobs. `TSR_MM_DEFER=0` lowers every MUL_MAT as one MUL_MAT record (read once; default on). The device output of a
+graph is the same with and without it. `TSR_KINDS=m6` restricts the device to MUL_MAT (the matmul mode; the matmul-mode e2e ctests run with it and
 `TSR_COMPUTE_WINDOWS=io`); `TSR_KINDS=m6,+MUL_MAT_ID` adds MUL_MAT_ID (§7.9). `klcheck` and `tsr-numcheck`
 `--phase m6` set the matmul-mode restriction (SW-49).
 
@@ -1796,6 +1882,7 @@ the kind.
 | Whole layers | `fw_m7_layer_qwen05b`, `fw_m7_layer_gemma12b` (one decoder layer per OPL list: every record's output and both KV planes bit-exact against the per-kind references composed in op order, no write outside them), `fw_m7_layer_ggml` (against ggml-cpu), `fw_m7_layer_perf` (§7.8) |
 | Backend and runtime on the transports | `ggml_tesseract_e2e*`, `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` (`_bigt` is `slow`) and `ggml_tesseract_backend_ops_<op>` (test-backend-ops on `sim` per full-mode op filter: every supported case passes, a minimum number is supported, the unsupported cases are counted), `rt_sim*`, `rt_mock*`, `rt_vkernel_k4t1` (opt-in), `torch_pytest*` (`TSR_WITH_TORCH`), `transport_*`, `ggml_tesseract_units` (OPL builder, fusion, supports_op against independently built words), `ggml_tesseract_opl_launch*` |
 | KV and attention | `ggml_tesseract_attn` (SET_ROWS + FLASH_ATTN with a KV buffer in llama.cpp's `build_attn` graph shape: D 64 to 512, GQA, decode and prefill, causal, SWA, wrapped ring, holes; per run the device cache equals the history plus `quantize_row_q8_0_ref` of the new rows, the output equals `tsr_ref_fa` on the device's own cache, NMSE against the CPU at most 5e-4 (1e-6 for ±0 and -inf masks); a second FLASH_ATTN on the same plane with the K indices overwritten, as in layers that share KV, equal to `tsr_ref_fa` bit for bit, SW-89), `_tmax8`, `_split1` (every record its own list); `ggml_tesseract_kvbuf` (identification, placement, conversion against independent `tsr_kv_pack_row` images, MSUMs and copies, rule-5 and rule-6 promotion at a small PCAP); `ggml_tesseract_kvstate` (llama.cpp's state API: device to device logits bit-identical, the device's state file read by a CPU context byte for byte) |
+| Split MUL_MAT (SW-92 to SW-94) | `ggml_tesseract_units` (the builder: BEGIN, MUL_MAT and END of independent products, the lazy END, no BEGIN when the next record reads or writes y, the explicit predecessor, eight open at most, the reserve at a full list with plain and with deferred records, a random property check against the eager hazards), `ggml_tesseract_opl_launch*` (section I: random chains of MUL_MATs and CPYs on the device, built as MUL_MAT records and as BEGIN and END, equal to the spec model in every slot), `ggml_tesseract_defer_*` (klcheck on the dense, Gemma 4, Qwen3.5 and MoE tiny models with and without `TSR_MM_DEFER`, also with T_MAX 8 and with the lists cut after 7 records: bit-identical logits, the default run launches BEGIN and END records in equal numbers per list) |
 | Whole graphs | `ggml_tesseract_graph_qwen_tiny*`, `_gemma_tiny`, `_gemma_tiny_shared*` (the last two layers share the KV of the first two, as in Gemma 4 E4B; one run cuts the op lists in prefill), `_qwen05b` (label `model`), `_qwen35_tiny*`, `_qwen3moe_tiny*`, `ggml_tesseract_mtp_*`, `ggml_tesseract_verify_*`, `ggml_tesseract_gdn_logits_*`, `ggml_tesseract_head_blocks`: exactly one Tesseract split per decode graph (`GGML_SCHED_DEBUG=2`), one launch per decode token and per prefill ubatch, the embd identity, and klcheck's criterion against the CPU on synthetic tiny models (SW-21; `klcheck run --phase m7 -v` on `sim`, `tiny.cmake`, `m7_tests.py`); the MTP tests check every accepted length and rollback bit-identical to plain decoding (§7.11) |
 | Tools and traces | `tools_klcheck_*`, `tools_numcheck_*` (FA on, q8_0 KV, rotation off), `tools_selftest_mock*`, `tools_trace_gen_replay`, `tools_trace_replay_device`, `tools_log_selftest`, `tools_klcheck_identity_qwen05b` (label `model`: generate on `sim`, replay the tokens on `sim` and `mock`, `compare --expect-identical`), `trace_v2_roundtrip`, `trace_conv_model` |
 | Transport | `transport_protocol` (EX §15 item 2, one binary for every kind: cold and warm boot, image-id mismatch, VERIFY with an injected TCM fault on vkernel, 0–7 args, credit rule, forced `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the debug-aware timeout, TRAP decoding against `addr2line`, the log paths; it runs on `sim` and `mock`, `vkernel` only with `TSR_VKERNEL_SERVER` or `TSR_VKERNEL_SOCKET` set), `transport_kdev` (protocol on mock: timeouts, stale core at open, adapter faults), `transport_xrt_noop` (`TSR_WITH_XRT`) |
@@ -1859,7 +1946,7 @@ cut into several launches by the 256-line preload area, and a FLASH_ATTN of more
 | Tesseract Core capability | 1.0 (`VERSION` 0x0000_0100; EX §7.5) |
 | Tesseract Basis | 1.2.0, Basis ABI 1 (§6.9) |
 | Image | `tsr_u200_k4`: four channels, `T_MAX` 4, the dual weight stream ([rtl-mvm.md](../rtl-mvm.md) §15), VU with 8 front, 8 EXP and 4 back lanes behind two lane-pipe stages, `CAPS` 0x10121 (VU, ATT, GDN, MVM_DUAL), core clock 200 MHz, `clk_rv` 100 MHz (CC §14) |
-| Firmware kinds | the 21 kinds of §7.2 (MUL_MAT_SCALE and MUL_MAT_SOFTCAP are declared but need `CAPS` bits 13 and 14, which the image does not have; TOPK, DQROW and VMASK are not in the image) |
+| Firmware kinds | the 23 kinds of §7.2 (MUL_MAT_SCALE and MUL_MAT_SOFTCAP are declared but need `CAPS` bits 13 and 14, which the image does not have; TOPK, DQROW and VMASK are not in the image) |
 | Firmware size | ITCM at most 96 KiB of 128 KiB, DTCM at most 56 KiB of 64 KiB (§7.8) |
 | Simulator | `TSR_SIM_CARD=k4dual` with `TSR_SIM_GDN=1` models the image (§4.5, §4.9) |
 | Execution modes | Matmul mode and full mode ([design/README.md](README.md) §2) |
@@ -1966,6 +2053,12 @@ cut into several launches by the 256-line preload area, and a FLASH_ATTN of more
 | SW-87 | The live monitor ([prof-dbg.md](../prof-dbg.md) §7): the process that owns the card publishes a one-page record in shared memory (`/dev/shm/tsr-mon-<pid>`, `sw/transport/tsr_mon.h`: a versioned layout behind a seqlock) from `tsr_opl_dev`, so the ggml backend and `tsr_rt` both publish; it is on by default (`TSR_MON=0` turns it off), updates its counters after every launch (`tok_decode` counts the tokens the main context generates, accepted drafts of speculative decoding included, `tok_prefill` its prompt tokens, `passes` every context's scheduler passes) and reads the PERF counters at most every `TSR_MON_PERF_MS` (100 ms). `tsr-top` (Python `curses`, `sw/tools/top`) reads the records, the board sensors from `xbutil` and the PCIe link from sysfs, and never opens the compute unit while an owner is alive; `tsr-mon-probe` (attach mode, `tsr-top --probe`) is opt-in for an idle card | A monitor that opens the card itself would fail while a run is on the card (the XRT open is exclusive) and could make a starting run fail. Nothing the owner does changes: PERF does not move between launches, the record is a copy, and klcheck logits are bit-identical with the publisher on and off. |
 | SW-88 | The output head in row blocks: a matrix for which T_MAX tokens do not fit one tile of `mm_plan` is stored at upload as `P` in {2, 4, 8} row blocks of `N / P` rows (N a multiple of `16 P`; the smallest `P` that plans `t_tile` = T_MAX), each symmetric over the channels like an expert | A very large vocabulary matrix gets `t_tile` 1, so a verification batch would read the matrix once per token and the MVM would not be weight-bound at T above 1. |
 | SW-89 | FA_NEW across a cut with a copy of the K indices: when ggml-alloc puts a node's result on the K indices of a SET_ROWS_KV before a later FLASH_ATTN on the same plane (layers that share KV), a CPY right after the SET_ROWS_KV copies them into a backend area, and a FLASH_ATTN in a later list preloads FA_NEW from the copy (SW-43, §9.3) | Without it the FLASH_ATTN of a sharing layer read overwritten bytes whenever a cut separated it from the SET_ROWS_KV (a ubatch of a few hundred tokens), so Gemma 4 E4B aborted in prefill at `-ub 512`. Re-emitting or reordering would change the list structure of every graph; the copy costs one CPY per index tensor and only in graphs that need it. The result bits do not change. |
+| SW-90 | A MUL_MAT whose ST comes later is two kinds: MUL_MAT_BEGIN (0x20: LD x, the addend LD, QACT, MVM; one T-tile; the ticket of its last LD) and MUL_MAT_END (0x21: the ST of the y rows with a dependency on the MVM; releases the block). The two push exactly the ops of a MUL_MAT record; the kind revision of each is 1 and MUL_MAT's stream is unchanged | The DMA unit runs its queue in order, so the ST of a MUL_MAT waits in the queue for the MVM and holds back every LD behind it: the records after a MUL_MAT cannot start while its weights stream, and the MVM unit idles while they run. Two kinds are gated per launch by the kind table (an image without them is not sent them); a kind flag on MUL_MAT would leave the table unchanged and an older image would answer BAD_RECORD. One tile because the multi-tile loop's LD of the next tile interleaves with the ST. |
+| SW-91 | The table of open BEGIN records and its four rules (§7.3): END of an open BEGIN stores and frees it; a ninth BEGIN closes the oldest; a refused ring allocation closes all and allocates again (one function, `kf::alloc_g`); the end of the list closes the rest. A closed BEGIN is marked in a bit per op and its ticket kept in the ticket table, so an END after a closing returns it. The ST of a closing lies in the push-index range of the record that triggered it | A held block is refused by every allocation, so a list the builder pairs correctly could still end in SCRATCH when the ring wraps onto a block that waits for its END, or when the ring's 128-record table fills behind it. The rules make every list legal and depend only on the list and the ring, so the pushes are the same under every schedule. The bit per op (512 bytes) lets any number of BEGINs wait for their ENDs with eight table entries; an eight-entry table that kept closed entries could not hold a ninth BEGIN. Attribution is by push index, so the ST of a closing names the record that pushed it. |
+| SW-92 | A MUL_MAT node is lowered as MUL_MAT_BEGIN + MUL_MAT_END when the image has both kinds and JOIN, the record is a plain MUL_MAT (a fused ADD included) of one weight part and one T-tile of the firmware's plan, it is not staged and `TSR_MM_DEFER` is not 0, and the next record the builder adds leaves the y rows alone. The builder keeps the record pending until then (`tsr_opl_builder::mul_mat` with `set_defer`), emits it as a MUL_MAT when the next record touches y or nothing follows, and adds the END before the first record that touches y, before every cut and at the end of the graph; at most eight BEGINs are open, and `add` answers NO_ROOM early enough that the ENDs fit the list | The records between a BEGIN and its END must not touch y, and the executor cannot carry a block across a launch (SW-4), so the pair stays in one list and the END is placed by the ranges of the records that follow. One record of lookahead is the smallest state that decides BEGIN against MUL_MAT without a second pass over the graph. A MUL_MAT whose result the next record reads gains nothing from a split, and its BEGIN would only cost a record. The limit of eight is the executor's table (SW-91); a ninth BEGIN would close the oldest anyway, so the builder adds that END itself and every pair is complete. The reserve keeps the limit of 4096 records (SW-29) from being broken by the ENDs that a flush adds. |
+| SW-93 | A BEGIN has its MUL_MAT's ranges and dependencies (y is a write); an END reads nothing, writes y and has its BEGIN as an explicit predecessor (`tsr_opl_builder::add`'s `pred`); both carry the node's tag. A record that reads or writes y depends on the END, a record that overwrites x or the addend on the BEGIN | A BEGIN that the executor closes early (SW-91) pushes its ST without END's dependencies, so every earlier reader or writer of y has to come before the BEGIN; the ranges of a MUL_MAT give exactly that. END's edge to its BEGIN is also given explicitly (the overlap of their y writes already gives it), so it does not depend on the ranges, and the transitive reduction drops the BEGIN from every later reader of y. One tag per node keeps the error name, the profile's node sum and the `NODE_BEGIN` markers of both records on the same node. |
+| SW-94 | `TSR_MM_DEFER=0` turns the lowering of SW-92 off (read once, default on); the device output of a graph is bit-identical with and without it, and the records of a launch counted per kind (`TSR_STATS`) include BEGIN and END. The MUL_MAT count of a launch line and of the statistics is the number of matrix products (MUL_MAT and MUL_MAT_BEGIN records) | The split moves a ST, not a value (SW-90), so a graph test can compare the two runs bit for bit (`ggml_tesseract_defer_*`). The knob is the way to measure what the split gains in the same build and to take it out of the way of a failure. Tools that read the launch line keep their fields. |
+| SW-95 | MUL_MAT_END is held to the 350-cycle requirement of §7.8; MUL_MAT_BEGIN is not: it is held to a regression ceiling of 450 cycles per decode record (`fw_exec_perf`), as MUL_MAT is not a short kind | BEGIN pushes the LD, the addend LD, QACT and MVM of MUL_MAT's fast path and enters the open table; it costs about what a MUL_MAT record costs, and a BEGIN with its END stays under the 400 cycles per op of the executor requirement. Reaching 350 would take a cheaper push path for every MUL_MAT-shaped record, not a change of this kind. |
 
 ---
 

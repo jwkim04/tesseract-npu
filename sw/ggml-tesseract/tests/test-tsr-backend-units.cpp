@@ -592,6 +592,299 @@ static void test_opl_capacity() {
     CHECK(c.mul_mat(a, 9) == opl::MAX_OPS - 2 && c.n_joins() == 0);
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// MUL_MAT deferral (SW §9.3 "Deferred MUL_MAT"): a plain one-tile MUL_MAT is kept pending, becomes MUL_MAT_BEGIN when the next
+// record leaves its y alone and MUL_MAT otherwise; the MUL_MAT_END comes before the first record that touches y, and before
+// every cut (settle).
+// ---------------------------------------------------------------------------------------------
+static uint32_t add_mm_d(tsr_opl_builder & b, uint64_t x, uint64_t y, uint32_t N, uint32_t K, uint32_t T, int32_t tag,
+                         uint32_t add = opl::HANDLE_NONE, uint32_t flags = 0, uint32_t fmt = TSR_FMT_Q8_0) {
+    uint32_t a[mm::NARGS];
+    mm_args(a, x, y, 0x800000u + 0x1000u * (uint32_t) tag, N, K, T, fmt, add, 0, flags);
+    return b.mul_mat(a, tag, opl::K_MUL_MAT, true);
+}
+
+static std::vector<uint32_t> kinds_of(const tsr_opl_builder & b) {
+    std::vector<uint32_t> k;
+    for (uint32_t i = 0; i < b.n_ops(); ++i) k.push_back(b.op(i).kind);
+    return k;
+}
+
+static void test_opl_defer() {
+    const uint32_t BEG = opl::K_MUL_MAT_BEGIN, END = opl::K_MUL_MAT_END, MM = opl::K_MUL_MAT;
+    const uint64_t X = IO, YA = IO + 0x10000, YB = IO + 0x20000, YC = IO + 0x30000;
+    // off by default: the records are the MUL_MATs, in order
+    {
+        tsr_opl_builder b(1);
+        CHECK(!b.defer());
+        CHECK(add_mm_d(b, X, YA, 16, 64, 1, 0) == 0 && add_mm_d(b, X, YB, 16, 64, 1, 1) == 1 && b.n_open() == 0 && !b.has_pending());
+        CHECK((kinds_of(b) == std::vector<uint32_t>{ MM, MM }));
+    }
+    // A, B independent; C reads both y: BEGIN(A), MUL_MAT(B), END(A), C (a MUL_MAT is never BEGIN when the next record reads it)
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        CHECK(add_mm_d(b, X, YA, 16, 64, 1, 0) == tsr_opl_builder::PENDING && b.has_pending() && b.n_ops() == 0 && b.n_records() == 1 && !b.empty());
+        CHECK(b.finish().empty());                                           // a pending MUL_MAT is not in the blob
+        // touches() sees the pending record: its y as a write, its x with any_access
+        CHECK(b.touches({ 0, YA, YA + 1 }, false) && !b.touches({ 0, X, X + 1 }, false) && b.touches({ 0, X, X + 1 }, true) &&
+              !b.touches({ 0, YB, YB + 1 }, true));
+        CHECK(add_mm_d(b, X, YB, 16, 64, 1, 1) == tsr_opl_builder::PENDING && b.n_ops() == 1 && b.n_open() == 1);
+        uint32_t a[mm::NARGS];
+        mm_args(a, YA, YC, 0x900000u, 16, 64, 1);
+        // a consumer reading A's and B's y: two source rows (T = 2, 0x10000 B apart): the rows at YA and YB
+        a[mm::X_STRIDE] = (uint32_t) ((YB - YA) / 64);
+        a[mm::T] = 2;
+        const uint32_t c = b.mul_mat(a, 2);
+        CHECK(c == 3 && b.n_ops() == 4 && b.n_open() == 0 && !b.has_pending());
+        CHECK((kinds_of(b) == std::vector<uint32_t>{ BEG, MM, END, MM }));
+        // one node, one tag: BEGIN and END of A carry tag 0
+        CHECK(b.op(0).tag == 0 && b.op(2).tag == 0 && b.op(1).tag == 1 && b.op(3).tag == 2);
+        // END names its BEGIN, depends on it only; BEGIN of A and MUL_MAT of B have no dependencies
+        const std::vector<uint8_t> blob = b.finish();
+        std::vector<opl::record> recs;
+        reach_of_blob(blob, &recs);
+        CHECK(recs.size() == 4 && recs[2].kind == END && recs[2].n_args == 1 && recs[2].arg(0) == 0);
+        CHECK(recs[2].dep0 == 0 && recs[2].dep1 == opl::DEP_NONE && recs[0].dep0 == opl::DEP_NONE && recs[1].dep0 == opl::DEP_NONE);
+        // the consumer depends on END(A) and MUL_MAT(B), not on BEGIN(A) (implied by the END)
+        std::set<uint32_t> rp;
+        real_preds(b, 3, rp);
+        CHECK((rp == std::set<uint32_t>{ 1, 2 }));
+        // END's ranges: no read, y written; BEGIN's: the MUL_MAT's (y is its write)
+        CHECK(b.op(2).rd.empty() && b.op(2).wr.size() == 1 && b.op(2).wr[0].lo == YA && b.op(0).wr.size() == 1 && b.op(0).wr[0].lo == YA && !b.op(0).rd.empty());
+        // the planner accepts every record (BEGIN is one T-tile, END needs no scratch)
+        for (const opl::record & r : recs) {
+            if (r.kind == MM) continue;                    // plan_kind is the M7 planner; MUL_MAT's is mm_plan
+            tsr::plan::kind_plan kp{};
+            uint32_t w[opl::mm::NARGS] = {};
+            for (uint32_t k = 0; k < r.n_args; ++k) w[k] = r.arg(k);
+            CHECK(tsr::plan::plan_kind(tsr::plan::plan_limits_of(tsr::plan::U200_K4), r.kind, w, r.n_args, &kp));
+        }
+    }
+    // the lazy END: C reads only A's y; B stays independent: BEGIN(A), BEGIN(B), END(A), C, then END(B) at the settle
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        add_mm_d(b, X, YA, 16, 64, 1, 0);
+        add_mm_d(b, X, YB, 16, 64, 1, 1);
+        const uint32_t c = add_mm(b, YA, YC, 16, 64, 1, 2);                // K = 64: reads y(A)'s line and the gap after it
+        CHECK(c == 3 && b.n_open() == 1 && b.n_ops() == 4);
+        CHECK((kinds_of(b) == std::vector<uint32_t>{ BEG, BEG, END, MM }));
+        CHECK(b.op(2).tag == 0 && b.op(2).dep0 == 0);
+        std::set<uint32_t> rp;
+        real_preds(b, 3, rp);
+        CHECK((rp == std::set<uint32_t>{ 2 }));
+        CHECK(b.settle() && b.n_open() == 0 && b.n_ops() == 5 && b.op(4).kind == END && b.op(4).tag == 1);
+        std::vector<opl::record> recs;
+        reach_of_blob(b.finish(), &recs);
+        CHECK(recs.size() == 5 && recs[2].arg(0) == 0 && recs[4].arg(0) == 1 && recs[4].dep0 == 1);
+    }
+    // the next record reads the result: no BEGIN
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        add_mm_d(b, X, YA, 16, 64, 1, 0);
+        add_mm_d(b, YA, YB, 16, 64, 1, 1);                                  // reads y(A): A is a MUL_MAT; B is pending
+        CHECK(b.n_ops() == 1 && b.op(0).kind == MM && b.n_open() == 0);
+        CHECK(b.settle() && (kinds_of(b) == std::vector<uint32_t>{ MM, MM }) && b.op(1).dep0 == 0);    // nothing follows B: a MUL_MAT
+    }
+    // the next record writes the result (WAW), or overwrites what the BEGIN reads (WAR on x)
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        add_mm_d(b, X, YA, 16, 64, 1, 0);
+        add_mm_d(b, X + 0x4000, YA, 16, 64, 1, 1);                          // writes y(A) again: A is a MUL_MAT
+        CHECK(b.op(0).kind == MM && b.n_open() == 0);
+        add_mm_d(b, X + 0x5000, YB, 16, 64, 1, 2);                          // B pending -> BEGIN(1) at this call, 2 pending
+        CHECK(b.op(1).kind == BEG);
+        const uint32_t w = add_mm(b, X + 0x6000, X + 0x4000, 16, 64, 1, 3);  // writes B's x (WAR on BEGIN) and nothing of y(B)
+        // order: BEGIN(B=1), BEGIN(2) [pending 2 -> BEGIN], then the writer; END only for records touching y
+        CHECK(b.op(w).kind == MM);
+        std::set<uint32_t> rp;
+        real_preds(b, w, rp);
+        CHECK(rp.count(1) == 1);                                            // depends on the BEGIN that read x (its ticket is its last LD)
+        CHECK(b.n_open() == 2);
+        CHECK(b.settle() && b.n_open() == 0);
+        const std::vector<uint8_t> blob = b.finish();
+        CHECK(!blob.empty());
+    }
+    // the explicit predecessor: no range conflict, still a dependency; implied ones are reduced like any other
+    {
+        tsr_opl_builder b(1);
+        uint32_t a[mm::NARGS];
+        mm_args(a, X, YA, 0x800000u, 16, 64, 1);
+        const uint32_t i0 = b.mul_mat(a, 0);
+        mm_args(a, X, YB, 0x801000u, 16, 64, 1);
+        const uint32_t i1 = b.mul_mat(a, 1);
+        const uint32_t w[1] = { i0 };
+        const std::vector<tsr_dram_range> none, wr = { tsr_rows_range(0, YC, 1, 64, 0) };
+        const uint32_t e = b.add(opl::K_MUL_MAT_END, w, 1, none, wr, 2, (int32_t) i0);
+        CHECK(e == 2 && b.op(e).dep0 == i0 && b.op(e).dep1 == opl::DEP_NONE && b.op(i1).dep0 == opl::DEP_NONE);
+        // a reader of YC depends on e only; with the pred implied by another conflict (it reads YA too) it is dropped
+        const uint32_t w2[1] = { e };
+        const std::vector<tsr_dram_range> rdA = { tsr_rows_range(0, YA, 1, 64, 0) };
+        const uint32_t e2 = b.add(opl::K_MUL_MAT_END, w2, 1, rdA, wr, 3, (int32_t) e);
+        CHECK(b.op(e2).dep0 == e && b.op(e2).dep1 == opl::DEP_NONE && b.n_dropped() >= 1);
+    }
+    // 8 open at most: the ninth BEGIN comes after the END of the oldest
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        for (int32_t i = 0; i < 10; ++i) add_mm_d(b, X, IO + 0x40000 + 0x1000ull * i, 16, 64, 1, i);
+        // 9 emitted (the tenth is pending): BEGIN x 8, END(0), BEGIN(8); open: 1..8
+        CHECK(b.n_open() == 8 && b.n_ops() == 10);
+        std::vector<uint32_t> want(8, BEG);
+        want.push_back(END);
+        want.push_back(BEG);
+        CHECK(kinds_of(b) == want);
+        CHECK(b.op(8).tag == 0 && b.op(9).tag == 8);
+        CHECK(b.settle());
+        CHECK(b.n_open() == 0 && b.n_of_kind(BEG) == 9 && b.n_of_kind(END) == 9 && b.n_of_kind(MM) == 1);
+        std::vector<opl::record> recs;
+        reach_of_blob(b.finish(), &recs);
+        int open = 0, peak = 0;
+        for (const opl::record & r : recs) {
+            open += r.kind == BEG ? 1 : r.kind == END ? -1 : 0;
+            peak = std::max(peak, open);
+            CHECK(r.kind != END || (r.arg(0) < r.idx && recs[r.arg(0)].kind == BEG));
+        }
+        CHECK(peak == 8 && open == 0);
+    }
+    // the reserve at a full list: add answers NO_ROOM early enough that the ENDs of the open BEGINs fit
+    for (uint32_t extra = 0; extra < 14; ++extra) {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        // independent plain records up to the edge, then deferred ones (each y of its own, so BEGINs stay open)
+        const uint32_t plain = opl::MAX_OPS - 4 - extra;
+        for (uint32_t i = 0; i < plain; ++i) {
+            add_mm(b, IO, IO + 0x1000000 + 64ull * i, 16, 32, 1, (int32_t) i);
+        }
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < 40 && last != tsr_opl_builder::NO_ROOM; ++i) {
+            last = add_mm_d(b, X, IO + 0x8000000 + 0x1000ull * i, 16, 64, 1, (int32_t) (plain + i));
+            CHECK(b.n_ops() + b.n_open() + (b.has_pending() ? 1u : 0u) <= opl::MAX_OPS);
+        }
+        CHECK(last == tsr_opl_builder::NO_ROOM || b.n_ops() + b.n_open() <= opl::MAX_OPS);
+        CHECK(b.settle() && b.n_ops() <= opl::MAX_OPS && b.n_open() == 0);
+        const std::vector<uint8_t> blob = b.finish();
+        opl::reader r;
+        CHECK(!blob.empty() && r.open(blob.data(), (uint32_t) blob.size(), true) == opl::RET_OK && r.hdr().n_ops == b.n_ops());
+        CHECK(b.n_of_kind(BEG) == b.n_of_kind(END));
+    }
+    // the reserve against plain records: with BEGINs open, records that need no END fill the list up to the ENDs' room
+    for (uint32_t n_open = 1; n_open <= 8; ++n_open) {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        for (uint32_t i = 0; i <= n_open; ++i) {                                  // n_open BEGINs, the last record pending
+            add_mm_d(b, X, IO + 0x8000000 + 0x1000ull * i, 16, 64, 1, (int32_t) i);
+        }
+        CHECK(b.n_open() == n_open && b.has_pending());
+        uint32_t last = 0, i = 0;
+        for (; i < opl::MAX_OPS && last != tsr_opl_builder::NO_ROOM; ++i) {
+            last = add_mm(b, IO, IO + 0x1000000 + 64ull * i, 16, 32, 1, (int32_t) (100 + i));
+        }
+        CHECK(last == tsr_opl_builder::NO_ROOM);
+        // the pending record became a BEGIN at the first plain record; the open BEGINs' ENDs still fit
+        CHECK(b.n_ops() + b.n_open() <= opl::MAX_OPS && b.n_open() == std::min<uint32_t>(n_open + 1, 8));
+        CHECK(b.settle() && b.n_ops() <= opl::MAX_OPS && b.n_open() == 0 && b.n_of_kind(END) == n_open + 1);
+        CHECK(!b.finish().empty());
+    }
+    // a fresh builder after reset(): no pending, no open BEGIN
+    {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        add_mm_d(b, X, YA, 16, 64, 1, 0);
+        add_mm_d(b, X, YB, 16, 64, 1, 1);
+        b.reset();
+        CHECK(b.empty() && !b.has_pending() && b.n_open() == 0 && b.n_of_kind(BEG) == 0 && b.defer());
+    }
+}
+
+// A random mix of deferred and plain MUL_MATs over a few slots: the deferred list orders every conflict of the program
+// order as the eager list does (a reader or writer of y after the END of its BEGIN; a writer of x after the BEGIN), no
+// record between a BEGIN and its END touches y, at most 8 BEGINs are open, every END names a BEGIN of the same tag.
+static void test_opl_defer_random() {
+    const uint32_t BEG = opl::K_MUL_MAT_BEGIN, END = opl::K_MUL_MAT_END, MM = opl::K_MUL_MAT;
+    std::mt19937_64 rng(2025);
+    uint64_t n_begin = 0, n_cases = 0, n_pairs = 0;
+    for (int round = 0; round < 300; ++round) {
+        tsr_opl_builder b(1);
+        b.set_defer(true);
+        const uint32_t nrec = 4 + (uint32_t) (rng() % 40);
+        const uint32_t nslot = 3 + (uint32_t) (rng() % 5);
+        struct prog { std::vector<tsr_dram_range> rd, wr; };
+        std::vector<prog> progs;
+        for (uint32_t i = 0; i < nrec; ++i) {
+            // x: 4 lines at the start of a 0x200-byte slot; y: one line at the start of a slot or 0x100 into it (the x range
+            // of the same slot ends at 0x100, so the two do not touch); an addend (one line) now and then
+            const uint32_t xs = (uint32_t) (rng() % nslot), ys = (uint32_t) (rng() % nslot);
+            const uint64_t x = IO + 0x200ull * xs, y = IO + 0x200ull * ys + (rng() % 2 ? 0x100 : 0);
+            const uint32_t add = rng() % 5 == 0 ? tsr_dram_handle(0, IO + 0x200ull * (rng() % nslot) + (rng() % 2 ? 0x100 : 0)) : opl::HANDLE_NONE;
+            uint32_t a[mm::NARGS];
+            mm_args(a, x, y, 0x800000u + 0x1000u * i, 16, 64, 1, TSR_FMT_Q8_0, add, 0, 0);
+            prog p;
+            b.mm_ranges(a, p.rd, p.wr);
+            const uint32_t r = b.mul_mat(a, (int32_t) i, MM, rng() % 4 != 0);
+            CHECK(r != tsr_opl_builder::NO_ROOM && r != tsr_opl_builder::FAILED);
+            progs.push_back(std::move(p));
+        }
+        CHECK(b.settle() && b.n_open() == 0);
+        n_cases++;
+        n_begin += b.n_of_kind(BEG);
+        std::vector<opl::record> recs;
+        const auto reach = reach_of_blob(b.finish(), &recs);
+        // the first record of each program record (BEGIN or MUL_MAT) and the last (END or the same)
+        std::vector<int64_t> first(nrec, -1), last(nrec, -1);
+        int open = 0;
+        for (uint32_t i = 0; i < b.n_ops(); ++i) {
+            const tsr_opl_builder::op_info & o = b.op(i);
+            if (o.kind == opl::K_JOIN) continue;
+            CHECK(o.tag >= 0 && (uint32_t) o.tag < nrec);
+            if (o.kind == END) {
+                const uint32_t bg = recs[i].arg(0);
+                CHECK(bg < i && b.op(bg).kind == BEG && b.op(bg).tag == o.tag && first[(size_t) o.tag] == (int64_t) bg);
+                last[(size_t) o.tag] = i;
+                open--;
+                // no record between the BEGIN and the END reads or writes y
+                const tsr_dram_range y = b.op(bg).wr[0];
+                for (uint32_t k = bg + 1; k < i; ++k) {
+                    for (const tsr_dram_range & q : b.op(k).rd) CHECK(!tsr_ranges_overlap(y, q));
+                    for (const tsr_dram_range & q : b.op(k).wr) CHECK(!tsr_ranges_overlap(y, q));
+                }
+            } else {
+                CHECK(first[(size_t) o.tag] < 0);
+                first[(size_t) o.tag] = last[(size_t) o.tag] = i;
+                open += o.kind == BEG ? 1 : 0;
+                CHECK(open <= 8);
+            }
+        }
+        CHECK(open == 0);
+        for (uint32_t i = 0; i < nrec; ++i) CHECK(first[i] >= 0 && last[i] >= first[i]);
+        for (uint32_t j = 0; j < nrec; ++j) {
+            for (uint32_t i = 0; i < j; ++i) {
+                bool raw = false, war = false;
+                for (const tsr_dram_range & q : progs[i].wr) {
+                    for (const tsr_dram_range & r : progs[j].rd) raw = raw || tsr_ranges_overlap(q, r);
+                    for (const tsr_dram_range & r : progs[j].wr) raw = raw || tsr_ranges_overlap(q, r);
+                }
+                for (const tsr_dram_range & q : progs[i].rd) {
+                    for (const tsr_dram_range & r : progs[j].wr) war = war || tsr_ranges_overlap(q, r);
+                }
+                if (raw) {        // j reads or writes y(i): after the ST
+                    n_pairs++;
+                    CHECK(reach[(size_t) first[j]][(size_t) last[i]]);
+                }
+                if (war) {        // j writes what i reads at its BEGIN: after the BEGIN
+                    n_pairs++;
+                    CHECK(reach[(size_t) first[j]][(size_t) first[i]]);
+                }
+            }
+        }
+    }
+    CHECK(n_cases == 300 && n_begin > 100 && n_pairs > 500);
+}
+
 // Random ops over random ranges on two channels: every conflicting pair is ordered by the encoded
 // DAG, every direct dependency (through JOINs) is a conflict, and no kept dependency is implied by
 // another kept one.
@@ -781,6 +1074,18 @@ static void test_kind_ranges() {
     h.kind_ranges(opl::K_SET_ROWS_KV, w, 0, r2, w2);
     const uint32_t s1 = h.add(opl::K_SET_ROWS_KV, w, opl::setrows::NARGS, r2, w2, 2);
     CHECK(h.op(f0).dep0 == s0 && h.op(s1).dep0 == f0 && h.op(s1).dep1 == opl::DEP_NONE);
+    // MUL_MAT_BEGIN: the ranges of its MUL_MAT (y is its write); MUL_MAT_END: word 0 is an op index, not a handle: none
+    uint32_t m[mm::NARGS];
+    mm_args(m, 0x10000, 0x20000, 0x800000u, 32, 64, 2, TSR_FMT_Q8_0, tsr_dram_handle(0, 0x30000), 0, 0);
+    std::vector<tsr_dram_range> mr, mw;
+    b.kind_ranges(opl::K_MUL_MAT, m, 0, mr, mw);
+    b.kind_ranges(opl::K_MUL_MAT_BEGIN, m, 0, rd, wr);
+    CHECK(rd.size() == mr.size() && wr.size() == mw.size() && wr.size() == 1 && !rd.empty());
+    for (size_t i = 0; i < rd.size(); ++i) CHECK(rd[i].ch == mr[i].ch && rd[i].lo == mr[i].lo && rd[i].hi == mr[i].hi);
+    CHECK(wr[0].lo == mw[0].lo && wr[0].hi == mw[0].hi);
+    const uint32_t en[1] = { 0x10000u };
+    b.kind_ranges(opl::K_MUL_MAT_END, en, 0, rd, wr);
+    CHECK(rd.empty() && wr.empty());
 }
 
 static void test_builder_preload() {
@@ -2047,6 +2352,8 @@ int main() {
     test_opl_joins();
     test_opl_failed_op();
     test_opl_capacity();
+    test_opl_defer();
+    test_opl_defer_random();
     test_opl_random();
     test_opl_cache();
     test_kind_ranges();

@@ -3,7 +3,7 @@
 // compare each kind with a reference that changes together with it, so they cannot see a numerics
 // change; this one compares each kind's outputs on a fixed corpus with a recorded digest.
 //
-//   test_fw_kind_revs IMAGE TABLE [--update] [--digests-only] [--paths]
+//   test_fw_kind_revs IMAGE TABLE [--update] [--digests-only] [--paths] [--hold [--sched S]]
 //       Boots IMAGE (the production tsr-fw.elf) on tsr_sim (U200: C = 4, T_MAX 8, CAPS of the
 //       simulator, fixed schedule) and runs a fixed corpus, one-list launches of `graph` per kind:
 //         NOP, JOIN     a list of NOPs whose last one has three predecessors (the writer's JOIN)
@@ -24,6 +24,8 @@
 //         UNARY         TANH, GELU16, SILU, EXP, GELU
 //         MOE_ROUTE     128 and 64 experts: one token, three, tiles of 16 and 4, argsort-shaped and dense ids rows,
 //                       ties and a NaN row
+//         MUL_MAT_BEGIN, MUL_MAT_END   the MUL_MAT cases that take one T-tile as a BEGIN and its END (T 1 and 3, a bias row,
+//                       ACC_DST, per-token addend rows, dense and strided y rows); the outputs are MUL_MAT's
 //         MUL_MAT_ID    the gate-up form (x shared by the slots, Q4_K) and the down form (x per slot, Q8_0, scale table)
 //         SOFTPLUS, SSM_CONV, GATED_DELTA_NET   small fixed records (SW §7.10)
 //       GATED_DELTA_NET has two paths (SW-78), chosen from CAPS, so its table has two rows. The default row is the run
@@ -45,6 +47,11 @@
 //       of general records enters the general function. A record that stops taking its fast entry
 //       fails ("path"), so a numerics change confined to a fast entry cannot hide behind a general-path
 //       digest. --paths prints the entries per launch.
+//       --hold: every launch of the corpus runs with a MUL_MAT_BEGIN as its first record and its MUL_MAT_END as its last (an
+//       independent small MUL_MAT; the corpus records follow with their dependencies moved by one), so that every kind runs
+//       with a ring block held across its records, under TSR_SIM_RACE fatal and the schedule S (default fixed). The digests
+//       must be the table's (the held MUL_MAT touches none of the corpus's regions: use it with --digests-only), and the held
+//       MUL_MAT's y rows must equal those of a plain MUL_MAT launch.
 //       Checks against TABLE (rows "0x10 MUL_MAT 1 <16 hex digits>", '#' comments; a kind with a second path
 //       has a second row with a fifth word "composed"): every kind with a
 //       revision (tsr/opl.hpp kind_rev) has a row; a digest that moved at the same revision fails
@@ -131,6 +138,8 @@ const char * const WATCH[] = {
     // fast entries
     "kind_add_fast(", "kind_mul_fast(", "kind_scale_fast(", "kind_unary_fast(", "kind_glu_fast(", "kind_rms_norm_fast(",
     "kind_rope_fast(", "kind_get_rows_fast(", "kind_cpy_fast(", "kind_set_rows_kv_fast(", "mulmat_t1_fast(",
+    // MUL_MAT_BEGIN / MUL_MAT_END: the fast entries and END's general function (BEGIN's is mulmat_any)
+    "kind_mulmat_begin_fast(", "kind_mulmat_end_fast(", "end_any(",
     // the second tier of the two with a hot entry
     "rms_fast_any(", "rope_fast_any(",
 };
@@ -158,6 +167,8 @@ struct watcher {
 };
 watcher g_watch;
 bool g_print_paths = false;
+bool g_hold = false;                 // --hold: wrap every launch's list in a MUL_MAT_BEGIN ... MUL_MAT_END pair
+const char * g_hold_sched = "fixed";
 
 int path_retire(void * ctx, const tsr_rv_retire * r) {
     watcher * w = static_cast<watcher *>(ctx);
@@ -205,6 +216,9 @@ struct launch_ctx {
         return H(ch, b);
     }
     uint32_t take(uint64_t beats) { return take(beats, rr++ & 3u); }
+    // --hold: the held MUL_MAT's data and its expected y rows (a plain launch)
+    bool hold_ready = false;
+    std::vector<uint8_t> hold_y;
 };
 
 struct kind_digest {
@@ -250,14 +264,88 @@ void check_paths(const char * what, const path_exp & px) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// --hold: a MUL_MAT_BEGIN first and its MUL_MAT_END last in every launch's list
+// ---------------------------------------------------------------------------
+constexpr uint64_t HOLD_W = 0x380000u, HOLD_X = 0x3C0000u, HOLD_Y = 0x3C1000u;   // beats (256 MiB channels)
+constexpr uint32_t HOLD_N = 64u, HOLD_K = 128u, HOLD_FMT = TSR_FMT_Q8_0;
+
+void hold_args(uint32_t a[opl::mm::NARGS]) {
+    const uint32_t xl = HOLD_K / 16u, yl = (HOLD_N + 15u) / 16u;
+    const uint32_t v[opl::mm::NARGS] = { H(1, HOLD_X), xl, H(1, HOLD_Y), yl, uint32_t(HOLD_W), HOLD_FMT, HOLD_N, HOLD_K, 1u,
+                                         NONE, 0u, 0u };
+    memcpy(a, v, sizeof(v));
+}
+
+// The list with the held MUL_MAT around it; empty when the blob does not parse.
+std::vector<uint8_t> hold_wrap(const std::vector<uint8_t> & blob) {
+    opl::reader rd;
+    if (rd.open(blob.data(), uint32_t(blob.size()), false) != opl::RET_OK) return {};
+    opl::writer w(rd.hdr().flags, rd.hdr().graph_id);
+    for (uint32_t i = 0; i < rd.hdr().n_pre; ++i) w.add_preload(rd.pre(i).src, rd.pre(i).bytes);
+    uint32_t a[opl::mm::NARGS];
+    hold_args(a);
+    const uint32_t b = w.add_raw(opl::K_MUL_MAT_BEGIN, a, opl::mm::NARGS, opl::DEP_NONE, opl::DEP_NONE);
+    opl::record r;
+    uint32_t e;
+    while ((e = rd.next(r)) == opl::RET_OK) {
+        uint32_t words[255];
+        r.words(words, r.n_args);
+        if (r.kind == opl::K_MUL_MAT_END) words[opl::mmend::BEGIN] += 1u;   // an op index, like the dependencies
+        const uint32_t d0 = r.dep0 == opl::DEP_NONE ? opl::DEP_NONE : r.dep0 + 1u;
+        const uint32_t d1 = r.dep1 == opl::DEP_NONE ? opl::DEP_NONE : r.dep1 + 1u;
+        w.add_raw(r.kind, words, r.n_args, d0, d1, r.kflags, r.n_slots);
+    }
+    const uint32_t ea[opl::mmend::NARGS] = { b };
+    w.add_raw(opl::K_MUL_MAT_END, ea, opl::mmend::NARGS, b, opl::DEP_NONE);
+    return w.finish();
+}
+
+// The held MUL_MAT's inputs and, from a plain launch of it, its expected y rows.
+void hold_setup(launch_ctx & c) {
+    c.hold_ready = true;
+    rng_t r{ 0x686F6C64u };
+    const uint32_t C = tsr_sim_config(c.sim)->num_ch;
+    const size_t row_bytes = size_t(HOLD_K / tsr_fmt_block_size(HOLD_FMT)) * tsr_fmt_ggml_block_bytes(HOLD_FMT);
+    std::vector<uint8_t> blk(row_bytes);
+    for (uint32_t n = 0; n < HOLD_N; ++n) {
+        gen_row_blocks(&r, HOLD_FMT, HOLD_K, blk.data());
+        uint32_t ch;
+        uint64_t off;
+        tsr_row_location(HOLD_FMT, HOLD_N, HOLD_K, C, n, &ch, &off);
+        tsr_repack_row(HOLD_FMT, blk.data(), HOLD_K, tsr_sim_dram(c.sim, ch) + (HOLD_W + off) * LINE);
+    }
+    put_f32_rows(c.sim, &r, H(1, HOLD_X), 1, HOLD_K / 16u, HOLD_K, 1.0f);
+    uint32_t a[opl::mm::NARGS];
+    hold_args(a);
+    opl::writer w(opl::F_STOP_ON_ERROR, 0x484Cu);
+    w.mul_mat(a[opl::mm::X], a[opl::mm::X_STRIDE], a[opl::mm::Y], a[opl::mm::Y_STRIDE], a[opl::mm::W_OFF], a[opl::mm::FMT],
+              a[opl::mm::N], a[opl::mm::K], a[opl::mm::T]);
+    const std::vector<uint8_t> blob = w.finish();
+    tsr_sim_dram_write(c.sim, 0, uint64_t(OPL_BEAT) * LINE, blob.data(), blob.size());
+    const uint32_t la[7] = { H(0, OPL_BEAT), uint32_t(blob.size()), opl::LF_VERIFY_CRC, 0, 0, 0, 0 };
+    const bool ok = fwh_launch(c.h, uint32_t(c.graph), la, 0) == 0 && fwh_ret(c.h) == 0;
+    CHECK(ok, "hold: the plain MUL_MAT launch: DONE 0x%08x RET 0x%08x", c.h->done[0], c.h->done[2]);
+    const uint8_t * p = tsr_sim_dram(c.sim, 1) + HOLD_Y * LINE;
+    c.hold_y.assign(p, p + size_t((HOLD_N + 15u) / 16u) * LINE);
+}
+
 // Writes the list, fills every output region with 0xA5 (unless it is an input too: ACC_DST rows, KV
 // planes), launches `graph` (fixed schedule) and adds DONE and the regions to the digest of `kind`;
 // px: the paths the launch must (not) take.
 void run(launch_ctx & c, uint32_t kind, const char * what, const opl::writer & w, const std::vector<region> & out,
          bool prefill = true, const path_exp & px = path_exp{}) {
-    const std::vector<uint8_t> blob = w.finish();
+    std::vector<uint8_t> blob = w.finish();
     CHECK(w.ok() && !blob.empty(), "%s: OPL writer: %s", what, w.error());
     if (blob.empty()) return;
+    if (g_hold) {
+        if (!c.hold_ready) hold_setup(c);
+        blob = hold_wrap(blob);
+        CHECK(!blob.empty(), "%s: --hold: the list does not parse", what);
+        if (blob.empty()) return;
+        std::vector<uint8_t> fill(c.hold_y.size(), 0xA5u);
+        tsr_sim_dram_write(c.sim, 1, HOLD_Y * LINE, fill.data(), fill.size());
+    }
     for (const region & g : out) {
         if (!prefill) break;
         const std::vector<uint8_t> fill(size_t(g.beats) * LINE, 0xA5u);
@@ -279,6 +367,10 @@ void run(launch_ctx & c, uint32_t kind, const char * what, const opl::writer & w
     CHECK(ok, "%s (%s): DONE 0x%08x RET 0x%08x: a kind whose handler is not in the image answers BAD_RECORD", what,
           opl::kind_name(kind), r0, c.h->done[2]);
     d.ok += ok;
+    if (g_hold) {
+        const uint8_t * hy = tsr_sim_dram(c.sim, 1) + HOLD_Y * LINE;
+        CHECK(memcmp(hy, c.hold_y.data(), c.hold_y.size()) == 0, "%s: --hold: the held MUL_MAT's y rows differ from a plain MUL_MAT's", what);
+    }
     d.add32(TSR_GET(r0, TSR_LCQ_R0_TYPE) | TSR_GET(r0, TSR_LCQ_R0_STATUS) << 8 | TSR_GET(r0, TSR_LCQ_R0_ERR_CODE) << 16);
     d.add32(c.h->done[2]);
     for (const region & g : out) {
@@ -344,6 +436,63 @@ void corpus_mulmat(launch_ctx & c) {
         if (m.acc) put_f32_rows(c.sim, &c.r, y, m.T, yl, m.N, 8.0f);   // y += W x: the old y rows are an input
         run(c, opl::K_MUL_MAT, m.what, w, out, !m.acc,
             m.T == 1u ? fast_path("mulmat_t1_fast(", "mulmat_any(") : general_path("mulmat_any("));
+        wbeat += (tsr_tensor_ch_beats(m.fmt, m.N, m.K, C) + 63u) & ~63ull;
+    }
+}
+
+// MUL_MAT_BEGIN and MUL_MAT_END (SW §7.4): a BEGIN and its END as one list, the cases of MUL_MAT's corpus that take one
+// T-tile (and a case with strided y rows). The list is launched under each kind, so both kinds have a digest of
+// the outputs (MUL_MAT's, for the same inputs: fw_exec_host and fw_kernels_host compare them record by record).
+void corpus_mulmat_split(launch_ctx & c) {
+    struct mm_case { const char * what; uint32_t fmt, N, K, T; int add; bool acc; uint32_t ys; };
+    static const mm_case cases[] = {
+        { "MUL_MAT_BEGIN Q8_0 96 x 256, T 1", TSR_FMT_Q8_0, 96, 256, 1, 0, false, 0 },
+        { "MUL_MAT_BEGIN Q4_K 64 x 512, T 8, per-token addend", TSR_FMT_Q4_K, 64, 512, 8, 2, false, 0 },
+        { "MUL_MAT_BEGIN Q8_0 48 x 128, T 3, ACC_DST", TSR_FMT_Q8_0, 48, 128, 3, 0, true, 0 },
+        { "MUL_MAT_BEGIN Q4_K 40 x 256, T 1, bias row", TSR_FMT_Q4_K, 40, 256, 1, 1, false, 0 },
+        { "MUL_MAT_BEGIN Q8_0 64 x 128, T 1, ACC_DST", TSR_FMT_Q8_0, 64, 128, 1, 0, true, 0 },
+        { "MUL_MAT_BEGIN Q8_0 80 x 192, T 3, bias row, strided y", TSR_FMT_Q8_0, 80, 192, 3, 1, false, 2 },
+    };
+    uint64_t wbeat = W_BEAT;
+    for (const mm_case & m : cases) {
+        const uint32_t C = tsr_sim_config(c.sim)->num_ch;
+        const size_t row_bytes = size_t(m.K / tsr_fmt_block_size(m.fmt)) * tsr_fmt_ggml_block_bytes(m.fmt);
+        std::vector<uint8_t> blk(row_bytes);
+        for (uint32_t n = 0; n < m.N; ++n) {
+            gen_row_blocks(&c.r, m.fmt, m.K, blk.data());
+            uint32_t ch;
+            uint64_t off;
+            tsr_row_location(m.fmt, m.N, m.K, C, n, &ch, &off);
+            tsr_repack_row(m.fmt, blk.data(), m.K, tsr_sim_dram(c.sim, ch) + (wbeat + off) * LINE);
+        }
+        const uint32_t xl = m.K / 16u, yl = L16(m.N), ys = yl + m.ys;
+        const uint32_t x = c.take(uint64_t(m.T) * (xl + 1u)), y = c.take(uint64_t(m.T) * ys);
+        put_f32_rows(c.sim, &c.r, x, m.T, xl + 1u, m.K, 1.0f);
+        uint32_t add = NONE, add_stride = 0;
+        if (m.add == 1) {
+            add = c.take(yl);
+            put_f32_rows(c.sim, &c.r, add, 1, yl, m.N, 4.0f);
+        } else if (m.add == 2) {
+            add_stride = yl + 2u;
+            add = c.take(uint64_t(m.T) * add_stride);
+            put_f32_rows(c.sim, &c.r, add, m.T, add_stride, m.N, 4.0f);
+        }
+        std::vector<region> out;
+        rows_region(out, y, m.T, ys, yl);
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x4D53u);
+        const uint32_t b = w.mul_mat_begin(x, xl + 1u, y, ys, uint32_t(wbeat), m.fmt, m.N, m.K, m.T, add, add_stride,
+                                           m.acc ? opl::mm::FLAG_ACC_DST : 0u);
+        w.mul_mat_end(b, &b, 1);
+        const bool one = m.T == 1u, dense = ys == yl;
+        for (const uint32_t kind : {opl::K_MUL_MAT_BEGIN, opl::K_MUL_MAT_END}) {
+            // y rows that are an input (ACC_DST) are put again: the first launch overwrote them with its result
+            if (m.acc) put_f32_rows(c.sim, &c.r, y, m.T, yl, m.N, 8.0f);
+            path_exp px;
+            if (kind == opl::K_MUL_MAT_BEGIN) px = one ? fast_path("kind_mulmat_begin_fast(", "mulmat_any(") : general_path("mulmat_any(");
+            else if (one) px = path_exp{ { "kind_mulmat_end_fast(" }, { "end_any(", "mulmat_any(" }, {} };
+            else px = dense ? path_exp{ { "kind_mulmat_end_fast(" }, { "end_any(" }, {} } : general_path("end_any(");
+            run(c, kind, m.what, w, out, !m.acc, px);
+        }
         wbeat += (tsr_tensor_ch_beats(m.fmt, m.N, m.K, C) + 63u) & ~63ull;
     }
 }
@@ -1161,7 +1310,7 @@ void check_table(const char * table, const table_t & t, bool digests_only, bool 
 
 int main(int argc, char ** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: test_fw_kind_revs IMAGE TABLE [--update] [--digests-only] [--paths]\n");
+        fprintf(stderr, "usage: test_fw_kind_revs IMAGE TABLE [--update] [--digests-only] [--paths] [--hold [--sched S]]\n");
         return 2;
     }
     const char * image = argv[1];
@@ -1171,6 +1320,8 @@ int main(int argc, char ** argv) {
         if (!strcmp(argv[i], "--update")) update = true;
         else if (!strcmp(argv[i], "--digests-only")) digests_only = true;
         else if (!strcmp(argv[i], "--paths")) g_print_paths = true;
+        else if (!strcmp(argv[i], "--hold")) g_hold = true;
+        else if (!strcmp(argv[i], "--sched") && i + 1 < argc) g_hold_sched = argv[++i];
         else { fprintf(stderr, "test_fw_kind_revs: unknown option %s\n", argv[i]); return 2; }
     }
     struct stat st;
@@ -1202,7 +1353,8 @@ int main(int argc, char ** argv) {
     auto with_sim = [&](const tsr_config & c0, const std::function<void(launch_ctx &)> & body) {
         tsr_sim_opts so;
         memset(&so, 0, sizeof(so));
-        so.sched = "fixed";
+        so.sched = g_hold ? g_hold_sched : "fixed";
+        so.race = g_hold ? 2 : 0;
         so.threads = 2;
         tsr_config c1 = c0;
         tsr_sim * sim = tsr_sim_create_opts(&c1, &so);
@@ -1249,6 +1401,8 @@ int main(int argc, char ** argv) {
         corpus_moe(c);
         c.r = corpus_base;
         corpus_gdn(c, true, true);
+        c.r = corpus_base;
+        corpus_mulmat_split(c);
     });
     // The composed path of GATED_DELTA_NET (SW-78): a simulator without CAPS bit 8, the same PRNG state, the corpus of
     // revision 1. Its softplus / ssm_conv digests are the default run's and are not recorded.

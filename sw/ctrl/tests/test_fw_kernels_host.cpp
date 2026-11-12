@@ -11,6 +11,9 @@
 //   1b. the decode fast path (mmk::mulmat_t1_fast) against the general path on twin simulators: T = 1
 //      records with deps on every unit, the same pushes (words, deps, push value), ticket and ring
 //      state (SW §7.4: MUL_MAT's push stream is the same whichever path runs it).
+//   1c. MUL_MAT_BEGIN and MUL_MAT_END (SW §7.4) on the same twins: a BEGIN and its END at once push the stream of the
+//      MUL_MAT record (words, deps, push values), through their fast entries and through their general paths, and
+//      return the MUL_MAT's ST as END's ticket (BEGIN's: a DMA ticket, its last LD); the open table is empty after.
 //   2. replay through host_run: a synthetic stream of three chunks (the chunk LDs interleave with the
 //      replayed DMA ops) and, when given, a trace directory (e.g. an error trace of traces/ctrl):
 //      expect regions bit-exact and RET = the trace's DONE ret; the argument checks; the RET rule's
@@ -276,7 +279,14 @@ struct twin_case {
 
 // One simulator's run of a case: the history, the predecessors, then the record through the fast path
 // (fast) or the general path. Returns the record's ticket; *ring_state = {head, blocks, joins}.
-uint32_t twin_run(tsr_sim * sim, const twin_case & c, bool fast, plog * log, uint32_t ring_state[3], bool * took_fast) {
+// mode: 0 MUL_MAT through mulmat_t1_fast, 1 through the general path, 2 MUL_MAT_BEGIN + MUL_MAT_END through their fast
+// entries, 3 through their general paths (the record's ticket is then END's; *begin_tk is BEGIN's), 4 as 3 with END
+// depending also on the VU predecessor (its fast entry declines; the ST waits for the MVM and that ticket), 5 and 6 as 2
+// and 3 with the BEGIN closed (the executor's rule 2 to 4: mm_close_all) before its END, which then returns the kept ticket
+// of the closing ST, and a second END of the same BEGIN is refused (BAD_RECORD).
+uint32_t twin_run(tsr_sim * sim, const twin_case & c, int mode, plog * log, uint32_t ring_state[3], bool * took_fast,
+                  uint32_t * begin_tk = nullptr, uint32_t * n_open = nullptr) {
+    const bool fast = mode == 0 || mode == 2 || mode == 5;
     const tsr_config & cfg = *tsr_sim_config(sim);
     tsr::host_bind(sim);
     rng_t r = { 0x7317u };
@@ -326,6 +336,12 @@ uint32_t twin_run(tsr_sim * sim, const twin_case & c, bool fast, plog * log, uin
     const uint32_t b = tl.lpt;
     ring.init(lay.ring_line, 2u * b + b / 2u);
     ctx.ring = &ring;
+    static tsr::mm_open tab;
+    static uint32_t tick[64];
+    tab = tsr::mm_open{};
+    tab.pf = ctx.push_flags;
+    tab.tick = tick;
+    ring.set_open(&tab);
     const int lid = tsr_sim_add_listener(sim, plog_q, log);
     tsr::ticket prev{};
     for (uint32_t i = 0; i < 3u; ++i) {
@@ -361,17 +377,55 @@ uint32_t twin_run(tsr_sim * sim, const twin_case & c, bool fast, plog * log, uin
     record(a, c.fmt, c.N, c.K, c.form);
     const tsr::ticket t0 = pred(c.d0), t1 = pred(c.d1);
     ctx.ret = 0;
-    uint32_t t = 0;
+    uint32_t t = 0, mvm_tk = 0;
     *took_fast = false;
-    if (fast) {
+    if (mode == 0) {
         t = tsr::mmk::mulmat_t1_fast(a, 0, t0, t1, ctx);
         *took_fast = t != tsr::mmk::NOT_FAST;
-    } else {
+    } else if (mode == 1) {
         t = tsr::mmk::mulmat_general(a, 12, 0, tsr::after(t0, t1), ctx).v;
+    } else {
+        const uint32_t ea[1] = { 7u };                  // END's word: BEGIN's op index
+        ctx.op_index = 7u;
+        const uint32_t bt = fast ? tsr::kind_mulmat_begin_fast(a, 0, tsr::after(t0, t1), ctx)
+                                      : tsr::mmk::mulmat_begin_general(a, 12, 0, tsr::after(t0, t1), ctx).v;
+        CHECK(ctx.ret == 0 && bt != tsr::mmk::NOT_FAST, "fast/general %s: BEGIN: ret 0x%08x (%s path)", c.what, ctx.ret,
+              fast ? "fast" : "general");
+        if (begin_tk) *begin_tk = bt;
+        if (n_open) *n_open = tab.n;
+        ctx.op_index = 8u;
+        const tsr::deps de = mode == 4 ? tsr::after(tsr::ticket{bt}, vu) : tsr::deps{tsr::ticket{bt}};   // the executor's d of END
+        if (mode == 4) {
+            CHECK(tsr::kind_mulmat_end_fast(ea, 0, de, ctx) == tsr::mmk::NOT_FAST && tab.n == 1u,
+                  "fast/general %s: END's fast entry took a record with a VU dependency", c.what);
+            mvm_tk = tab.e[0].mvm;
+        }
+        if (mode >= 5) {                                // closed before its END: the ST is pushed now, its bit set, its ticket kept
+            CHECK(tsr::mm_close_all(ring) && tab.n == 0u && (tab.closed[0] & (1u << 7)) != 0u,
+                  "fast/general %s: mm_close_all left %u entries open, or the closed bit of BEGIN 7 is not set", c.what, tab.n);
+            t = tsr::mmk::mulmat_end_general(ea, 1, 0, de, ctx).v;
+            CHECK(ctx.ret == 0 && (tab.closed[0] & (1u << 7)) == 0u && tab.n == 0u,
+                  "fast/general %s: END of a closed BEGIN: ret 0x%08x, the closed bit stays set, or the table holds %u", c.what, ctx.ret, tab.n);
+            ctx.ret = 0;
+            tsr::mmk::mulmat_end_general(ea, 1, 0, de, ctx);   // the second END of it
+            CHECK(ctx.ret == tsr::opl::RET_BAD_RECORD, "fast/general %s: a second END of a closed BEGIN: ret 0x%08x, expected BAD_RECORD", c.what, ctx.ret);
+            ctx.ret = 0;
+        } else {
+            t = mode == 2 ? tsr::kind_mulmat_end_fast(ea, 0, de, ctx) : tsr::mmk::mulmat_end_general(ea, 1, 0, de, ctx).v;
+        }
+        *took_fast = mode >= 3 || t != tsr::mmk::NOT_FAST;
+        if (n_open) CHECK(tab.n == 0u, "fast/general %s: the open table holds %u entries after END", c.what, tab.n);
     }
     CHECK(ctx.ret == 0, "fast/general %s: ret 0x%08x (%s path)", c.what, ctx.ret, fast ? "fast" : "general");
     tsr::join_all();
     CHECK(tsr::err_units() == 0, "fast/general %s: a unit in error state (%s path)", c.what, fast ? "fast" : "general");
+    if (mode == 4) {                                // the ST is the last DMA push before join_all's FENCE: its deps are {MVM, VU} (lowest unit first)
+        size_t st = log->v.size();
+        while (st > 0 && (log->v[st - 1][0] & 0xFFu) != TSR_OP_ST) --st;
+        const bool ok = st > 0 && log->v[st - 1][8] == mvm_tk && log->v[st - 1][9] == vu.v;
+        CHECK(ok, "fast/general %s: END's ST deps 0x%08x 0x%08x, expected the MVM's 0x%08x and the VU ticket 0x%08x", c.what,
+              st > 0 ? log->v[st - 1][8] : 0u, st > 0 ? log->v[st - 1][9] : 0u, mvm_tk, vu.v);
+    }
     tsr_sim_remove_listener(sim, lid);
     ring_state[0] = ring.head();
     ring_state[1] = ring.blocks();
@@ -394,7 +448,7 @@ void test_mulmat_fast_vs_general() {
         { "Q4_K ACC_DST, deps DMA + QACT, REC", Q4, 256, 512, 1, 1, 2, true },
     };
     tsr_config cfg = cfg_u200(1ull << 30);
-    uint32_t n_ok = 0;
+    uint32_t n_ok = 0, n_split = 0;
     for (const twin_case & c : cases) {
         tsr_sim * sa = make_sim(cfg, "fixed", 2);
         tsr_sim * sb = make_sim(cfg, "fixed", 2);
@@ -403,8 +457,8 @@ void test_mulmat_fast_vs_general() {
         plog la, lb;
         uint32_t ra[3], rb[3];
         bool fa = false, fb = false;
-        const uint32_t ta = twin_run(sa, c, true, &la, ra, &fa);
-        const uint32_t tb = twin_run(sb, c, false, &lb, rb, &fb);
+        const uint32_t ta = twin_run(sa, c, 0, &la, ra, &fa);
+        const uint32_t tb = twin_run(sb, c, 1, &lb, rb, &fb);
         size_t first = 0;
         while (first < la.v.size() && first < lb.v.size() && la.v[first] == lb.v[first]) ++first;
         const bool same = la.v.size() == lb.v.size() && first == la.v.size();
@@ -424,11 +478,51 @@ void test_mulmat_fast_vs_general() {
                                       0x10000u * LINE) == 0;
         CHECK(y_same, "fast/general %s: DRAM outputs differ", c.what);
         n_ok += fa && same && y_same && ta == tb;
+        {   // END with a dependency of another unit: the general path, the ST waits for the MVM and that ticket
+            tsr_sim * sd = make_sim(cfg, "fixed", 2);
+            plog ld;
+            uint32_t rd[3];
+            bool fd = false;
+            if (sd) twin_run(sd, c, 4, &ld, rd, &fd);
+            if (sd) tsr_sim_destroy(sd);
+        }
+        // MUL_MAT_BEGIN + MUL_MAT_END on twins of the same history: the MUL_MAT's stream, ticket, ring state and rows
+        for (int mode : { 2, 3, 5, 6 }) {
+            tsr_sim * sc = make_sim(cfg, "fixed", 2);
+            CHECK(sc != nullptr, "fast/general %s: simulator", c.what);
+            if (!sc) continue;
+            plog lc;
+            uint32_t rc[3], bt = 0, n_open = 0;
+            bool fc = false;
+            const uint32_t tc = twin_run(sc, c, mode, &lc, rc, &fc, &bt, &n_open);
+            size_t k = 0;
+            while (k < la.v.size() && k < lc.v.size() && la.v[k] == lc.v[k]) ++k;
+            CHECK(fc, "split %s: the %s path declined a record", c.what, (mode == 2 || mode == 5) ? "fast" : "general");
+            CHECK(la.v.size() == lc.v.size() && k == la.v.size(),
+                  "split %s (%s): the pushes differ from MUL_MAT's (%zu / %zu pushes, first difference at %zu: w0 0x%08x / 0x%08x, "
+                  "deps 0x%08x 0x%08x / 0x%08x 0x%08x, push 0x%08x / 0x%08x)", c.what, (mode == 2 || mode == 5) ? "fast" : "general", lc.v.size(),
+                  la.v.size(), k, k < lc.v.size() ? lc.v[k][0] : 0u, k < la.v.size() ? la.v[k][0] : 0u,
+                  k < lc.v.size() ? lc.v[k][8] : 0u, k < lc.v.size() ? lc.v[k][9] : 0u, k < la.v.size() ? la.v[k][8] : 0u,
+                  k < la.v.size() ? la.v[k][9] : 0u, k < lc.v.size() ? lc.v[k][10] : 0u, k < la.v.size() ? la.v[k][10] : 0u);
+            CHECK(tc == ta && rc[0] == ra[0] && rc[1] == ra[1] && rc[2] == ra[2],
+                  "split %s (%s): END's ticket 0x%08x (MUL_MAT's 0x%08x), ring head %u / %u, blocks %u / %u, joins %u / %u", c.what,
+                  (mode == 2 || mode == 5) ? "fast" : "general", tc, ta, rc[0], ra[0], rc[1], ra[1], rc[2], ra[2]);
+            CHECK((bt >> 28) == tsr::UNIT_DMA && n_open == 1u, "split %s (%s): BEGIN's ticket 0x%08x is not a DMA ticket, or the table holds %u",
+                  c.what, (mode == 2 || mode == 5) ? "fast" : "general", bt, n_open);
+            bool y_eq = true;
+            for (uint32_t ch = 0; ch < cfg.num_ch; ++ch)
+                y_eq = y_eq && memcmp(tsr_sim_dram(sa, ch) + 0x100000ull * LINE, tsr_sim_dram(sc, ch) + 0x100000ull * LINE,
+                                      0x10000u * LINE) == 0;
+            CHECK(y_eq, "split %s (%s): DRAM outputs differ from MUL_MAT's", c.what, (mode == 2 || mode == 5) ? "fast" : "general");
+            n_split += la.v.size() == lc.v.size() && k == la.v.size() && tc == ta && y_eq;
+            tsr_sim_destroy(sc);
+        }
         tsr_sim_destroy(sb);
         tsr_sim_destroy(sa);
     }
-    printf("fast/general: %u of %zu T = 1 records pushed the same stream through mulmat_t1_fast and the general path\n",
-           n_ok, sizeof(cases) / sizeof(cases[0]));
+    printf("fast/general: %u of %zu T = 1 records pushed the same stream through mulmat_t1_fast and the general path; "
+           "%u of %zu runs of a MUL_MAT_BEGIN + MUL_MAT_END pair (fast and general, the BEGIN open or closed before its END) pushed that stream too\n",
+           n_ok, sizeof(cases) / sizeof(cases[0]), n_split, 4u * sizeof(cases) / sizeof(cases[0]));
 }
 
 // ---------------------------------------------------------------------------

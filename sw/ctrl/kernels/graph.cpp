@@ -18,7 +18,8 @@
 //   [0, opl - pre_lines)     scratch ring (spm_ring), handed to the kind handlers
 // DTCM: ticket[4096] (the op's done ticket, with a sentinel word in front) and pidx[4096] (its first
 // push index), 32 KiB, plus the record copy for wrapping records (1 KiB), the scratch ring's table
-// (128 records, 2 KiB) and the per-launch state, all rebuilt at every launch (SW-4).
+// (128 records, 2 KiB), the table of open MUL_MAT_BEGIN records (exec.hpp mm_open, 0.8 KiB) and the per-launch
+// state, all rebuilt at every launch (SW-4).
 //
 // Algorithm (SW §7.3):
 //   1. LD the list (or its first 256 KiB) into the OPL area and join; validate the header
@@ -37,13 +38,16 @@
 //      JOIN: a SYNC NOP over d; MUL_MAT: the decode fast path mmk::mulmat_t1_fast first,
 //      k_mulmat.hpp, else kind_mulmat; the short M7 kinds: the table's fast entry
 //      kind_<name>_fast first, else the handler out of line (call_m7_ool); FLASH_ATTN and test
-//      kinds: the table's handler; kflags and d from the loop's registers); ticket[i] = T_i.
+//      kinds: the table's handler; kflags and d from the loop's registers; MUL_MAT_BEGIN and MUL_MAT_END
+//      are short kinds with fast entries, and BEGIN keeps its ring block held until its END, k_mulmat.cpp);
+//      ticket[i] = T_i.
 //      SERIAL joins T_i. Every 16 ops and
 //      before every software join (SERIAL, a streamed chunk), with STOP_ON_ERROR, QSTATUS error
 //      bits stop the pushing: timing-dependent, but it only decides which later ops are skipped
 //      (SW §7.3 2.6). After SERIAL's join the error records (ERR_CODE) decide instead: exact once
 //      T_i is done (I2).
-//   3. join_all().
+//   3. Every MUL_MAT_BEGIN still open is closed (its ST pushed, its block released), unless a unit is in error
+//      or an executor load failed; the STs lie in the last record's push-index range. Then join_all().
 //   4. The first error (smallest ERR_PIDX over the units in error state, relative to the kernel's
 //      first push) is located by pidx: the op i with pidx[i] <= ERR_PIDX < pidx[i+1] -> RET i + 1.
 //
@@ -153,6 +157,8 @@ constexpr kind_slot make_slot(uint32_t kind) {
 #if !defined(TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE) && !defined(TSR_TEST_NO_KIND_MUL_MAT)
     if (kind == opl::K_MUL_MAT_SCALE) return slot_for(&kind_mulmat_scale, opl::kind_nargs(kind));
     if (kind == opl::K_MUL_MAT_SOFTCAP) return slot_for(&kind_mulmat_softcap, opl::kind_nargs(kind));
+    if (kind == opl::K_MUL_MAT_BEGIN) return slot_for(&kind_mulmat_begin, opl::kind_nargs(kind), &kind_mulmat_begin_fast);
+    if (kind == opl::K_MUL_MAT_END) return slot_for(&kind_mulmat_end, opl::kind_nargs(kind), &kind_mulmat_end_fast);
 #endif
     if (kind == opl::K_MOE_ROUTE) return slot_for(&kind_moe_route, opl::kind_nargs(kind));
     if (kind == opl::K_MUL_MAT_ID) return slot_for(&kind_mul_mat_id, opl::kind_nargs(kind));
@@ -216,6 +222,7 @@ uint32_t rec[REC_WORDS];        // the record being executed (DTCM copy)
 // SDK's crt0 does not run and fw_elf_image rejects); value-initialized it is constant again.
 constinit plan::dev_cfg dev{};
 constinit spm_ring ring{};
+constinit mm_open open_tab{};   // the open MUL_MAT_BEGIN records (exec.hpp), cleared at every launch
 
 
 // Copies n words of SPM line `line`, from word w, to dst.
@@ -594,6 +601,11 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
         dev.caps = core_csr(CSR_CAPS);
     }
     ring.init(lay.ring_line, lay.ring_lines);
+    open_tab.n = 0u;                                // no BEGIN open or closed early (the bits of the list's ops)
+    for (uint32_t k = 0; k < (h.n_ops + 31u) / 32u; ++k) open_tab.closed[k] = 0u;
+    open_tab.pf = g.push_flags;
+    open_tab.tick = __tsr_exec_tick1;
+    ring.set_open(&open_tab);
     g.ring_used = true;
     kind_ctx ctx{};
     ctx.ring = &ring;
@@ -627,6 +639,13 @@ extern "C" int32_t graph(const tsr_args * a) {
     g.pidx_base = pidx_now();
     uint32_t n_done = 0;
     const uint32_t kret = run(a, &n_done);
+    // A BEGIN still open (the list ended, or stopped on a record error) has its STs pushed here, unless a unit
+    // is in error or an executor load failed (g.stop). They lie in the last record's push-index range.
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 8
+    // Negative test image fw_kmm_mut_norule4: the BEGINs still open at the end of the list are not closed.
+#else
+    if (g.ring_used && !g.stop) mm_close_all(ring);
+#endif
     const uint32_t pidx_end = pidx_now();
     join_all();                                                     // 3.
     const uint32_t terr = locate_error(n_done, pidx_end);           // 4.

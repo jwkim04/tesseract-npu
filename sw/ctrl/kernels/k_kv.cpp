@@ -99,7 +99,7 @@ struct kv_op {
         // (kind_ctx::one): the DMA queue serializes the runs whatever their lines.
         const bool one = run * k.lpr <= ctx.one_lines;
         deps rd{};
-        const spm blk = one ? ctx.one : ctx.ring->alloc(run * k.lpr, 2u, &rd);
+        const spm blk = one ? ctx.one : kf::alloc_g(*ctx.ring, run * k.lpr, &rd);
         if (!valid(blk)) {                         // cannot happen: one tile fits the budget
             ctx.ret = opl::RET_SCRATCH;
             return last;

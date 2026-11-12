@@ -30,6 +30,9 @@ void tsr_opl_builder::reset() {
     ops_.clear();
     anc_.clear();
     n_joins_ = n_deps_ = n_dropped_ = 0;
+    std::fill(std::begin(n_kind_), std::end(n_kind_), 0u);
+    pend_ = pending_mm();
+    open_.clear();
 }
 
 tsr_dram_range tsr_rows_range(uint32_t ch, uint64_t lo, uint64_t n, uint64_t row, uint64_t stride) {
@@ -150,7 +153,10 @@ void tsr_opl_builder::kind_ranges(uint32_t kind, const uint32_t * a, uint64_t au
         case opl::K_MUL_MAT:
         case opl::K_MUL_MAT_SCALE:
         case opl::K_MUL_MAT_SOFTCAP:
+        case opl::K_MUL_MAT_BEGIN:      // the whole MUL_MAT: y is its write (WAR / WAW with the records before it)
             mm_ranges(a, rd, wr);
+            return;
+        case opl::K_MUL_MAT_END:        // word 0 is an op index; the builder gives its ranges (emit_end)
             return;
         case opl::K_ADD:
         case opl::K_MUL: {
@@ -382,19 +388,20 @@ uint32_t tsr_opl_builder::push_record(uint32_t kind, const uint32_t * args, uint
     oi.dep0 = d0;
     oi.dep1 = d1;
     ops_.push_back(std::move(oi));
+    if (kind < opl::N_KINDS) {
+        n_kind_[kind]++;
+    }
     return idx;
 }
 
-uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_args, const std::vector<tsr_dram_range> & rd,
-                              const std::vector<tsr_dram_range> & wr, int32_t tag) {
-    if (!w_.ok()) {
-        return FAILED;
-    }
-    // Conflicting earlier ops (RAW, WAR, WAW), latest first.
-    std::vector<uint32_t> cand;
+// The conflicting earlier ops (RAW, WAR, WAW) of a record with ranges rd, wr, and pred, reduced transitively: a
+// conflicting op that is an ancestor of a later kept one is implied.
+void tsr_opl_builder::deps_of(const ranges & rd, const ranges & wr, int32_t pred, std::vector<uint32_t> & kept,
+                              uint32_t & dropped) const {
+    std::vector<uint32_t> cand;       // latest first
     for (uint32_t i = (uint32_t) ops_.size(); i-- > 0;) {
         const op_info & o = ops_[i];
-        bool hit = false;
+        bool hit = pred >= 0 && (uint32_t) pred == i;
         for (const tsr_dram_range & r : rd) {
             for (const tsr_dram_range & q : o.wr) hit = hit || tsr_ranges_overlap(r, q);
         }
@@ -406,9 +413,8 @@ uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_a
             cand.push_back(i);
         }
     }
-    // Transitive reduction: a conflicting op that is an ancestor of a later kept one is implied.
-    std::vector<uint32_t> kept;
-    uint32_t dropped = 0;
+    kept.clear();
+    dropped = 0;
     for (uint32_t c : cand) {
         bool implied = false;
         for (uint32_t k : kept) {
@@ -421,12 +427,18 @@ uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_a
         }
     }
     std::sort(kept.begin(), kept.end());
+}
+
+// Adds the record with the dependencies `kept`: JOIN records for more than two, folded as tsr::opl::writer::add does
+// (SW §7.2): the first two go into a JOIN, whose index replaces them at the end of the list, until two remain. NO_ROOM
+// (nothing added) unless the record, its JOINs and `reserve` further records (the ENDs of the open BEGINs still owed)
+// fit the list.
+uint32_t tsr_opl_builder::emit(uint32_t kind, const uint32_t * args, uint32_t n_args, const ranges & rd, const ranges & wr,
+                               int32_t tag, const std::vector<uint32_t> & kept, uint32_t dropped, uint32_t reserve) {
     const uint32_t joins = kept.size() > 2 ? (uint32_t) kept.size() - 2 : 0;
-    if (ops_.size() + joins + 1 > opl::MAX_OPS) {
+    if (ops_.size() + joins + 1 + reserve > opl::MAX_OPS) {
         return NO_ROOM;
     }
-    // More than two predecessors: JOIN records, folded as tsr::opl::writer::add does (SW §7.2): the
-    // first two go into a JOIN, whose index replaces them at the end of the list, until two remain.
     std::vector<uint32_t> q = kept;
     while (q.size() > 2) {
         const uint32_t j = push_record(opl::K_JOIN, nullptr, 0, q[0], q[1], -1);
@@ -449,10 +461,128 @@ uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_a
     return idx;
 }
 
-uint32_t tsr_opl_builder::mul_mat(const uint32_t * args, int32_t tag, uint32_t kind) {
+static bool tsr_hits_any(const tsr_dram_range & y, const std::vector<tsr_dram_range> & v) {
+    for (const tsr_dram_range & r : v) {
+        if (tsr_ranges_overlap(y, r)) return true;
+    }
+    return false;
+}
+
+// The MUL_MAT_END of open_[i]: no ranges read, y written, the BEGIN as explicit predecessor. The records between the
+// BEGIN and now do not touch y (resolve), so the BEGIN is its only dependency.
+uint32_t tsr_opl_builder::emit_end(size_t i) {
+    const open_begin ob = open_[i];
+    const uint32_t a[opl::mmend::NARGS] = { ob.idx };
+    const ranges wr = { ob.y };
+    std::vector<uint32_t> kept;
+    uint32_t dropped = 0;
+    deps_of({}, wr, (int32_t) ob.idx, kept, dropped);
+    const uint32_t r = emit(opl::K_MUL_MAT_END, a, opl::mmend::NARGS, {}, wr, ob.tag, kept, dropped, (uint32_t) open_.size() - 1u);
+    if (r == NO_ROOM || r == FAILED) {
+        return r;
+    }
+    open_.erase(open_.begin() + (std::ptrdiff_t) i);
+    return 0;
+}
+
+// The pending MUL_MAT becomes a MUL_MAT_BEGIN (may_begin: the next record leaves y alone, and the list has room for
+// its END), else a MUL_MAT. With MAX_OPEN BEGINs open the oldest gets its END first.
+uint32_t tsr_opl_builder::emit_pending(bool may_begin) {
+    if (may_begin && open_.size() >= MAX_OPEN) {
+        const uint32_t r = emit_end(0);
+        if (r != 0) return r;
+    }
+    pending_mm p = std::move(pend_);
+    pend_ = pending_mm();
+    const uint32_t joins = p.kept.size() > 2 ? (uint32_t) p.kept.size() - 2 : 0;
+    const bool begin = may_begin && ops_.size() + joins + 1 + open_.size() + 1 <= opl::MAX_OPS;
+    const uint32_t idx = emit(begin ? opl::K_MUL_MAT_BEGIN : opl::K_MUL_MAT, p.args, opl::mm::NARGS, p.rd, p.wr, p.tag, p.kept,
+                              p.dropped, (uint32_t) open_.size() + (begin ? 1u : 0u));
+    if (idx == NO_ROOM || idx == FAILED) {
+        pend_ = std::move(p);
+        return idx;
+    }
+    if (begin) {
+        open_.push_back({ idx, p.wr[0], p.tag });
+    }
+    return 0;
+}
+
+// What a record with ranges rd, wr needs first: the pending MUL_MAT is emitted (a MUL_MAT if the record touches its y,
+// else a BEGIN), and every open BEGIN whose y the record touches gets its END. 0, NO_ROOM or FAILED.
+uint32_t tsr_opl_builder::resolve(const ranges & rd, const ranges & wr) {
+    if (pend_.valid) {
+        const bool touch = tsr_hits_any(pend_.wr[0], rd) || tsr_hits_any(pend_.wr[0], wr);
+        const uint32_t r = emit_pending(!touch);
+        if (r != 0) return r;
+    }
+    for (size_t i = 0; i < open_.size();) {
+        if (tsr_hits_any(open_[i].y, rd) || tsr_hits_any(open_[i].y, wr)) {
+            const uint32_t r = emit_end(i);
+            if (r != 0) return r;
+        } else {
+            ++i;
+        }
+    }
+    return 0;
+}
+
+bool tsr_opl_builder::settle() {
+    if (!w_.ok()) {
+        return false;
+    }
+    if (pend_.valid && emit_pending(false) != 0) {
+        return false;
+    }
+    while (!open_.empty()) {
+        if (emit_end(0) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_args, const std::vector<tsr_dram_range> & rd,
+                              const std::vector<tsr_dram_range> & wr, int32_t tag, int32_t pred) {
+    if (!w_.ok()) {
+        return FAILED;
+    }
+    if (pend_.valid || !open_.empty()) {
+        const uint32_t r = resolve(rd, wr);
+        if (r != 0) return r;
+    }
+    std::vector<uint32_t> kept;
+    uint32_t dropped = 0;
+    deps_of(rd, wr, pred, kept, dropped);
+    return emit(kind, args, n_args, rd, wr, tag, kept, dropped, (uint32_t) open_.size());
+}
+
+uint32_t tsr_opl_builder::mul_mat(const uint32_t * args, int32_t tag, uint32_t kind, bool defer) {
     std::vector<tsr_dram_range> rd, wr;
     mm_ranges(args, rd, wr);
-    return add(kind, args, opl::kind_nargs(kind), rd, wr, tag);
+    if (!defer || !defer_ || kind != opl::K_MUL_MAT) {
+        return add(kind, args, opl::kind_nargs(kind), rd, wr, tag);
+    }
+    if (!w_.ok()) {
+        return FAILED;
+    }
+    if (pend_.valid || !open_.empty()) {
+        const uint32_t r = resolve(rd, wr);
+        if (r != 0) return r;
+    }
+    pending_mm p;
+    deps_of(rd, wr, -1, p.kept, p.dropped);
+    const uint32_t joins = p.kept.size() > 2 ? (uint32_t) p.kept.size() - 2 : 0;
+    if (ops_.size() + joins + 1 + open_.size() > opl::MAX_OPS) {     // as a MUL_MAT, with the ENDs of the open BEGINs
+        return NO_ROOM;
+    }
+    p.valid = true;
+    std::copy(args, args + opl::mm::NARGS, p.args);
+    p.tag = tag;
+    p.rd = std::move(rd);
+    p.wr = std::move(wr);
+    pend_ = std::move(p);
+    return PENDING;
 }
 
 bool tsr_opl_builder::touches(const tsr_dram_range & r, bool any_access) const {
@@ -466,10 +596,16 @@ bool tsr_opl_builder::touches(const tsr_dram_range & r, bool any_access) const {
             }
         }
     }
+    if (pend_.valid) {                   // the pending MUL_MAT is part of the list
+        if (tsr_hits_any(r, pend_.wr) || (any_access && tsr_hits_any(r, pend_.rd))) return true;
+    }
     return false;
 }
 
 std::vector<uint8_t> tsr_opl_builder::finish() const {
+    if (pend_.valid) {
+        return {};                       // a pending MUL_MAT would be lost: settle() first
+    }
     std::vector<uint8_t> blob = w_.finish();
     if (blob.size() >= opl::HDR_BYTES) {
         // graph_id (logged by the executor) = the CRC of the body: equal lists are equal blobs. The

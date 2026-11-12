@@ -10,7 +10,8 @@
 //     every op it pushes depends (directly or through others of the op) on `d`;
 //   - returns ONE ticket T whose completion implies that every tile op of the op is done (the last
 //     op depends on the others, or a join2 provides that; I1, docs/ctrl-riscv.md §4.4), and
-//     releases its scratch blocks with release(block, T) before returning;
+//     releases its scratch blocks with release(block, T) before returning (MUL_MAT_BEGIN is the exception:
+//     it returns the ticket of its last LD and keeps its block held for its MUL_MAT_END; mm_open below);
 //   - never joins itself (no software wait inside the op stream: SW §7.3 "Overlap"; the ring's
 //     own software joins, chosen by count, are the exception), never reads a timing-dependent
 //     register (SW §4.7, SW-30), keeps no state across launches (SW-4);
@@ -22,7 +23,7 @@
 // Kinds without a handler in this image are BAD_RECORD.
 //
 // Kind numbers and argument words: tsr/opl.hpp (SW §7.2). NOP and JOIN are built into graph.cpp;
-// MUL_MAT is kind_mulmat (sw/ctrl/kernels/k_mulmat.cpp); the M7 kinds are
+// MUL_MAT is kind_mulmat (sw/ctrl/kernels/k_mulmat.cpp, with MUL_MAT_BEGIN / MUL_MAT_END); the M7 kinds are
 // kind_add ... kind_unary below, in graph.cpp's kind table, defined by the kernel
 // sources (sw/ctrl/kernels/k_*.cpp). sw/ctrl/kernels/zz_kind_stubs.cpp defines each of them weakly
 // (BAD_RECORD: "not in this image"), so an image without a kind's source links and refuses its
@@ -104,6 +105,37 @@ struct kind_ctx {
     TSR_HOT const volatile uint32_t * pre_lb(uint32_t off) const { return spm_lb_ptr<uint32_t>(pre, off); }
 };
 
+// The open MUL_MAT_BEGIN records of a launch (SW §7.3 "Open MUL_MAT records", §7.4; one object per launch,
+// reached through spm_ring::open()). A BEGIN pushes its LD x, [LD addend], QACT and MVM and keeps its
+// ring block held; the matching MUL_MAT_END pushes the ST of the y rows, releases the block and returns the
+// ST's ticket. Up to MAX BEGINs are open at once (BEGIN closes the oldest when it finds none free);
+// a ring allocation that fails while some are open closes all of them (kf::alloc_g), and the end of the
+// list does (graph.cpp). Closing pushes the STs and releases the blocks as END would. A BEGIN closed
+// before its END is recorded in `closed` and its ticket in the executor's ticket table (tick[op + 1] =
+// its last ST); its END then pushes nothing and returns that ticket. Zero-initialized: no entry open.
+// Per launch (SW-4): the executor clears it (a hand-built test object likewise).
+struct mm_open {
+    static constexpr uint32_t MAX = 8u;
+    struct entry {
+        uint32_t op;           // the BEGIN's op index
+        uint32_t * rel;        // its ring block's release slot (spm_ring::newest_rel / alloc_dma_first)
+        uint32_t y;            // the y rows in the SPM: first line
+        uint32_t dst;          // destination handle of the y rows
+        uint32_t y_stride;     // lines between the DRAM rows
+        uint32_t y_lines;      // lines of one row
+        uint32_t T;            // rows
+        uint32_t mvm;          // the MVM's ticket (the ST's dependency)
+    };
+    entry e[MAX];              // e[0, n): the open BEGINs, in no order
+    uint32_t n;
+    uint32_t pf;               // the launch's push flags (ctx.push_flags) for the STs closing pushes
+    uint32_t * tick;           // the executor's ticket table, [op + 1] (graph.cpp __tsr_exec_tick1)
+    uint32_t closed[opl::MAX_OPS / 32u];   // bit op: that BEGIN was closed before its END
+};
+// Closing (k_mulmat.cpp): push the STs of every open BEGIN of the ring's table and release their blocks
+// (false when none is open). The pushes lie in the push-index range of the record being executed.
+bool mm_close_all(spm_ring & ring);
+
 // A kind handler (SW §7.3 step 2.4). d = after(ticket[dep0], ticket[dep1]); kflags = word0
 // [23:16]; n_args = the record's argument count, which the executor has already checked to be the
 // kind's exact count (opl::kind_nargs, or kind_entry::nargs for a test kind).
@@ -119,6 +151,9 @@ using kind_fn = ticket (*)(const volatile uint32_t * args, uint32_t n_args, uint
 ticket kind_mulmat(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_mulmat_scale(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_mulmat_softcap(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+// MUL_MAT_BEGIN (0x20) and MUL_MAT_END (0x21, SW §7.4): k_mulmat.cpp. BEGIN returns the ticket of its last LD.
+ticket kind_mulmat_begin(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_mulmat_end(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
 // The M7 kinds (SW §7.2, §7.5; argument words opl.hpp ew / scl / rms / glu / rope / getrows /
 // setrows / fa / cpy / unary). Defined by the kernel sources; weak BAD_RECORD stubs in
@@ -169,6 +204,8 @@ uint32_t kind_get_rows_fast(const volatile uint32_t * args, uint32_t kflags, dep
 uint32_t kind_set_rows_kv_fast(const volatile uint32_t * args, uint32_t kflags, deps d, kind_ctx & ctx);
 uint32_t kind_cpy_fast(const volatile uint32_t * args, uint32_t kflags, deps d, kind_ctx & ctx);
 uint32_t kind_unary_fast(const volatile uint32_t * args, uint32_t kflags, deps d, kind_ctx & ctx);
+uint32_t kind_mulmat_begin_fast(const volatile uint32_t * args, uint32_t kflags, deps d, kind_ctx & ctx);
+uint32_t kind_mulmat_end_fast(const volatile uint32_t * args, uint32_t kflags, deps d, kind_ctx & ctx);
 
 // The executor's kind table (graph.cpp, .rodata): the handler of `kind`, or nullptr (BAD_RECORD).
 kind_fn kind_handler(uint32_t kind);

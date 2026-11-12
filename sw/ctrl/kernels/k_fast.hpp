@@ -301,7 +301,21 @@ static_assert(detail::same_op(sop_movi(15u, 0x3F800000u), SOP(sop_f{SOP_SUB_MOVI
 // source, -3 KiB of ITCM): issue() with its credit wait, spm_ring::alloc (any parity), and two dep
 // pairs (both without DMA tickets) folded to <= 2 with group (SYNC NOPs when more units remain).
 [[gnu::noinline]] inline ticket push_g(const op & o, deps d, uint32_t pf) { return issue(o, d, pf); }
-[[gnu::noinline]] inline spm alloc_g(spm_ring & ring, uint32_t lines, deps * rd) { return ring.alloc(lines, 2u, rd); }
+// A refused allocation while MUL_MAT_BEGIN records are open (their blocks are held across records, so the
+// ring refuses to reuse them: SPM_NONE, RET_SCRATCH): close every open one (their STs, their blocks'
+// release tickets) and allocate once more; the retry's deps are those releases (SW §7.3). Every ring
+// allocation of a kind goes through alloc_g, so this is the one place.
+[[gnu::noinline, gnu::cold]] inline spm alloc_g_closing(spm_ring & ring, uint32_t lines, deps * rd) {
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 5
+    return spm{SPM_NONE};   // Negative test image fw_kmm_mut_norule3: the refused allocation does not close the open BEGINs
+#endif
+    if (!mm_close_all(ring)) return spm{SPM_NONE};
+    return ring.alloc_slow(lines, 2u, rd);   // the full algorithm: the same result as alloc, out of line
+}
+[[gnu::noinline]] inline spm alloc_g(spm_ring & ring, uint32_t lines, deps * rd) {
+    const spm b = ring.alloc(lines, 2u, rd);
+    return valid(b) ? b : alloc_g_closing(ring, lines, rd);
+}
 [[gnu::noinline]] inline deps fold_deps(deps dd, deps rr) {
     group g;
     g.add(dd);

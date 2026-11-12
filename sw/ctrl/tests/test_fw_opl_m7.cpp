@@ -28,6 +28,7 @@
 
 namespace opl = tsr::opl;
 namespace plan = tsr::plan;
+namespace mmend = tsr::opl::mmend;
 
 static int g_fail = 0;
 static long g_checks = 0;
@@ -516,7 +517,62 @@ static void t_plan() {
           "vu_lines");
 }
 
+// MUL_MAT_BEGIN / MUL_MAT_END (SW §7.2, §7.4): the numbers, the argument counts, the writer helpers, the
+// planner (BEGIN plans as MUL_MAT with one T-tile; END needs no scratch).
+static void t_split() {
+    namespace mm = opl::mm;
+    CHECK(opl::K_MUL_MAT_BEGIN == 0x20u && opl::K_MUL_MAT_END == 0x21u, "kind numbers");
+    CHECK(opl::kind_nargs(opl::K_MUL_MAT_BEGIN) == mm::NARGS && opl::kind_nargs(opl::K_MUL_MAT_END) == 1u, "argument counts");
+    CHECK(opl::kind_rev(opl::K_MUL_MAT_BEGIN) == 1u && opl::kind_rev(opl::K_MUL_MAT_END) == 1u, "revisions");
+    CHECK(!strcmp(opl::kind_name(opl::K_MUL_MAT_BEGIN), "MUL_MAT_BEGIN") && !strcmp(opl::kind_name(opl::K_MUL_MAT_END), "MUL_MAT_END"),
+          "names");
+    for (uint32_t k : {0x1Fu, 0x22u, 0x2Cu}) CHECK(k == 0x1Fu || (opl::kind_nargs(k) == opl::NARGS_UNDEF && opl::kind_rev(k) == 0u),
+                                                    "0x22-0x2C stay free");
+    // the helpers write the kind with its words; a round trip through the reader
+    opl::writer w(opl::F_STOP_ON_ERROR, 0x77u);
+    const uint32_t b = w.mul_mat_begin(0x10000001u, 56u, 0x10000100u, 6u, 0x2000u, 0u, 96u, 896u, 3u, 0x10000200u, 6u, 0u);
+    const uint32_t m = w.mul_mat(0x10000001u, 56u, 0x10000100u, 6u, 0x2000u, 0u, 96u, 896u, 3u, 0x10000200u, 6u, 0u);
+    const uint32_t e = w.mul_mat_end(b, &b, 1);
+    CHECK(b == 0u && m == 1u && e == 2u && w.ok(), "writer: indices %u %u %u (%s)", b, m, e, w.error());
+    const std::vector<uint8_t> blob = w.finish();
+    opl::reader rd;
+    CHECK(rd.open(blob.data(), uint32_t(blob.size()), true) == opl::RET_OK, "open");
+    opl::record rb, rm, re;
+    CHECK(rd.next(rb) == opl::RET_OK && rd.next(rm) == opl::RET_OK && rd.next(re) == opl::RET_OK, "records");
+    CHECK(rb.kind == opl::K_MUL_MAT_BEGIN && rb.n_args == 12u && rm.kind == opl::K_MUL_MAT && re.kind == opl::K_MUL_MAT_END &&
+              re.n_args == 1u && re.arg(mmend::BEGIN) == 0u && re.dep0 == 0u && re.dep1 == opl::DEP_NONE,
+          "record headers");
+    bool same = true;
+    for (uint32_t i = 0; i < mm::NARGS; ++i) same = same && rb.arg(i) == rm.arg(i);
+    CHECK(same, "BEGIN has MUL_MAT's twelve words");
+    CHECK(rd.check_args(rb) == opl::RET_OK && rd.check_args(re) == opl::RET_OK, "check_args");
+    // planning: BEGIN = MUL_MAT's plan for one T-tile (Q8_0 96 x 896: lpt = 56 + 16 + 6), END none
+    uint32_t a[mm::NARGS] = {1, 56, 2, 6, 3, 0, 96, 896, 3, opl::HANDLE_NONE, 0, 0};
+    const plan::op_plan pm = plan::plan_op(plan::U200_K4, opl::K_MUL_MAT, a, mm::NARGS);
+    const plan::op_plan pb = plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_BEGIN, a, mm::NARGS);
+    CHECK(pm.status == opl::RET_OK && pb.status == opl::RET_OK && pb.scratch_lines == pm.scratch_lines && pb.scratch_lines == 3u * 78u,
+          "BEGIN plans as MUL_MAT (%u lines, MUL_MAT %u)", pb.scratch_lines, pm.scratch_lines);
+    tsr::kind_plan kp{};
+    CHECK(plan::plan_kind(plan::plan_limits_of(plan::U200_K4), opl::K_MUL_MAT_BEGIN, a, mm::NARGS, &kp) && kp.n_tiles == 1u &&
+              kp.scratch_lines == pb.scratch_lines && kp.tile_rows == 3u,
+          "plan_kind(BEGIN)");
+    a[mm::T] = 512u;   // more than one T-tile (a prefill op): MUL_MAT plans it in several tiles, BEGIN refuses it
+    CHECK(plan::plan_op(plan::U200_K4, opl::K_MUL_MAT, a, mm::NARGS).status == opl::RET_OK &&
+              plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_BEGIN, a, mm::NARGS).status == opl::RET_BAD_RECORD,
+          "BEGIN of more than one tile: BAD_RECORD");
+    a[mm::T] = 1u;
+    a[mm::K] = 16u;    // MUL_MAT's own refusals carry over (K < 32)
+    CHECK(plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_BEGIN, a, mm::NARGS).status == opl::RET_BAD_RECORD, "BEGIN: K < 32");
+    const uint32_t ea[1] = {0};
+    const plan::op_plan pe = plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_END, ea, 1);
+    CHECK(pe.status == opl::RET_OK && pe.scratch_lines == 0u, "END: no scratch");
+    CHECK(plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_END, ea, 2).status == opl::RET_BAD_RECORD &&
+              plan::plan_op(plan::U200_K4, opl::K_MUL_MAT_BEGIN, a, 11).status == opl::RET_BAD_RECORD,
+          "wrong argument counts");
+}
+
 int main() {
+    t_split();
     t_layout();
     t_roundtrip();
     t_nargs();

@@ -141,7 +141,7 @@ the tool). The image id changes with every build.
 ```
   ID 0x54535231  Tesseract Core capability 1.0 (VERSION 0x00000100), CAPS 0x00007169 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP)
   image build/dev/fw/tsr-fw.elf: id a5cbf3767c91cc4f, Tesseract Basis 1.2.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.2.0
-  kinds (21, signature 0x2381): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 ... GATED_DELTA_NET r2
+  kinds (23, signature 0x249c): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 ... GATED_DELTA_NET r2
 ```
 
 `tsr-elf` reads them from an image without a device: `tsr-elf --version`, `tsr-elf note IMAGE` (`sdk_abi`,
@@ -150,7 +150,7 @@ the device with both versions:
 
 ```
 $ TSR_DEVICE=sim build/dev/bin/llama-cli --list-devices
-  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.2.0 (ABI 1, 21 kinds, image a5cbf3767c91cc4f) (63488 MiB, 63488 MiB free)
+  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.2.0 (ABI 1, 23 kinds, image a5cbf3767c91cc4f) (63488 MiB, 63488 MiB free)
 ```
 
 The text up to the semicolon is the capability and its `CAPS` features. After it come the configuration, the Basis
@@ -198,7 +198,7 @@ control-core revision (1; 0 means no control core), the adapter version major (`
 the numbers of file formats (the op list header 1, trace metadata 2, the `.klc` header 2, numcheck metadata 2,
 `DBG_INFO` 1, the crash record 1, `MSUM` 1).
 
-## Kinds at Basis 1.2.0
+## Kinds
 
 Op list kinds with their revisions, as declared by `TSR_KIND` in the file that defines the handler.
 The argument words of each kind are in [SW](design/06-software-verification.md) §7.2.
@@ -223,12 +223,14 @@ The argument words of each kind are in [SW](design/06-software-verification.md) 
 | 0x1D | MUL_MAT_SOFTCAP | 1 | `k_mulmat.cpp` | A MUL_MAT followed by the scale, tanh and scale of a logit soft cap. |
 | 0x1E | MOE_ROUTE | 1 | `k_moe.cpp` | Router softmax, top-k selection and weight renormalization of a MoE layer (SW §7.9, SW-61). |
 | 0x1F | MUL_MAT_ID | 1 | `k_moe.cpp` | Matrix product against the experts that the ids of each token select, with an optional per-expert scale (SW-62). |
+| 0x20 | MUL_MAT_BEGIN | 1 | `k_mulmat.cpp` | A MUL_MAT of one T-tile up to its MVM. Its ST is the one of its MUL_MAT_END, so the records between them run under the MVM (SW-90). |
+| 0x21 | MUL_MAT_END | 1 | `k_mulmat.cpp` | The ST of the y rows of a MUL_MAT_BEGIN, after its MVM. |
 | 0x2D | SOFTPLUS | 1 | `gdn_kinds.cpp` | log(1 + exp(x)) of the gate tensors of a Gated DeltaNet layer (SW §7.10, SW-69). |
 | 0x2E | SSM_CONV | 1 | `gdn_kinds.cpp` | The causal convolution of a Gated DeltaNet layer with its rolling state, optionally followed by SILU (SW-68). |
 | 0x2F | GATED_DELTA_NET | 2 | `gdn_kinds.cpp` | The delta-rule recurrence of a Gated DeltaNet layer (SW-67). On a device with `CAPS` bit 8 it uses the fused path (SW-78). |
 
-Kind numbers 0x20 to 0x2C are unassigned and 0x30 to 0x3F are test kinds. The signature of this
-table (21 kinds) is `0x2381`.
+Kind numbers 0x22 to 0x2C are unassigned and 0x30 to 0x3F are test kinds. The signature of this
+table (23 kinds) is `0x249c`.
 
 ## Releases
 

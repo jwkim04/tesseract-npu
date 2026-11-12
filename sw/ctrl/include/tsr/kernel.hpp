@@ -642,7 +642,10 @@ struct group {
 //
 // Failure (no state change): lines = 0 or larger than the ring (with padding), parity > 2, or a
 // block that would have to be reused, or forgotten, before it was released. alloc() then returns
-// spm{SPM_NONE} (valid() is false) and *must_wait = {}.
+// spm{SPM_NONE} (valid() is false) and *must_wait = {}. A block may stay held across records
+// (MUL_MAT_BEGIN keeps its block for its END): such a record is never moved, reused or forgotten while it
+// is held, so a pointer to its release slot (newest_rel) stays valid until it is released, and the
+// kernels' failure path (kf::alloc_g) closes the open BEGINs of the launch (open()) before it gives up.
 //
 // Cost (SW §7.3 "Hot path"): O(1) amortized. A record is 4 words in a
 // power-of-two table (no modulo), the fold keeps a unit bit mask and per-unit slots that are
@@ -653,6 +656,7 @@ struct group {
 //
 // Tickets are only meaningful until the next qclear() (a dep below the clear point is BAD_DEP),
 // so a ring is init()'d per launch (the runtime's R9 QCLEAR separates launches; SW-4).
+struct mm_open;   // the open MUL_MAT_BEGIN table (exec.hpp), reached through the ring by its allocation failure path
 class spm_ring {
 public:
     // Power of two (table index masks). A full table makes alloc join its oldest (released) block,
@@ -676,6 +680,7 @@ public:
         n_ = 0;
         joins_ = 0;
         slow_ = 0;
+        open_ = nullptr;
     }
 
     // The common case inline (no wrap, at most two units among the overlapped blocks' release
@@ -746,7 +751,8 @@ public:
     // ticket of another unit, a held block in the way, a refusal) it changes nothing and returns
     // spm{SPM_NONE}: the caller then uses alloc(). A leaf (no call): the executor's decode path.
     // *rel (when the block is valid) is the new record's release slot: release_at(*rel, after) is
-    // release(block, after) without the search, valid until the next alloc.
+    // release(block, after) without the search, valid until the next alloc (or, for a block that stays
+    // held, until it is released: newest_rel).
     TSR_HOT spm alloc_dma_first(uint32_t lines, uint32_t ** rel) {
         const uint32_t s = head_;
         if (lines == 0u || s > end_ || end_ - s < lines) return spm{SPM_NONE};
@@ -785,7 +791,16 @@ public:
         head_ = hi;
         return spm{s};
     }
+    // The release slot of the newest record (the block alloc just returned), for release_at. A block
+    // that is held (not released) is never moved, forgotten or reused by any alloc (each refuses it), so
+    // its slot stays valid until the block is released: a block kept across records may use it.
+    uint32_t * newest_rel() { return &at(n_ - 1u).rel; }
     TSR_HOT static void release_at(uint32_t * rel, ticket after) { *rel = after.v; }
+    // The table of open MUL_MAT_BEGIN records of the launch (exec.hpp mm_open), or nullptr: the kernels'
+    // allocation failure path (kf::alloc_g) closes them when a held block is in the way (SW §7.3).
+    // init() clears it.
+    mm_open * open() const { return open_; }
+    void set_open(mm_open * o) { open_ = o; }
 
     // The full algorithm (wraps, refusals, more than two units, must_wait = nullptr).
     [[gnu::noinline]] spm alloc_slow(uint32_t lines, uint32_t parity, deps * must_wait) {
@@ -930,6 +945,7 @@ private:
     uint32_t first_ = 0, end_ = 0, head_ = 0;
     uint32_t tail_ = 0, n_ = 0;
     uint32_t joins_ = 0, slow_ = 0;
+    mm_open * open_ = nullptr;
     rec ring_[MAX_BLOCKS] = {};
 };
 

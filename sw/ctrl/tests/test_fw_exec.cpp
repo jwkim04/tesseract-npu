@@ -1331,7 +1331,9 @@ static mm_layer setup_layer(env & e, uint32_t fmt) {
 }
 // One layer's MUL_MATs with the graph's dependency shape (x -> q, k, v -> o (+residual) -> gate, up
 // -> down (+residual)); activations in ch0 IO. layer l reads the previous layer's output.
-static void add_layer(writer & w, const mm_layer & L, uint32_t fmt, uint32_t T, uint32_t l, uint32_t * prev, bool stub) {
+// split: every MUL_MAT as a MUL_MAT_BEGIN and, right after it, its MUL_MAT_END (the consumers depend on the END).
+static void add_layer(writer & w, const mm_layer & L, uint32_t fmt, uint32_t T, uint32_t l, uint32_t * prev, bool stub,
+                      bool split = false) {
     const uint32_t A = OUT_BEAT + 0x40000u * (l % 2);         // per-layer activation area
     const uint32_t X = l == 0 ? OUT_BEAT + 0x80000u : OUT_BEAT + 0x40000u * ((l + 1) % 2) + 0x30000u;
     const uint32_t xs = 896 / 16, fs = 4864 / 16;
@@ -1341,6 +1343,11 @@ static void add_layer(writer & w, const mm_layer & L, uint32_t fmt, uint32_t T, 
         if (stub) {
             const uint32_t a[2] = {h0(x), h0(y)};
             return w.add(TK_STUB5, a, 2, d.data(), (uint32_t)d.size());
+        }
+        if (split) {
+            const uint32_t b = w.mul_mat_begin(h0(x), xst, h0(y), yst, woff, fmt, N, K, T, add == ~0u ? opl::HANDLE_NONE : h0(add),
+                                               add == ~0u ? 0u : yst, 0, d.data(), (uint32_t)d.size());
+            return w.mul_mat_end(b, &b, 1);
         }
         return w.mul_mat(h0(x), xst, h0(y), yst, woff, fmt, N, K, T, add == ~0u ? opl::HANDLE_NONE : h0(add), add == ~0u ? 0u : yst,
                          0, d.data(), (uint32_t)d.size());
@@ -1551,18 +1558,28 @@ struct busy_ctx {
     uint64_t work, work_insns;                 // busy minus spin-wait iterations (fw_prof.h)
     fwprof::spin_filter spin;
     fwprof::prof * prof;                       // per-PC / per-class profile (nullptr: off)
+    // The work split between the entries of two functions (perf_split): from the first entry's first instruction to
+    // the second's, and from the second's to the first's again, spin-free cycles each. sp_pc 0: off.
+    uint32_t sp_pc[2];
+    int sp_cur;
+    double sp_work[2];
 };
 static int busy_hook(void * ctx, const tsr_rv_retire * r) {
     busy_ctx * b = (busy_ctx *)ctx;
     const uint64_t now = tsr_rv_cycles(b->rv);
     const uint64_t d = now - b->last;
     b->last = now;
+    if (b->sp_pc[0] != 0u) {
+        if (r->pc == b->sp_pc[0]) b->sp_cur = 0;
+        else if (r->pc == b->sp_pc[1]) b->sp_cur = 1;
+    }
     const bool spin = b->spin.step(r);
     if (d <= 256u) {                           // larger steps are sleeps / fast-forwarded waits
         b->busy += d;
         if (!spin) {
             b->work += d;
             b->work_insns++;
+            if (b->sp_pc[0] != 0u) b->sp_work[b->sp_cur] += double(d);
         }
         if (b->prof) b->prof->add(r, d, spin);
     }
@@ -1757,6 +1774,52 @@ static void perf_short(rv_env & e, busy_ctx & b, bool deep, double limit, uint32
     }
 }
 
+// MUL_MAT_BEGIN and MUL_MAT_END records at decode shapes (SW §7.3 "Hot path": <= 350 RV cycles of work per decode record): the
+// layers of the MUL_MAT list with every MUL_MAT as a BEGIN and its END. The work of a record = the spin-free cycles from the
+// first instruction of its fast entry to the next record's (the handler and the executor's reading and checking of the
+// next record), so the two figures are per record: BEGIN, then END. END (one ST) is held to the short kinds' 350. BEGIN pushes
+// MUL_MAT's LD, [LD], QACT and MVM, so it costs about what mulmat_t1_fast does (SW §7.8: MUL_MAT <= 400 per op on average,
+// not a short kind): printed against 350, asserted against the regression ceiling BEGIN_CEILING (SW-95).
+static const double BEGIN_CEILING = 450.0;
+static void perf_split(rv_env & e, busy_ctx & b, const mm_layer & L, bool deep) {
+    fwprof::prof syms;
+    uint32_t lo[2] = {0, 0};
+    const char * const names[2] = {"tsr::kind_mulmat_begin_fast(", "tsr::kind_mulmat_end_fast("};
+    if (syms.load_symbols(g_perf_image))
+        for (const auto & s : syms.symbols())
+            for (int k = 0; k < 2; ++k)
+                if (s.name.compare(0, strlen(names[k]), names[k]) == 0) lo[k] = s.lo;
+    if (lo[0] == 0u || lo[1] == 0u) {
+        printf("%s: MUL_MAT_BEGIN / MUL_MAT_END: not in the image\n", e.tag.c_str());
+        return;
+    }
+    double w[2][2] = {};
+    uint32_t pairs[2] = {0, 0};
+    for (int k = 0; k < 2; ++k) {
+        writer wr;
+        uint32_t prev = opl::DEP_NONE;
+        for (uint32_t l = 0; l < (k ? 4u : 1u); ++l) add_layer(wr, L, TSR_FMT_Q8_0, 1, l, &prev, false, true);
+        pairs[k] = wr.n_ops() / 2u;
+        b.sp_pc[0] = lo[0];
+        b.sp_pc[1] = lo[1];
+        b.sp_cur = 0;
+        b.sp_work[0] = b.sp_work[1] = 0;
+        expect_ok(e, run_list(e, wr.finish()), "MUL_MAT_BEGIN / MUL_MAT_END layers");
+        b.sp_pc[0] = b.sp_pc[1] = 0;
+        w[k][0] = b.sp_work[0];
+        w[k][1] = b.sp_work[1];
+    }
+    const double dn = double(pairs[1] - pairs[0]);
+    const double wb = (w[1][0] - w[0][0]) / dn, we = (w[1][1] - w[0][1]) / dn;
+    printf("%s: decode MUL_MAT_BEGIN record %.1f RV cycles of work (350: %s; ceiling %.0f), MUL_MAT_END record %.1f (350: %s)\n",
+           e.tag.c_str(), wb, wb <= 350.0 ? "met" : "NOT met", BEGIN_CEILING, we, we <= 350.0 ? "met" : "NOT met");
+    if (deep) {
+        CHECK(wb <= BEGIN_CEILING, "%s: MUL_MAT_BEGIN: regression ceiling %.0f RV cycles of work per decode record (%.1f)",
+              e.tag.c_str(), BEGIN_CEILING, wb);
+        CHECK(we <= 350.0, "%s: MUL_MAT_END: <= 350 RV cycles of work per decode record (%.1f)", e.tag.c_str(), we);
+    }
+}
+
 // mode 0: the M6 scenarios and the short records (fw_exec_perf); 1: the short records only (--perf-m7).
 static void perf(const char * image, int mode = 0, double limit = 0.0, uint32_t only = ~0u) {
     g_perf_image = image;
@@ -1808,6 +1871,14 @@ static void perf(const char * image, int mode = 0, double limit = 0.0, uint32_t 
             }, nullptr, &wm);
             report_target(e, "MUL_MAT list", c);
             CHECK(wm <= 700.0, "%s: MUL_MAT list: regression ceiling 700 RV cycles of work per op (%.1f)", e.tag.c_str(), wm);
+            double ws = 0;
+            const double cs = perf_case(e, b, "MUL_MAT_BEGIN + END 0.5B layers", 4, [&](writer & w, uint32_t n) {
+                uint32_t prev = opl::DEP_NONE;
+                for (uint32_t l = 0; l < n; ++l) add_layer(w, L, TSR_FMT_Q8_0, 1, l, &prev, false, true);
+            }, nullptr, &ws);
+            report_target(e, "MUL_MAT_BEGIN + END list", cs);
+            CHECK(ws <= 700.0, "%s: MUL_MAT_BEGIN + END list: regression ceiling 700 RV cycles of work per record (%.1f)", e.tag.c_str(), ws);
+            perf_split(e, b, L, true);
         }
         tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), NULL, NULL);
         const uint64_t stall = tsr_sim_perf(sim, TSR_PERF_PUSH_STALL(cfg.num_ch));

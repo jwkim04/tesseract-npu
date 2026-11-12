@@ -2119,6 +2119,8 @@ struct tsr_gctx;
 
 // A segment: the records of the pending op list (tsr_opl_builder: hazards over DRAM byte ranges,
 // JOINs, the preload table), built in program order and run as one `graph` launch.
+// A MUL_MAT of one T-tile may sit pending in `ops` (set_defer, SW §9.3 "Deferred MUL_MAT") and the MUL_MAT_END of an open
+// MUL_MAT_BEGIN may be owed: tsr_flush settles both before it finishes the list, so a BEGIN and its END never part.
 struct tsr_segment {
     explicit tsr_segment(uint32_t num_ch, tsr_gctx * g = nullptr) : ops(num_ch, tsr::opl::F_STOP_ON_ERROR), gctx(g) {}
 
@@ -2130,7 +2132,6 @@ struct tsr_segment {
     std::set<tsr_buffer_ctx *>    written;    // buffers the pending list writes
     std::vector<uint64_t>         w_offs;     // W_OFF (bytes) of the pending MUL_MATs
     uint32_t                      n_fused = 0, n_gdn_cell = 0;
-    uint32_t                      n_kind[tsr::opl::N_KINDS] = {};
 
     void clear() {
         ops.reset();
@@ -2140,7 +2141,6 @@ struct tsr_segment {
         w_offs.clear();
         n_fused = 0;
         n_gdn_cell = 0;
-        std::fill(std::begin(n_kind), std::end(n_kind), 0u);
     }
 };
 
@@ -2235,9 +2235,12 @@ static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
     }
     tsr_mon_note_mem(d);
     const uint32_t n_pre = L.blob.size() >= tsr::opl::HDR_BYTES ? tsr::opl::rd32(L.blob.data() + 4u * tsr::opl::hw::N_PRE) : 0u;
+    // MUL_MAT counts the matrix products: the records of kind MUL_MAT and MUL_MAT_BEGIN (a BEGIN and its END are one product)
     TSR_DBG(1, "launch #%" PRIu64 ": %u records (%u MUL_MAT, %u fused, %u JOIN), %u preload entries, %zu B at OPL ch0+0x%07" PRIx64
-               "%s, %.3f ms\n", d->odev.launches, L.n_ops, L.n_kind[tsr::opl::K_MUL_MAT], L.n_fused, L.n_joins, n_pre,
-            L.blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
+               "%s, %.3f ms; MUL_MAT_BEGIN %u, MUL_MAT_END %u\n", d->odev.launches, L.n_ops,
+            L.n_kind[tsr::opl::K_MUL_MAT] + L.n_kind[tsr::opl::K_MUL_MAT_BEGIN], L.n_fused, L.n_joins, n_pre,
+            L.blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6, L.n_kind[tsr::opl::K_MUL_MAT_BEGIN],
+            L.n_kind[tsr::opl::K_MUL_MAT_END]);
     if (tsr_debug_level() >= 2) {
         tsr_dump_opl(L);
     }
@@ -2254,7 +2257,7 @@ static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
                    tsr::opl::rd32(L.blob.data() + 4u * tsr::opl::hw::GRAPH_ID));
     }
     if (stats) {
-        d->st_mm_records += L.n_kind[tsr::opl::K_MUL_MAT];
+        d->st_mm_records += L.n_kind[tsr::opl::K_MUL_MAT] + L.n_kind[tsr::opl::K_MUL_MAT_BEGIN];
         d->st_joins += L.n_joins;
         d->st_fused += L.n_fused;
         d->st_gdn_cell += L.n_gdn_cell;
@@ -2303,7 +2306,9 @@ static void tsr_prof_list(tsr_device * d, const tsr_segment & seg, const tsr_pla
             for (const tsr_dram_range & g : oi.rd) x.rd.push_back({ g.ch, g.lo, g.hi, g.row, g.stride });
             for (const tsr_dram_range & g : oi.wr) x.wr.push_back({ g.ch, g.lo, g.hi, g.row, g.stride });
         }
-        tsr_prof::fill_record(&x, cfg);
+        // a MUL_MAT_END takes its write bytes from its BEGIN (the records are in index order)
+        const tsr_prof::rec * begin = r.kind == tsr::opl::K_MUL_MAT_END && r.n_args > 0 && r.arg(0) < pl.recs.size() ? &pl.recs[r.arg(0)] : nullptr;
+        tsr_prof::fill_record(&x, cfg, begin);
         pl.recs.push_back(std::move(x));
     }
     seg.gctx->prof.lists.push_back(std::move(pl));
@@ -2314,6 +2319,10 @@ static void tsr_prof_list(tsr_device * d, const tsr_segment & seg, const tsr_pla
 static void tsr_flush(tsr_device * d, tsr_segment & seg, const char * why = "end of the graph (split)") {
     if (seg.ops.empty()) {
         return;
+    }
+    // a pending MUL_MAT and the open BEGINs' ENDs go into this list: no BEGIN and END are ever in two lists (SW §7.3)
+    if (!seg.ops.settle()) {
+        GGML_ABORT("tesseract: op list build failed: %s", seg.ops.error());
     }
     tsr_plan_list L;
     L.blob = seg.ops.finish();
@@ -2329,7 +2338,9 @@ static void tsr_flush(tsr_device * d, tsr_segment & seg, const char * why = "end
     for (uint32_t i = 0; i < L.n_ops; ++i) {
         L.tags[i] = seg.ops.tag_of(i);
     }
-    std::copy(std::begin(seg.n_kind), std::end(seg.n_kind), std::begin(L.n_kind));
+    for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+        L.n_kind[k] = k == tsr::opl::K_JOIN ? 0u : seg.ops.n_of_kind(k);      // records of each kind, as built
+    }
     L.written.assign(seg.written.begin(), seg.written.end());
     if (tsr_prof::on() && seg.gctx != nullptr) {
         L.prof_plan = seg.gctx->prof.id;
@@ -2355,17 +2366,27 @@ static uint32_t tsr_opl_split() {
     return n;
 }
 
+// TSR_MM_DEFER=0 (read once; default on): no MUL_MAT is lowered as MUL_MAT_BEGIN + MUL_MAT_END (SW §9.3 "Deferred MUL_MAT").
+static bool tsr_mm_defer() {
+    static const bool on = [] {
+        const char * e = getenv("TSR_MM_DEFER");
+        return e == nullptr || e[0] == '\0' || atoi(e) != 0;
+    }();
+    return on;
+}
+
 static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg);
 
-// Append one MUL_MAT record (args: tsr::opl::mm words) for node `name`; a full list is run first.
+// Append one MUL_MAT record (args: tsr::opl::mm words) for node `name`; a full list is run first. defer: a plain one-tile
+// MUL_MAT that the builder may keep pending and lower as MUL_MAT_BEGIN + MUL_MAT_END (tsr_opl_builder::set_defer).
 static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * args, const char * name, tsr_buffer_ctx * dst_buf,
-                           bool fused, uint32_t kind = tsr::opl::K_MUL_MAT) {
+                           bool fused, uint32_t kind = tsr::opl::K_MUL_MAT, bool defer = false) {
     tsr_seg_maybe_cut(d, seg);
-    uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind);
+    uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind, defer);
     if (idx == tsr_opl_builder::NO_ROOM) {
         tsr_flush(d, seg, "list full (4096 records)");   // SW-29: run what is pending
         d->st_cut_lists++;
-        idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind);
+        idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind, defer);
     }
     if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
         GGML_ABORT("tesseract: cannot add MUL_MAT '%s' to the op list: %s", name, seg.ops.error());
@@ -2373,7 +2394,6 @@ static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * a
     seg.names.push_back(name);
     seg.node_of_tag.push_back(seg.cur_node);
     seg.w_offs.push_back((uint64_t) args[tsr::opl::mm::W_OFF] * TSR_BEAT_BYTES);
-    seg.n_kind[kind]++;
     seg.n_fused += kind == tsr::opl::K_MUL_MAT_SOFTCAP ? 3u : (fused ? 1u : 0u);
     if (dst_buf != nullptr) {
         seg.written.insert(dst_buf);
@@ -2381,7 +2401,7 @@ static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * a
 }
 
 static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg) {
-    if (tsr_opl_split() != 0 && seg.ops.n_ops() >= tsr_opl_split()) {
+    if (tsr_opl_split() != 0 && seg.ops.n_records() >= tsr_opl_split()) {
         tsr_flush(d, seg, "TSR_OPL_SPLIT (test knob)");
         d->st_cut_lists++;
     }
@@ -2431,7 +2451,6 @@ static void tsr_seg_add_rec(tsr_device * d, tsr_segment & seg, tsr_rec & r, cons
     }
     seg.names.push_back(name);
     seg.node_of_tag.push_back(seg.cur_node);
-    seg.n_kind[r.kind]++;
     seg.n_fused += fused ? 1u : 0u;
     if (dst_buf != nullptr) {
         seg.written.insert(dst_buf);
@@ -2782,7 +2801,14 @@ static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
             TSR_DBG(1, "MUL_MAT %s + %s not fused: %s\n", node->name, fused_out->name, why.c_str());
         }
     }
-    tsr_seg_add_mm(d, seg, args, name.c_str(), dst_buf, fused, kind);
+    // SW §9.3 "Deferred MUL_MAT": a plain MUL_MAT (a fused ADD included) of one weight part and one T-tile of the firmware's
+    // plan may leave its ST to a MUL_MAT_END; the builder decides when (the next record leaves y alone) and whether the image has the kinds
+    bool defer = false;
+    if (kind == tsr::opl::K_MUL_MAT && seg.ops.defer()) {
+        tsr::plan::mm_tiling ft{};
+        defer = tsr::plan::mm_plan(d->m7cfg_ok ? d->m7cfg : tsr_plan_cfg_m7(d), fmt, N, K, T, &ft) == tsr::opl::RET_OK && ft.n_tiles == 1u;
+    }
+    tsr_seg_add_mm(d, seg, args, name.c_str(), dst_buf, fused, kind, defer);
 
     TSR_DBG(1, "%s %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "%s%s\n",
             tsr_kind_name(kind), node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.b->ch, ax.io_off(), tsr_handle_ch(args[tsr::opl::mm::Y]),
@@ -3401,6 +3427,9 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
     }
     tsr_segment seg(d->cfg.num_ch, &g);
+    // SW §9.3 "Deferred MUL_MAT": needs both kinds (and JOIN) in the booted image
+    seg.ops.set_defer(tsr_mm_defer() && tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_BEGIN) &&
+                      tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_END));
     std::map<uint32_t, tsr_kv_write> kv_writes;      // by plane base beat, as tsr_fanew_map
     // FA_NEW's copies of the K indices (tsr_copy_k_indices): by index tensor; the last FLASH_ATTN node of each K plane
     std::map<const ggml_tensor *, tsr_kidx_copy> kidx_copies;

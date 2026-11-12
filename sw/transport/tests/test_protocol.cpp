@@ -1042,8 +1042,9 @@ void test_versions() {
     CHECK(tsr_transport_versions(s.t, &v) == 0, "tsr_transport_versions");
     CHECK(v.core == core_cap() && v.caps == tsr_transport_config(s.t)->caps && v.core_min == core_cap() && v.basis == TSR_BASIS_VERSION &&
               v.basis == tsr_basis_version() && v.abi == TSR_SDK_ABI && v.n_kinds == n_defined_kinds() &&
-              v.kind_rev[opl::K_FLASH_ATTN] == opl::kind_rev(opl::K_FLASH_ATTN) && v.kind_rev[0x20] == 0 && v.kinds_sig == sig &&
-              v.image_id == tsr_image_id(fw),
+              v.kind_rev[opl::K_FLASH_ATTN] == opl::kind_rev(opl::K_FLASH_ATTN) &&
+              v.kind_rev[opl::K_MUL_MAT_END] == opl::kind_rev(opl::K_MUL_MAT_END) && v.kind_rev[0x22] == 0 &&   // 0x22: no kind
+              v.kinds_sig == sig && v.image_id == tsr_image_id(fw),
           "versions: core 0x%04x basis 0x%06x abi %u kinds %u sig 0x%04x", v.core, v.basis, v.abi, v.n_kinds, v.kinds_sig);
     char str[512];
     const int len = tsr_versions_str(&v, 0, str, sizeof(str));

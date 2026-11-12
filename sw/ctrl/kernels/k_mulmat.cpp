@@ -41,6 +41,18 @@
 // ticket is the last ST: it implies every tile op of the op (I1: the last ST follows the last MVM,
 // which follows every earlier MVM, QACT and LD by queue order and deps).
 //
+// MUL_MAT_BEGIN / MUL_MAT_END (kinds 0x20 / 0x21, SW §7.4): a MUL_MAT of one T-tile split in two records, so
+// that the records between them run under its MVM (the DMA queue runs in order: the ST of a MUL_MAT holds
+// back every LD pushed after it until the MVM is done). BEGIN pushes steps 1-4 above with the same words,
+// deps and order, keeps the block held and returns the ticket of its last LD (what a later record that
+// overwrites its x or addend waits for); it records itself in the launch's table of open BEGINs
+// (exec.hpp mm_open: the MVM's ticket, the y rows, the block's release slot). END (its word: the BEGIN's
+// op index) pushes step 5 with a dep on that MVM, releases the block and returns the ST. The table's rules:
+// BEGIN with eight open closes the oldest; a ring allocation of any kind that fails while some are open closes
+// them all (kf::alloc_g); the executor closes the rest at the end of the list. Closing pushes the STs and
+// releases the blocks as END would; a BEGIN closed early is marked in the table and its END returns the
+// ticket kept for it. The STs of a closing lie in the push-index range of the record that triggered it.
+//
 // Cost (SW §7.3 "Hot path", §7.8): a T = 1 record (a decode token) runs
 // mmk::mulmat_t1_fast (k_mulmat.hpp), which the executor calls before kind_mulmat. Otherwise the
 // argument words are read in place from the OPL area (exec.hpp) into locals before the first
@@ -54,9 +66,11 @@
 // The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
 #if !defined(TSR_TEST_NO_KIND_MUL_MAT)   // the test image fw_no_mulmat (kindrevs.cmake): an image without the kind
 TSR_KIND(MUL_MAT);
-#if !defined(TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE)
+#if !defined(TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE)   // fw_exec_ref: an image with MUL_MAT alone (no SCALE, SOFTCAP, BEGIN, END)
 TSR_KIND(MUL_MAT_SCALE);
 TSR_KIND(MUL_MAT_SOFTCAP);
+TSR_KIND(MUL_MAT_BEGIN);
+TSR_KIND(MUL_MAT_END);
 #endif
 #endif
 
@@ -122,6 +136,31 @@ ticket store_rows(spm src, dram dst, uint32_t stride, uint32_t lines, uint32_t t
     for (uint32_t i = 0; i < tt; ++i)
         last = push_g(ST(src + i * lines, dst + (t0 + i) * stride, lines), i == 0u ? first : deps{}, pf);
     return last;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The open BEGIN table (exec.hpp mm_open): closing and the general paths' pieces.
+// ---------------------------------------------------------------------------------------------
+// The STs of an open BEGIN's y rows (the first with `first`), then its block released with the last.
+ticket store_open(const mm_open::entry & e, deps first, uint32_t pf) {
+    const ticket st = store_rows(spm{e.y}, from_handle(e.dst), e.y_stride, e.y_lines, 0u, e.T, first, pf);
+    spm_ring::release_at(e.rel, st);
+    return st;
+}
+// Entry k closes before its END: its STs, the BEGIN marked closed and its ticket kept (the ticket table).
+void close_open(mm_open & o, uint32_t k) {
+    const mm_open::entry e = o.e[k];
+    o.e[k] = o.e[--o.n];
+    const ticket st = store_open(e, deps{ticket{e.mvm}}, o.pf);
+    o.closed[e.op >> 5] |= 1u << (e.op & 31u);
+    o.tick[e.op + 1u] = st.v;
+}
+// The oldest open BEGIN (the smallest op index) closes.
+void close_oldest(mm_open & o) {
+    uint32_t k = 0;
+    for (uint32_t j = 1; j < o.n; ++j)
+        if (o.e[j].op < o.e[k].op) k = j;
+    close_open(o, k);
 }
 
 spm x_of(const mm_op &, const tile & t) { return t.blk; }
@@ -230,7 +269,7 @@ op mvm_epilogue(spm y, spm q, wref w, uint32_t n, uint32_t k, uint32_t t, uint32
 
 // Any T (kind_mulmat's T != 1 case).
 [[gnu::noinline, gnu::cold]] ticket mulmat_any(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d,
-                                    kind_ctx & ctx, epilogue post = epilogue::none) {
+                                    kind_ctx & ctx, epilogue post = epilogue::none, bool begin = false) {
     // Every argument word first (one line-buffer fill; any push would invalidate the buffer).
     const uint32_t ax = a[mm::X], axs = a[mm::X_STRIDE], ay = a[mm::Y], ays = a[mm::Y_STRIDE], woff = a[mm::W_OFF];
     const uint32_t fmt = a[mm::FMT], N = a[mm::N], K = a[mm::K], T = a[mm::T];
@@ -257,6 +296,12 @@ op mvm_epilogue(spm y, spm q, wref w, uint32_t n, uint32_t k, uint32_t t, uint32
     }
     const uint32_t pf = ctx.push_flags;
     const wref w{woff, uint8_t(fmt)};
+    mm_open * open = nullptr;
+    if (begin) {                                  // MUL_MAT_BEGIN: one tile, and the table to enter
+        open = ctx.ring->open();
+        if (tl.n_tiles != 1u || open == nullptr) return ctx.fail(opl::RET_BAD_RECORD);
+        if (open->n == mm_open::MAX) close_oldest(*open);
+    }
     if (tl.n_tiles != 1u) {
         mm_op m;
         m.x = from_handle(ax);
@@ -297,9 +342,47 @@ op mvm_epilogue(spm y, spm q, wref w, uint32_t n, uint32_t k, uint32_t t, uint32
     const ticket qt = qact_g(qa_for(w), q, blk, K, T, tl.x_lines, ld_x, pf);
     const op compute = mvm_epilogue(yb, q, w, N, K, T, tl.y_lines, has_add || acc_dst, post, scale, post_scale);
     const ticket mv = push_g(compute, after(qt, ld_add), pf);
+    if (begin) {                                  // the block stays held, the ST is END's
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 4
+        ring.release(blk, ticket{});
+#endif
+        open->e[open->n++] = mm_open::entry{ctx.op_index, ring.newest_rel(), yb.line, ay, ays, tl.y_lines, T, mv.v};
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 7
+        return mv;                                   // Negative test image fw_kmm_mut_tkmvm: BEGIN's ticket is its MVM
+#else
+        return ld_add.none() ? ld_x : ld_add;
+#endif
+    }
     const ticket st = store_rows(yb, y, ays, tl.y_lines, 0u, T, deps{mv}, pf);
     ring.release(blk, st);
     return st;
+}
+
+// MUL_MAT_END's general path: any entry state, any dependencies. (Its fast entry below takes one ST and
+// no dependency but the BEGIN's.) Its ST waits for the MVM and the record's own non-DMA dependencies.
+[[gnu::noinline, gnu::cold]] ticket end_any(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    const uint32_t b = a[opl::mmend::BEGIN];
+    mm_open * const o = ctx.ring->open();
+    if (n_args != opl::mmend::NARGS || kflags != 0u || o == nullptr || b >= ctx.op_index)   // an earlier record
+        return ctx.fail(opl::RET_BAD_RECORD);
+    for (uint32_t k = 0; k < o->n; ++k) {
+#if !defined(TSR_KMM_MUTANT) || TSR_KMM_MUTANT != 6
+        if (o->e[k].op != b) continue;
+#endif
+        const mm_open::entry e = o->e[k];
+        o->e[k] = o->e[--o->n];
+        const deps dd = drop_dma(d);
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 3
+        (void)dd;
+        return store_open(e, deps{}, ctx.push_flags);
+#else
+        return store_open(e, dd.a.none() ? deps{ticket{e.mvm}} : kf::fold_deps(deps{ticket{e.mvm}}, dd), ctx.push_flags);
+#endif
+    }
+    const uint32_t bit = 1u << (b & 31u);
+    if ((o->closed[b >> 5] & bit) == 0u) return ctx.fail(opl::RET_BAD_RECORD);   // no such BEGIN open, or END twice
+    o->closed[b >> 5] &= ~bit;
+    return ticket{o->tick[b + 1u]};                // closed early: its last ST
 }
 
 }  // namespace
@@ -316,6 +399,102 @@ ticket kind_mulmat_scale(const volatile uint32_t * a, uint32_t n_args, uint32_t 
     return mulmat_any(a, n_args, kflags, d, ctx, epilogue::scale);
 }
 
+// MUL_MAT_BEGIN's decode fast path (T = 1; exec.hpp kind_mulmat_begin_fast, the executor's first call): the
+// pushes of mulmat_t1_fast up to the MVM, then the entry in the open table. NOT_FAST, having changed
+// nothing, for everything mulmat_t1_fast refuses and when the table is full or absent.
+[[gnu::noinline]] uint32_t kind_mulmat_begin_fast(const volatile uint32_t * a, uint32_t kflags, deps d, kind_ctx & ctx) {
+    mm_open * const o = ctx.ring->open();
+    if (a[mm::T] != 1u || o == nullptr || o->n >= mm_open::MAX) return mmk::NOT_FAST;
+    const uint32_t ax = a[mm::X], ay = a[mm::Y], woff = a[mm::W_OFF], fmt = a[mm::FMT], N = a[mm::N], K = a[mm::K];
+    const uint32_t aadd = a[mm::ADD], fl = a[mm::FLAGS];
+    const bool has_add = aadd != opl::HANDLE_NONE, acc_dst = (fl & mm::FLAG_ACC_DST) != 0u;
+    if (kflags != 0u || (fl & ~mm::FLAG_ACC_DST) != 0u || (has_add && acc_dst)) return mmk::NOT_FAST;
+    plan::mm_tiling tl;
+    if (plan::mm_plan(ctx.mml, fmt, N, K, 1u, &tl) != opl::RET_OK) return mmk::NOT_FAST;
+    uint32_t * rel = nullptr;
+    const spm blk = ctx.ring->alloc_dma_first(tl.lpt, &rel);
+    if (!valid(blk)) return mmk::NOT_FAST;
+    const bool acc = has_add || acc_dst;
+    const wref w{woff, uint8_t(fmt)};
+    const deps first = kf::first_deps(d);          // d = after(t0, t1), as the executor folds it
+    const uint32_t pf = ctx.push_flags;
+    const uint32_t c = credits(), n_dma = acc ? 2u : 1u;
+    const mmk::t1_tickets t = kf::credits_for(c, n_dma, 0u, 1u, 1u)
+                                  ? mmk::t1_ops<false>(blk, tl.x_lines, tl.qa_lines, tl.y_lines, ax, ay, aadd, has_add, acc, w, N, K, first, pf)
+                                  : mmk::t1_ops<true>(blk, tl.x_lines, tl.qa_lines, tl.y_lines, ax, ay, aadd, has_add, acc, w, N, K, first, pf);
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 4
+    // Negative test image fw_kmm_mut_relbegin: the block is released at BEGIN (no ticket), not by the ST.
+    spm_ring::release_at(rel, ticket{});
+#endif
+    mm_open::entry & e = o->e[o->n++];
+    e.op = ctx.op_index;
+    e.rel = rel;
+    e.y = blk.line + tl.x_lines + tl.qa_lines;
+    e.dst = ay;
+    e.y_stride = tl.y_lines;                       // one row: the stride does not matter
+    e.y_lines = tl.y_lines;
+    e.T = 1u;
+    e.mvm = t.mv.v;
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 7
+    return t.mv.v;
+#else
+    return t.ld.v;
+#endif
+}
+
+// MUL_MAT_END's fast path: the BEGIN is open, its y rows are one ST (T = 1, or dense rows), and the record
+// has no dependency but DMA ones (its BEGIN, normally): the ST with a dep on the MVM, the block released.
+[[gnu::noinline]] uint32_t kind_mulmat_end_fast(const volatile uint32_t * a, uint32_t kflags, deps d, kind_ctx & ctx) {
+    mm_open * const o = ctx.ring->open();
+    if (o == nullptr || kflags != 0u) [[unlikely]] return mmk::NOT_FAST;
+    const uint32_t b = a[opl::mmend::BEGIN];
+    const uint32_t n = o->n;
+    uint32_t k = 0;
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 6
+    // Negative test image fw_kmm_mut_wrongend: END stores the first open entry, whatever its BEGIN word names.
+    (void)b;
+    if (n != 0u) k = 0u; else k = n;
+    if (k == n) [[unlikely]] return mmk::NOT_FAST;
+#else
+    while (k < n && o->e[k].op != b) ++k;
+    if (k == n) [[unlikely]] return mmk::NOT_FAST;   // closed early, or no such BEGIN: the general path
+#endif
+    const mm_open::entry e = o->e[k];
+    if ((e.T != 1u && e.y_stride != e.y_lines) || !kf::first_deps(d).a.none()) [[unlikely]] return mmk::NOT_FAST;
+    o->e[k] = o->e[n - 1u];
+    o->n = n - 1u;
+    const uint32_t c = credits();
+    const op st = ST(spm{e.y}, from_handle(e.dst), e.T * e.y_lines);
+#if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 3
+    // Negative test image fw_kmm_mut_endnodep: END's ST without its dependency on the MVM (the race detector must report it).
+    const deps sd{};
+#else
+    const deps sd{ticket{e.mvm}};
+#endif
+    const ticket t = kf::credits_for(c, 1u, 0u) ? issue_nc(st, sd, ctx.push_flags) : issue(st, sd, ctx.push_flags);
+    spm_ring::release_at(e.rel, t);
+    return t.v;
+}
+
+ticket kind_mulmat_begin(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    const uint32_t t = kind_mulmat_begin_fast(a, kflags, d, ctx);
+    if (t != mmk::NOT_FAST) return ticket{t};
+    return mulmat_any(a, n_args, kflags, d, ctx, epilogue::none, true);
+}
+
+ticket kind_mulmat_end(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    const uint32_t t = kind_mulmat_end_fast(a, kflags, d, ctx);
+    if (t != mmk::NOT_FAST) return ticket{t};
+    return end_any(a, n_args, kflags, d, ctx);
+}
+
+bool mm_close_all(spm_ring & ring) {
+    mm_open * const o = ring.open();
+    if (o == nullptr || o->n == 0u) return false;
+    while (o->n != 0u) close_oldest(*o);
+    return true;
+}
+
 ticket kind_mulmat_softcap(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
     return mulmat_any(a, n_args, kflags, d, ctx, epilogue::softcap);
 }
@@ -326,6 +505,12 @@ namespace mmk {
 // with mulmat_t1_fast on the same record and state.
 ticket mulmat_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
     return mulmat_any(a, n_args, kflags, d, ctx);
+}
+ticket mulmat_begin_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    return mulmat_any(a, n_args, kflags, d, ctx, epilogue::none, true);
+}
+ticket mulmat_end_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    return end_any(a, n_args, kflags, d, ctx);
 }
 }  // namespace mmk
 #endif

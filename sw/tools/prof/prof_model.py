@@ -170,8 +170,10 @@ def decode_args(spec, args):
 def shape_of(kind_name, a):
     """A one-line shape of a record from its argument words (index = the namespaces of tsr/opl.hpp)."""
     try:
-        if kind_name in ("MUL_MAT", "MUL_MAT_SCALE", "MUL_MAT_SOFTCAP"):
+        if kind_name in ("MUL_MAT", "MUL_MAT_SCALE", "MUL_MAT_SOFTCAP", "MUL_MAT_BEGIN"):
             return "N=%d K=%d T=%d %s" % (a[6], a[7], a[8], "Q8_0" if a[5] == 0 else "Q4_K")
+        if kind_name == "MUL_MAT_END":
+            return "stores record %d" % a[0]
         if kind_name == "MUL_MAT_ID":
             return "N=%d K=%d T=%d used=%d of %d %s" % (a[10], a[11], a[12], a[13], a[14], "Q8_0" if a[9] == 0 else "Q4_K")
         if kind_name in ("ADD", "MUL"):

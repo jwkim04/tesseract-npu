@@ -105,8 +105,10 @@ struct launch {
     uint64_t perf[64] = {};                  // PERF deltas over the launch
 };
 
-// The firmware's tile plan and the traffic of one record, from its argument words (cfg: the device's planner view).
-void fill_record(rec * r, const tsr::plan::dev_cfg & cfg);
+// The firmware's tile plan and the traffic of one record, from its argument words (cfg: the device's planner view). A
+// MUL_MAT_BEGIN carries the reads, the weight bytes and the MVM ideal of its MUL_MAT, its MUL_MAT_END the write bytes (`begin`:
+// the BEGIN's record, for an END).
+void fill_record(rec * r, const tsr::plan::dev_cfg & cfg, const rec * begin = nullptr);
 
 void write_plan(const plan & p);
 void write_launch(const launch & l);

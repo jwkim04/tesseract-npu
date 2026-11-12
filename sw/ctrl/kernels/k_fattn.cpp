@@ -460,7 +460,7 @@ ticket push_tile(fa_op & o, uint32_t q0, const tile_plan_t & p, deps first) {
         return ctx.fail(opl::RET_BAD_RECORD);
     // The block, then the tiles one after another in it.
     deps rd;
-    o.blk = ctx.ring->alloc(o.f.total, 2u, &rd);
+    o.blk = kf::alloc_g(*ctx.ring, o.f.total, &rd);
     if (!valid(o.blk)) return ctx.fail(opl::RET_SCRATCH);
     ticket last = push_tile(o, 0u, p, mmk::first_deps(d, rd));
     for (uint32_t q0 = o.f.Tq, tile = 0u; q0 < o.T; q0 += o.f.Tq, ++tile) {

@@ -892,7 +892,9 @@ conditions are in AT §2.6). Other KV types run with `-nkvo`. The `GET_ROWS` of 
 The backend reads the CSR `CAPS` and chooses the path that matches the features of the bitstream.
 
 Lowering and the op list. The firmware's `MUL_MAT` kernel issues the sequence `LD` of src1, `QACT`, `MVM` and
-`ST` of dst for every `MUL_MAT` record of the op list. The tiling (tokens beyond `T_MAX` form `T_MAX` tiles) is
+`ST` of dst for every `MUL_MAT` record of the op list. A `MUL_MAT` of one T-tile can also be two records,
+`MUL_MAT_BEGIN` (the `LD`, `QACT` and `MVM`) and a later `MUL_MAT_END` (the `ST`), so that the records between them
+run under its `MVM` (SW §7.4). The tiling (tokens beyond `T_MAX` form `T_MAX` tiles) is
 done by `plan.hpp`, which the host and the firmware share, and the OPL cache is keyed by content (SW §7.4,
 §9.3). Input tensors that change per token (token ids, positions, KQ mask, KV write indices) are read by the
 kernel every time, so a cached op list never needs patching. `src1` and `dst` are placed by ggml-alloc in a

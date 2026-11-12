@@ -9,7 +9,7 @@ In full mode a whole decode token of a supported model runs as one launch of the
 cache on the device (`-fa on -ctk q8_0 -ctv q8_0`, no `-nkvo`, `LLAMA_ATTN_ROT_DISABLE=1`). In matmul mode
 (`TSR_KINDS=m6`, `-nkvo`) only the matrix products run on the device. The modes are defined in
 [`docs/design/README.md`](../../docs/design/README.md). The backend lowers the nodes of a ggml graph into an op list of
-records (SW §7.2) with the builder in `tsr-build.{h,cpp}`: it fuses MUL_MAT + ADD and RMS_NORM + MUL, orders the
+records (SW §7.2) with the builder in `tsr-build.{h,cpp}`: it fuses MUL_MAT + ADD and RMS_NORM + MUL, and the OPL builder in `tsr-opl.{h,cpp}` splits a MUL_MAT whose result the next record leaves alone into MUL_MAT_BEGIN and MUL_MAT_END (SW §9.3) and orders the
 records by DRAM byte ranges (a record depends on an earlier one iff it reads what that one writes or writes what that
 one reads or writes; more than two predecessors are folded by JOINs), puts positions, ids, KV indices and mask
 summaries into the preload table, and caches each graph's plan by identity (`tsr_graph_key`: addresses, shapes, op
@@ -48,6 +48,7 @@ counters used by `tsr-mtp`).
 | --- | --- |
 | `TSR_DEVICE`, `TSR_IMAGE` | transport kind (`sim` default, `xrt`; `none` registers no device) and firmware image |
 | `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (NOP, JOIN, MUL_MAT; `m6,+MUL_MAT_ID` for a MoE model), `all`, `NAME` or `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`). A list whose first word is a removal starts from every kind, and any other list starts from NOP and JOIN only, so `TSR_KINDS=+FLASH_ATTN` alone turns MUL_MAT off. The ops of a removed kind run on the CPU. SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo`. Unset: every kind of the booted image. `klcheck` and `tsr-numcheck` set `m6` for `--phase m6` and keep the caller's value for `--phase m7` (SW-49). |
+| `TSR_MM_DEFER=0` | no MUL_MAT is lowered as MUL_MAT_BEGIN and MUL_MAT_END: every MUL_MAT is one record, as on an image without the two kinds. Read once; the device output is the same either way. |
 | `TSR_DEBUG=1`, `2` | placement, lowering and launch log on stderr. `2` adds buffer events, every launched record and `supports_op`'s reasons. |
 | `TSR_STATS=1`, `TSR_MON=0`, `TSR_DUMP_PLAN`, `TSR_PROF_TRW_MIB`, `TSR_OPL_PROF`, `TSR_OPL_KINDS` | counters at backend free, the live monitor record, the profile dump ([`docs/prof-dbg.md`](../../docs/prof-dbg.md)) |
 | `TSR_DUMP_RE=<regex>`, `TSR_DUMP_DIR=<dir>` | after every node whose result name matches, run the pending op list and write the result to `<dir>/<name>.f32`, to find the first node that differs from a CPU run (`cb_eval`). Only the first run of a graph dumps. |

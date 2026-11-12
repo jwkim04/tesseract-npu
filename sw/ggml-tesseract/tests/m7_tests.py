@@ -20,6 +20,12 @@ graph   one tiny-model graph test (ggml_tesseract_graph_qwen_tiny, _gemma_tiny, 
            3 x the mean floor KL) and top-1 >= min-top1; docs/klcheck.md "Pass"; why the tiny
            models need --min-kl: tiny.cmake).
         The device run takes no TSR_KINDS from the caller: the tests check the full kind set.
+defer   MUL_MAT deferral (SW-92, SW-94; ggml_tesseract_defer_*): klcheck generates the same tokens on the device twice, with the default
+        (a plain one-tile MUL_MAT is lowered as MUL_MAT_BEGIN + MUL_MAT_END when the next record leaves its result alone) and
+        with TSR_MM_DEFER=0 (every MUL_MAT is one record); the two runs must be bit-identical (`klcheck compare
+        --expect-identical`: the same tokens, the same logits), launch for launch (the same launch count), the default run must
+        have launched at least --min-pairs MUL_MAT_BEGIN / MUL_MAT_END pairs (TSR_STATS' records per kind) and the TSR_MM_DEFER=0
+        run none.
 ops     test-backend-ops on the device for one op filter: every supported case must pass, at least
         --min-run cases must be supported (so that a supports_op regression cannot pass as "all
         unsupported"), and the unsupported cases are counted and listed (the full list in --list).
@@ -319,6 +325,79 @@ def cmd_graph(a: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------------------------
+# defer: the device output with and without TSR_MM_DEFER
+
+RE_KINDS = re.compile(r"^\[tesseract\] stats: records per kind: (.*)$")
+RE_LAUNCH_PAIRS = re.compile(r"^\[tesseract\] launch #\d+: .*; MUL_MAT_BEGIN (\d+), MUL_MAT_END (\d+)$")
+
+
+def kind_counts(text: str) -> dict:
+    """TSR_STATS' 'records per kind' line as {kind name: count}."""
+    for raw in text.splitlines():
+        m = RE_KINDS.match(ANSI.sub("", raw))
+        if m:
+            return {k: int(v) for k, v in (x.strip().rsplit(" ", 1) for x in m.group(1).split(",") if " " in x.strip())}
+    return {}
+
+
+def cmd_defer(a: argparse.Namespace) -> int:
+    out = Path(a.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    kl = a.klcheck
+    common = ["-m", a.model, "--phase", "m7", "-ub", str(a.ub), "-t", str(a.threads)]
+    prompts = ["--prompts", a.prompts] if a.prompts else []
+    runs = {}
+    for name, knob in (("on", None), ("off", "0")):
+        env = dict(os.environ)
+        env["TSR_STATS"] = "1"
+        env["TSR_DEBUG"] = "1"                    # the launch lines: BEGIN and END counts of every list
+        env.pop("TSR_KINDS", None)
+        env.pop("TSR_MM_DEFER", None)
+        if knob is not None:
+            env["TSR_MM_DEFER"] = knob
+        klc, log = out / f"{name}.klc", out / f"{name}.log"
+        rc = run([kl, "run", "--device", a.device] + prompts + ["--n-prompts", str(a.n_prompts), "-n", str(a.n_gen),
+                  "--prompt-tail", str(a.prompt_tail), "--out", str(klc)] + common, log=log, env=env, quiet=True)
+        if rc != 0:
+            print("\n".join(log.read_text(errors="replace").splitlines()[-12:]))
+            print(f"m7_tests: FAIL: the device run (TSR_MM_DEFER {knob or 'default'}) exited with {rc} (log: {log})")
+            return 1
+        text = log.read_text(errors="replace")
+        st = RE_STATS.search(next((ANSI.sub("", l) for l in text.splitlines() if RE_STATS.match(ANSI.sub("", l))), ""))
+        lines = [ANSI.sub("", l) for l in text.splitlines()]
+        ends = [tuple(int(x) for x in m.groups()) for m in (RE_LAUNCH_PAIRS.search(l) for l in lines) if m]
+        runs[name] = {"kinds": kind_counts(text), "launches": int(st.group(2)) if st else -1, "lists": ends}
+    fails = []
+    on, off = runs["on"], runs["off"]
+    pairs = on["kinds"].get("MUL_MAT_BEGIN", 0)
+    if pairs < a.min_pairs or pairs != on["kinds"].get("MUL_MAT_END", -1):
+        fails.append(f"default run: {pairs} MUL_MAT_BEGIN and {on['kinds'].get('MUL_MAT_END', 0)} MUL_MAT_END records (want equal, at least {a.min_pairs})")
+    # a BEGIN and its END are in one list: every launch has as many ENDs as BEGINs, whatever cut its list (SW §9.3)
+    unpaired = [i for i, (b, e) in enumerate(on["lists"]) if b != e]
+    if unpaired or len(on["lists"]) != on["launches"]:
+        fails.append(f"launches with a BEGIN count other than their END count: {unpaired[:5]} (launch lines {len(on['lists'])} of {on['launches']})")
+    if off["kinds"].get("MUL_MAT_BEGIN", 0) or off["kinds"].get("MUL_MAT_END", 0):
+        fails.append(f"TSR_MM_DEFER=0 run launched BEGIN / END records: {off['kinds']}")
+    if on["launches"] <= 0 or (on["launches"] != off["launches"] and not a.split):
+        fails.append(f"launches differ: {on['launches']} with the knob on, {off['launches']} with it off")
+    if a.split and on["launches"] <= a.n_prompts * (a.n_gen - 1):
+        fails.append(f"TSR_OPL_SPLIT cut no list: {on['launches']} launches")
+    n_on = sum(v for k, v in on["kinds"].items() if k not in ("MUL_MAT_BEGIN", "MUL_MAT_END", "MUL_MAT"))
+    n_off = sum(v for k, v in off["kinds"].items() if k not in ("MUL_MAT_BEGIN", "MUL_MAT_END", "MUL_MAT"))
+    mm_on = on["kinds"].get("MUL_MAT", 0) + pairs
+    if n_on != n_off or mm_on != off["kinds"].get("MUL_MAT", 0):
+        fails.append(f"the matrix products or the other records differ: {mm_on} / {n_on} with the knob, {off['kinds'].get('MUL_MAT', 0)} / {n_off} without")
+    rc = run([kl, "compare", "--ref", str(out / "off.klc"), "--dev", str(out / "on.klc"), "--expect-identical", "-q"])
+    if rc != 0:
+        fails.append("the logits with TSR_MM_DEFER on differ from those with it off")
+    for f in fails:
+        print(f"m7_tests: FAIL: {f}")
+    print(f"m7_tests: {'FAIL' if fails else 'PASS'}: {pairs} BEGIN / END pairs in {on['launches']} launches, logits "
+          f"{'identical' if rc == 0 else 'DIFFER'} with and without TSR_MM_DEFER (files in {out})")
+    return 1 if fails else 0
+
+
+# ---------------------------------------------------------------------------------------------
 # ops: test-backend-ops per op
 
 RE_CASE = re.compile(r"^\s+([A-Z][A-Z0-9_]*)\((.*)\): (.*)$")
@@ -410,6 +489,21 @@ def main() -> int:
                         "FLASH_ATTN stays on the CPU, T > 680)")
     g.add_argument("--min-prefill-tokens", type=int, default=0,
                    help="require a prefill decode of at least this many tokens in one ubatch")
+    d = sub.add_parser("defer", help="device output with and without TSR_MM_DEFER")
+    d.add_argument("--klcheck", required=True)
+    d.add_argument("--model", required=True)
+    d.add_argument("--prompts", default="")
+    d.add_argument("--out-dir", required=True)
+    d.add_argument("--device", default="sim")
+    d.add_argument("--n-prompts", type=int, default=2)
+    d.add_argument("-n", "--n-gen", type=int, default=9)
+    d.add_argument("--prompt-tail", type=int, default=8)
+    d.add_argument("-ub", "--ub", type=int, default=16)
+    d.add_argument("-t", "--threads", type=int, default=4)
+    d.add_argument("--min-pairs", type=int, default=1, help="MUL_MAT_BEGIN / MUL_MAT_END pairs the default run must launch")
+    d.add_argument("--split", action="store_true",
+                   help="the environment has TSR_OPL_SPLIT: the lists are cut after n records, an END comes before each cut, so the two "
+                        "runs cut at other nodes and their launch counts may differ; the cuts must still happen")
     o = sub.add_parser("ops", help="test-backend-ops for one op on the device")
     o.add_argument("--test-backend-ops", required=True)
     o.add_argument("--backend", default="Tesseract0")
@@ -420,7 +514,7 @@ def main() -> int:
     o.add_argument("--list", default="", help="write every unsupported case to this file")
     a = ap.parse_args()
     try:
-        return cmd_graph(a) if a.cmd == "graph" else cmd_ops(a)
+        return cmd_graph(a) if a.cmd == "graph" else cmd_defer(a) if a.cmd == "defer" else cmd_ops(a)
     except (OSError, subprocess.SubprocessError) as e:
         print(f"m7_tests: error: {e}")
         return 2

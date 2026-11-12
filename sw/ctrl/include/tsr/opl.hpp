@@ -70,8 +70,9 @@ constexpr uint32_t RET_CRC            = 0x80000007u;
 
 // ---------------------------------------------------------------------------------------------
 // Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest; 0x1E and 0x1F are the MoE kinds (the
-// lowest free numbers); 0x2D-0x2F are the Gated DeltaNet kinds (numbered downward from the top of the free range);
-// 0x20-0x2C are free and 0x30-0x3F are test kinds.
+// lowest free numbers); 0x20 and 0x21 are the split MUL_MAT (the lowest free numbers after those);
+// 0x2D-0x2F are the Gated DeltaNet kinds (numbered downward from the top of the free range);
+// 0x22-0x2C are free and 0x30-0x3F are test kinds.
 // ---------------------------------------------------------------------------------------------
 constexpr uint32_t K_NOP         = 0x00u;   // no tile ops; its ticket is "none"
 constexpr uint32_t K_JOIN        = 0x01u;   // SYNC NOP over dep0, dep1
@@ -91,6 +92,8 @@ constexpr uint32_t K_MUL_MAT_SCALE = 0x1Cu;  // local pointwise epilogue and fin
 constexpr uint32_t K_MUL_MAT_SOFTCAP = 0x1Du;  // scale, TANH, scale before export
 constexpr uint32_t K_MOE_ROUTE   = 0x1Eu;   // MoE: softmax over the router logits, top-k, renormalized weights (SW §7.5)
 constexpr uint32_t K_MUL_MAT_ID  = 0x1Fu;   // MoE: MUL_MAT with the weight chosen per (token, slot) by an expert id (SW §7.5)
+constexpr uint32_t K_MUL_MAT_BEGIN = 0x20u; // MUL_MAT up to the MVM, one T-tile: its ST comes with the MUL_MAT_END (SW §7.4)
+constexpr uint32_t K_MUL_MAT_END = 0x21u;   // the ST of a MUL_MAT_BEGIN's y rows
 // Gated DeltaNet kinds (GDN software baseline; SW §7.10). Numbered from the top of the free range
 // downward: 0x30-0x3F stay the test kinds, 0x1E upward belongs to the next kinds of the other
 // extensions (MoE).
@@ -122,6 +125,8 @@ constexpr uint32_t kind_nargs(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return 14u;
         case K_MOE_ROUTE:   return 9u;
         case K_MUL_MAT_ID:  return 17u;
+        case K_MUL_MAT_BEGIN: return 12u;
+        case K_MUL_MAT_END: return 1u;
         case K_SOFTPLUS:    return 6u;
         case K_SSM_CONV:    return 12u;
         case K_GATED_DELTA_NET: return 22u;
@@ -159,6 +164,8 @@ constexpr uint32_t kind_rev(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return 1u;
         case K_MOE_ROUTE:   return 1u;
         case K_MUL_MAT_ID:  return 1u;
+        case K_MUL_MAT_BEGIN: return 1u;
+        case K_MUL_MAT_END: return 1u;
         case K_SOFTPLUS:    return 1u;
         case K_SSM_CONV:    return 1u;
         case K_GATED_DELTA_NET: return 2u;   // r2 (SW-78): with CAPS bit 8 (the VU's GDN op) and S_v >= 64 the fused path; else r1's bits
@@ -186,6 +193,8 @@ constexpr const char * kind_name(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return "MUL_MAT_SOFTCAP";
         case K_MOE_ROUTE:   return "MOE_ROUTE";
         case K_MUL_MAT_ID:  return "MUL_MAT_ID";
+        case K_MUL_MAT_BEGIN: return "MUL_MAT_BEGIN";
+        case K_MUL_MAT_END: return "MUL_MAT_END";
         case K_SOFTPLUS:    return "SOFTPLUS";
         case K_SSM_CONV:    return "SSM_CONV";
         case K_GATED_DELTA_NET: return "GATED_DELTA_NET";
@@ -207,6 +216,13 @@ constexpr uint32_t X = 0, X_STRIDE = 1, Y = 2, Y_STRIDE = 3, W_OFF = 4, FMT = 5,
                    ADD = 9, ADD_STRIDE = 10, FLAGS = 11, NARGS = 12;
 constexpr uint32_t FLAG_ACC_DST = 1u << 0;   // y += W x (y is read and written)
 }  // namespace mm
+
+// MUL_MAT_BEGIN (0x20) and MUL_MAT_END (0x21): MUL_MAT whose ST comes with a later record (SW §7.4).
+// BEGIN has MUL_MAT's twelve words (mm::*) with the same meaning and checks, and T <= the T-tile (one
+// tile). END has one word: the op index of the BEGIN record whose y rows it stores.
+namespace mmend {
+constexpr uint32_t BEGIN = 0, NARGS = 1;
+}  // namespace mmend
 
 // Same input and final output layout as MUL_MAT. One f32 multiplication
 // follows the completed dot product. The initial kind has no addend or ACC.
@@ -683,7 +699,8 @@ static_assert(ew::NARGS == kind_nargs(K_ADD) && ew::NARGS == kind_nargs(K_MUL) &
                   setrows::NARGS == kind_nargs(K_SET_ROWS_KV) && fa::NARGS == kind_nargs(K_FLASH_ATTN) &&
                   cpy::NARGS == kind_nargs(K_CPY) && unary::NARGS == kind_nargs(K_UNARY) &&
                   moer::NARGS == kind_nargs(K_MOE_ROUTE) && mmid::NARGS == kind_nargs(K_MUL_MAT_ID) &&
-                  mm::NARGS == kind_nargs(K_MUL_MAT) && softplus::NARGS == kind_nargs(K_SOFTPLUS) &&
+                  mm::NARGS == kind_nargs(K_MUL_MAT) && mm::NARGS == kind_nargs(K_MUL_MAT_BEGIN) &&
+                  mmend::NARGS == kind_nargs(K_MUL_MAT_END) && softplus::NARGS == kind_nargs(K_SOFTPLUS) &&
                   sconv::NARGS == kind_nargs(K_SSM_CONV) && gdn::NARGS == kind_nargs(K_GATED_DELTA_NET),
               "opl.hpp: argument counts = the SW §7.2 table");
 static_assert(slots_for_nargs(fa::NARGS) == 2u && slots_for_nargs(rope::NARGS) == 1u &&
@@ -707,7 +724,8 @@ constexpr uint32_t PRE_POS_ALIGN = 64u, PRE_ID_ALIGN = 4u, PRE_KVIDX_ALIGN = 8u,
 // alignment (ROPE 4 n_tokens bytes, GET_ROWS 4 n_ids, SET_ROWS_KV 8 n_rows, FLASH_ATTN the MSUM of
 // n_tokens rows). RET_OK or RET_BAD_RECORD (also for n_args != the kind's count). Shapes and device
 // limits (row lengths, head_dim, T_MAX, the ring budget, ...) are the kind planners' (plan.hpp
-// plan_<kind>); NOP, JOIN, MUL_MAT (mm_plan) and kinds without a definition return RET_OK here.
+// plan_<kind>); NOP, JOIN, MUL_MAT (mm_plan), MUL_MAT_BEGIN, MUL_MAT_END and kinds without a definition return
+// RET_OK here.
 // The host reader applies it (reader::check_args); a kind handler applies what its kind needs.
 constexpr uint32_t check_args(uint32_t kind, const uint32_t * a, uint32_t n_args, uint32_t pre_lines) {
     const uint32_t want = kind_nargs(kind);
@@ -1007,6 +1025,20 @@ public:
                      uint32_t mm_flags = 0, const uint32_t * deps = nullptr, uint32_t n_deps = 0) {
         const uint32_t a[mm::NARGS] = {x, x_stride, y, y_stride, w_off, fmt, N, K, T, addend, addend_stride, mm_flags};
         return add(K_MUL_MAT, a, mm::NARGS, deps, n_deps);
+    }
+
+    // MUL_MAT_BEGIN record: the arguments of mul_mat(); its END is a later record that names it.
+    uint32_t mul_mat_begin(uint32_t x, uint32_t x_stride, uint32_t y, uint32_t y_stride, uint32_t w_off, uint32_t fmt,
+                           uint32_t N, uint32_t K, uint32_t T, uint32_t addend = HANDLE_NONE,
+                           uint32_t addend_stride = 0, uint32_t mm_flags = 0, const uint32_t * deps = nullptr,
+                           uint32_t n_deps = 0) {
+        const uint32_t a[mm::NARGS] = {x, x_stride, y, y_stride, w_off, fmt, N, K, T, addend, addend_stride, mm_flags};
+        return add(K_MUL_MAT_BEGIN, a, mm::NARGS, deps, n_deps);
+    }
+    // MUL_MAT_END record of the BEGIN at op index `begin`; the host also lists the BEGIN as a dependency.
+    uint32_t mul_mat_end(uint32_t begin, const uint32_t * deps = nullptr, uint32_t n_deps = 0) {
+        const uint32_t a[mmend::NARGS] = {begin};
+        return add(K_MUL_MAT_END, a, mmend::NARGS, deps, n_deps);
     }
 
     // M7 records (SW §7.2 argument words, the structs of opl.hpp in word order). deps as for

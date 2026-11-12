@@ -20,6 +20,12 @@
 //                     flags}, wait with the transport's debug-aware timeout (SW §9.3 step 4). The
 //                     caller maps the answer to its ops (tsr_opl_describe; step 5).
 //
+// MUL_MAT_BEGIN / MUL_MAT_END (SW §7.2 kinds 0x20, 0x21, §7.3 "Open MUL_MAT records", §9.3 "Deferred MUL_MAT"): with set_defer,
+// mul_mat() keeps a plain one-tile MUL_MAT pending until the next record is added. A next record that reads or writes its
+// result makes it a MUL_MAT; any other next record makes it a MUL_MAT_BEGIN, whose MUL_MAT_END (the ST of its y rows) the
+// builder adds before the first record that touches y, and before every cut (settle). So the records between a BEGIN and
+// its END never touch y, and both are in one list.
+//
 // MUL_MAT records (SW §7.2 kind 0x10): the args are tsr::opl::mm's words; handles are {ch[31:28],
 // beat[27:0]} of 64-byte beats; strides are in lines. Tiling is the firmware's (plan.hpp, SW-20),
 // so a record carries the whole T; the host only checks with the same plan.hpp that the firmware can
@@ -91,6 +97,8 @@ class tsr_opl_builder {
 public:
     static constexpr uint32_t NO_ROOM = 0xFFFFFFFEu;   // add(): the list is full, flush and retry
     static constexpr uint32_t FAILED  = 0xFFFFFFFFu;   // add(): writer error (error())
+    static constexpr uint32_t PENDING = 0xFFFFFFFDu;   // mul_mat(): the record is kept pending (set_defer); its index comes later
+    static constexpr uint32_t MAX_OPEN = 8;            // MUL_MAT_BEGIN records open at once (the executor's table, SW §7.3)
 
     struct op_info {
         uint32_t kind;
@@ -107,12 +115,26 @@ public:
     uint32_t flags() const                { return flags_; }
 
     // One op reading rd and writing wr (byte ranges). Returns its op index, NO_ROOM if the record
-    // and its JOINs would exceed 4096 ops (SW-29; nothing is added), or FAILED.
+    // and its JOINs (and the MUL_MAT_END records of the open BEGINs) would exceed 4096 ops (SW-29), or
+    // FAILED. NO_ROOM leaves the list valid: the records the call had to add first (a pending MUL_MAT, ENDs)
+    // are in it, the record itself is not; run the list (settle first) and add it to a new one.
+    // pred >= 0: an explicit predecessor, the op index of an earlier op that this op depends on whether or not
+    // their ranges conflict (MUL_MAT_END on its BEGIN); the transitive reduction treats it as any other.
     uint32_t add(uint32_t kind, const uint32_t * args, uint32_t n_args, const std::vector<tsr_dram_range> & rd,
-                 const std::vector<tsr_dram_range> & wr, int32_t tag);
+                 const std::vector<tsr_dram_range> & wr, int32_t tag, int32_t pred = -1);
 
-    // A MUL_MAT record (args: tsr::opl::mm words); its ranges come from the args (mm_ranges).
-    uint32_t mul_mat(const uint32_t * args, int32_t tag, uint32_t kind = tsr::opl::K_MUL_MAT);
+    // A MUL_MAT record (args: tsr::opl::mm words); its ranges come from the args (mm_ranges). defer (and set_defer,
+    // kind MUL_MAT, one T-tile, which the caller checked): the record is kept pending, answer PENDING.
+    uint32_t mul_mat(const uint32_t * args, int32_t tag, uint32_t kind = tsr::opl::K_MUL_MAT, bool defer = false);
+
+    // MUL_MAT deferral (SW §9.3): off unless the image has MUL_MAT_BEGIN, MUL_MAT_END and JOIN.
+    void set_defer(bool on)               { defer_ = on; }
+    bool defer() const                    { return defer_; }
+    // Emits the pending MUL_MAT (as a MUL_MAT: nothing follows it) and the MUL_MAT_END of every open BEGIN: call it
+    // before finish(), at every cut and at the end of the graph. False on a writer error.
+    bool settle();
+    uint32_t n_open() const               { return (uint32_t) open_.size(); }
+    bool     has_pending() const          { return pend_.valid; }
 
     // The ranges a MUL_MAT record reads and writes: x (T rows, x_stride lines apart, K/16 lines
     // each), the addend (stride 0: one row) or, with ACC_DST, y; the weight's rows on every channel
@@ -147,8 +169,10 @@ public:
     uint32_t pre_lines() const            { return w_.pre_lines(); }
     uint32_t n_pre() const                { return (uint32_t) pre_.size(); }
 
-    bool        empty() const             { return ops_.empty(); }
-    uint32_t    n_ops() const             { return (uint32_t) ops_.size(); }
+    bool        empty() const             { return ops_.empty() && !pend_.valid; }
+    uint32_t    n_ops() const             { return (uint32_t) ops_.size(); }                 // records added (not the pending MUL_MAT)
+    uint32_t    n_records() const         { return (uint32_t) ops_.size() + (pend_.valid ? 1u : 0u); }
+    uint32_t    n_of_kind(uint32_t k) const { return k < tsr::opl::N_KINDS ? n_kind_[k] : 0u; }   // records added of a kind
     uint32_t    n_joins() const           { return n_joins_; }
     uint32_t    n_deps() const            { return n_deps_; }        // predecessors kept (after reduction)
     uint32_t    n_dropped() const         { return n_dropped_; }     // conflicts implied transitively
@@ -160,13 +184,34 @@ public:
     // Does a pending op write (any_access: or read) bytes of r?
     bool touches(const tsr_dram_range & r, bool any_access) const;
 
-    // The blob (header, op area, CRC; graph_id = the CRC of bytes [64, total)). Empty if !ok() or
-    // the list is empty.
+    // The blob (header, op area, CRC; graph_id = the CRC of bytes [64, total)). Empty if !ok(), the list is empty
+    // or a MUL_MAT is still pending (settle first).
     std::vector<uint8_t> finish() const;
 
 private:
+    using ranges = std::vector<tsr_dram_range>;
+    // A pending MUL_MAT, with its dependencies planned (nothing is added between its call and its emission).
+    struct pending_mm {
+        bool valid = false;
+        uint32_t args[tsr::opl::mm::NARGS] = {};
+        int32_t tag = -1;
+        ranges rd, wr;
+        std::vector<uint32_t> kept;
+        uint32_t dropped = 0;
+    };
+    struct open_begin {
+        uint32_t idx;            // op index of the BEGIN
+        tsr_dram_range y;        // its y rows
+        int32_t tag;
+    };
     bool is_ancestor(uint32_t a, uint32_t b) const;   // a is an ancestor of b (a < b)
     uint32_t push_record(uint32_t kind, const uint32_t * args, uint32_t n_args, uint32_t d0, uint32_t d1, int32_t tag);
+    void deps_of(const ranges & rd, const ranges & wr, int32_t pred, std::vector<uint32_t> & kept, uint32_t & dropped) const;
+    uint32_t emit(uint32_t kind, const uint32_t * args, uint32_t n_args, const ranges & rd, const ranges & wr, int32_t tag,
+                  const std::vector<uint32_t> & kept, uint32_t dropped, uint32_t reserve);
+    uint32_t resolve(const ranges & rd, const ranges & wr);          // 0, NO_ROOM or FAILED
+    uint32_t emit_pending(bool may_begin);
+    uint32_t emit_end(size_t open_idx);
 
     uint32_t num_ch_;
     uint32_t flags_;
@@ -175,6 +220,10 @@ private:
     std::vector<op_info> ops_;
     std::vector<std::vector<uint64_t>> anc_;   // ancestor bitsets (bit i: op i), per op
     uint32_t n_joins_ = 0, n_deps_ = 0, n_dropped_ = 0;
+    uint32_t n_kind_[tsr::opl::N_KINDS] = {};
+    bool defer_ = false;
+    pending_mm pend_;
+    std::vector<open_begin> open_;
 };
 
 // ---------------------------------------------------------------------------------------------

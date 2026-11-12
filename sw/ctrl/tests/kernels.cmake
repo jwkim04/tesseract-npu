@@ -71,6 +71,30 @@ add_test(NAME fw_kernels_rv_mutant_v1 COMMAND test_fw_kernels_rv ${TSR_FW_TEST_E
          ${_k_traces}/model-v1conv/qwen05b-q8_0 --sample 1 --expect-fail)
 set_tests_properties(fw_kernels_rv_mutant_v1 PROPERTIES LABELS fw TIMEOUT 300 SKIP_RETURN_CODE 77)
 
+# MUL_MAT_BEGIN / MUL_MAT_END (SW §7.4): the split lists of test_fw_kernels_rv (mode split) and five mutants, each of which a
+# test must catch:
+#   endnodep    END's ST without its dependency on the MVM          fw_kernels_rv_split_mutant_endnodep (race detector)
+#   relbegin    the block released at BEGIN, not by the ST          fw_kernels_rv_split_mutant_relbegin (race detector, the wrapped ring)
+#   norule3     a refused allocation does not close the open BEGINs   fw_kernels_rv_split_mutant_norule3 (RET SCRATCH)
+#   wrongend    END stores the first open entry, not its BEGIN's     fw_kernels_rv_split_mutant_wrongend (y rows)
+#   tkmvm       BEGIN's ticket is its MVM, not its last LD           fw_kind_revs_mutant_tkmvm (END's fast entry declines: path check)
+#   norule4     the BEGINs open at the end of the list stay open     fw_kernels_rv_split_mutant_norule4 (the rows are not stored)
+add_test(NAME fw_kernels_rv_split COMMAND test_fw_kernels_rv ${TSR_FW_ELF} split)
+set_tests_properties(fw_kernels_rv_split PROPERTIES LABELS fw TIMEOUT 600 SKIP_RETURN_CODE 77)
+set(_k_mut_n 3)
+foreach(_m endnodep relbegin norule3 wrongend tkmvm norule4)
+    tsr_fw_image(fw_kmm_mut_${_m} NO_KERNELS SOURCES ${_k_kernels} DEFINES TSR_KMM_MUTANT=${_k_mut_n})
+    math(EXPR _k_mut_n "${_k_mut_n} + 1")
+endforeach()
+foreach(_m endnodep relbegin norule3 wrongend norule4)
+    add_test(NAME fw_kernels_rv_split_mutant_${_m} COMMAND test_fw_kernels_rv ${TSR_FW_TEST_ELF_fw_kmm_mut_${_m}} split
+             --scheds 1 --race report --expect-fail)
+    set_tests_properties(fw_kernels_rv_split_mutant_${_m} PROPERTIES LABELS fw TIMEOUT 300 SKIP_RETURN_CODE 77)
+endforeach()
+add_test(NAME fw_kind_revs_mutant_tkmvm COMMAND test_fw_kind_revs ${TSR_FW_TEST_ELF_fw_kmm_mut_tkmvm}
+         ${TSR_CTRL_DIR}/tests/kind_revs.txt --digests-only)
+set_tests_properties(fw_kind_revs_mutant_tkmvm PROPERTIES LABELS fw TIMEOUT 300 WILL_FAIL TRUE SKIP_RETURN_CODE 77)
+
 # --- replay kernel route of trace replay (C) -----------------------------------------------------
 add_executable(test_fw_replay_sim ${_k_dir}/test_fw_replay_sim.c)
 tsr_c_target(test_fw_replay_sim)

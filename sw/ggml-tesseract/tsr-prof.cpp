@@ -131,6 +131,8 @@ const std::vector<kind_spec> & kind_specs() {
         { opl::K_CPY, { "DST:h", "DST_STRIDE:s", "SRC:h", "SRC_STRIDE:s", "ROW_LINES:s", "ROWS:n" } },
         { opl::K_UNARY, { "DST:h", "DST_STRIDE:s", "SRC:h", "SRC_STRIDE:s", "N:n", "ROWS:n", "FUNC:n" } },
         { opl::K_MOE_ROUTE, { "LOGITS:h", "LOGITS_STRIDE:s", "IDS:h", "IDS_STRIDE:s", "W:h", "N_EXPERT:n", "N_USED:n", "T:n", "FLAGS:x" } },
+        { opl::K_MUL_MAT_BEGIN, { "X:h", "X_STRIDE:s", "Y:h", "Y_STRIDE:s", "W_OFF:b", "FMT:n", "N:n", "K:n", "T:n", "ADD:h", "ADD_STRIDE:s", "FLAGS:x" } },
+        { opl::K_MUL_MAT_END, { "BEGIN:n" } },
         { opl::K_MUL_MAT_ID, { "DST:h", "DST_STRIDE:s", "X:h", "X_SLOT_STRIDE:s", "X_TOK_STRIDE:s", "IDS:h", "IDS_STRIDE:n", "W_OFF:b", "EXP_STRIDE:b", "FMT:n", "N:n", "K:n", "T:n", "N_USED:n", "N_EXPERT:n", "SCALE:h", "FLAGS:x" } },
         { opl::K_SOFTPLUS, { "DST:h", "DST_STRIDE:s", "SRC:h", "SRC_STRIDE:s", "N:n", "ROWS:n" } },
         { opl::K_SSM_CONV, { "DST:h", "DST_TOKEN_STRIDE:s", "X:h", "X_TOKEN_STRIDE:s", "STATE_IN:h", "STATE_OUT:h", "W:h", "N_CH:n", "D_CONV:n", "N_TOKENS:n", "N_SEQS:n", "FLAGS:x" } },
@@ -161,7 +163,7 @@ uint64_t next_plan_id() {
 // ---------------------------------------------------------------------------------------------
 // The record: the firmware's tile plan, weight bytes and the traffic by the kind's formula
 // ---------------------------------------------------------------------------------------------
-void fill_record(rec * r, const pl::dev_cfg & cfg) {
+void fill_record(rec * r, const pl::dev_cfg & cfg, const rec * begin) {
     const uint32_t * a = r->args.data();
     const uint32_t n = (uint32_t) r->args.size();
     for (const range & x : r->rd) r->rd_bytes += range_bytes(x);
@@ -181,9 +183,17 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
         r->mvm_passes.emplace_back(passes, cycles);
     };
     switch (r->kind) {
+    case opl::K_MUL_MAT_END: {
+        // the ST of the BEGIN's y rows: the write bytes belong to this record (the BEGIN has the reads, the weights and the MVMs)
+        r->rd_bytes = 0;
+        if (begin == nullptr || begin->args.size() < opl::mm::NARGS) break;
+        r->wr_bytes = (uint64_t) begin->args[opl::mm::T] * ((begin->args[opl::mm::N] + 15u) / 16u) * 64ull;
+        break;
+    }
     case opl::K_MUL_MAT:
     case opl::K_MUL_MAT_SCALE:
-    case opl::K_MUL_MAT_SOFTCAP: {
+    case opl::K_MUL_MAT_SOFTCAP:
+    case opl::K_MUL_MAT_BEGIN: {
         if (n < opl::mm::NARGS) break;
         const uint32_t fmt = a[opl::mm::FMT], N = a[opl::mm::N], K = a[opl::mm::K], T = a[opl::mm::T];
         pl::mm_tiling t{};
@@ -196,7 +206,7 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
         add_mvm_passes(fmt, N, K, 1u, T - (t.n_tiles - 1u) * t.t_tile);
         r->rd_bytes = r->w_bytes + (uint64_t) T * t.x_lines * 64ull;
         if (a[opl::mm::ADD] != opl::HANDLE_NONE) r->rd_bytes += (uint64_t) T * t.y_lines * 64ull;
-        r->wr_bytes = (uint64_t) T * t.y_lines * 64ull;
+        r->wr_bytes = r->kind == opl::K_MUL_MAT_BEGIN ? 0ull : (uint64_t) T * t.y_lines * 64ull;     // a BEGIN stores nothing: its END does
         break;
     }
     case opl::K_MUL_MAT_ID: {

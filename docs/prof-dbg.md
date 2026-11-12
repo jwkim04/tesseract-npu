@@ -136,7 +136,10 @@ tile plan, and why each list ended), `launches.jsonl` (one line per launch with 
 `cpu_fallback.json` (the nodes `supports_op` refused, with the reason), `trw.raw` (the trace writer's records) and
 `meta.json`. It starts the trace writer itself when the device opens and stops it when the backend is freed, so the
 card needs no `tsr-dbg` step. It also sets the PROF bit: the `NODE_BEGIN` marker before every record, with its push
-index, joins a trace op to its record.
+index, joins a trace op to its record. A MUL_MAT that the builder lowers as MUL_MAT_BEGIN and MUL_MAT_END (SW §9.3)
+is two records with the node's tag. The BEGIN has the reads, the weight bytes and the ideal MVM cycles of the node, the
+END the write bytes, and the ST is pushed by the END, so it joins to the END (the ST of a BEGIN that the executor closes early joins to the record that closed it, SW §7.3). The tables of the profile report list the
+two records, and the cycles, bytes and ideal of a node are the sum of its records.
 
 ```sh
 sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterward (WARM=1 replays the first-ATTPV trace first)
