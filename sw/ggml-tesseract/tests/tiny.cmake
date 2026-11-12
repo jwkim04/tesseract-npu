@@ -218,7 +218,9 @@ endif()
 
 # ---- the profile report (sw/tools/prof, docs/prof-dbg.md "The profile report") ----------------------
 # TSR_DUMP_PLAN on a tiny MoE model and a tiny dense Gemma 4 on the simulator: the dump's files, the same generated text as
-# without it, prof_report.py's report.html / trace.perfetto.json / summary.json and the rules of the page.
+# without it, prof_report.py's report.html / trace.perfetto.json / summary.json and the rules of the page. The ideal MVM
+# cycles are checked on the plain simulator and on the card image's (TSR_SIM_CARD=k4dual) with the dual weight stream on and
+# off (TSR_MVM_DUAL=0): the rule, the simulated run time of every MVM op, meta.json's mvm_dual and the E and F of the utilization split.
 if (TARGET llama-completion AND TSR_FW_ELF)
     foreach (_prof_case "qwen3moe_tiny|qwen3moe-tiny-q8_0.gguf" "gemma_tiny|gemma4-tiny-q8_0.gguf")
         string(REPLACE "|" ";" _f "${_prof_case}")

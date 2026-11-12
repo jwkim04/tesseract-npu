@@ -106,8 +106,8 @@ second over the DDR read bandwidth measured with `tsr_bw` ([`bandwidth-kernel.md
 |---|---|---|
 | H | share of wall-clock time in which no launch is active (host CPU work, PCIe round trips, synchronization) | host time stamps and `PERF_CYCLES` |
 | G | share of device time outside MVMs (LD, QACT, VU, ST, issue gaps) | `1 - PERF_MVM_CYCLES / PERF_CYCLES` |
-| F | MVM fill, broadcast and tail inside `PERF_MVM_CYCLES` | max-channel weight beats against `PERF_MVM_CYCLES` |
-| E | effective read bandwidth while the MVM reads weights, over the `tsr_bw` bandwidth | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
+| F | MVM time above the ideal inside `PERF_MVM_CYCLES`: fill, broadcast and tail, and on two weight streams the time the DDR cannot follow (§3.1) | the ideal MVM cycles (§3.1: the weight beats of the slowest channel over its streams) against `PERF_MVM_CYCLES` |
+| E | effective read bandwidth while the MVM reads weights, over the `tsr_bw` bandwidth; on two weight streams it can be above 100 % (§3.1) | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
 
 The effective bandwidth of channel c is 64 B x `CH_RD_BEATS[c]` x f_kernel / `CYCLES`, and the channel imbalance is
 the maximum over the mean of the beats. The limit of a weight stream is 64 B per core cycle, and a cluster has one
@@ -180,14 +180,28 @@ source for both themes.
 | Output | The page depends only on the dump, so equal inputs give the same bytes. |
 
 A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from
-LAUNCH_BEGIN) over its ops, so they add up to the launch with the setup and the tail. The ideal cycles of an MVM
-record are its weight bytes over 256 B per cycle. That counts one weight beat per cycle and cluster. On a core with
-the dual weight stream, an MVM with T ≤ T_MAX / 2 takes fewer cycles, so its efficiency can be above 100 % and the
-fill term F below zero. A profile taken with `TSR_MVM_DUAL=0` compares against the ideal. The report checks the record
-cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7), `RETIRED`
-against the ops, the markers against the records, the trace writer's drops and the simulator against the card. The
-dump and the publisher of `tsr-top` (§7) run in the same process and only read, so neither moves a counter, a record
-or an output bit.
+LAUNCH_BEGIN) over its ops, so they add up to the launch with the setup and the tail.
+
+The ideal cycles of an MVM record are the weight phase of its MVMs at the stream limit of the core. An MVM streams the
+weights once. A weight stream takes one beat per cycle, and the slowest channel holds `rows = ceil(N / NUM_CH)` of the N
+rows of the matrix, each of ROW_BEATS beats. On one stream the MVM takes `rows x ROW_BEATS` cycles. An MVM of T ≤ T_MAX / 2
+tokens runs on two streams when the core has the dual weight stream (`CAPS` bit 16, [rtl-mvm.md](rtl-mvm.md) §15) and
+`TSR_MVM_DUAL` is not 0. It then takes `ceil(rows / 2) x ROW_BEATS` cycles. A MUL_MAT record has one MVM per token tile of
+the firmware's plan, the last tile with the remaining tokens. A MUL_MAT_ID record has one MVM of one token per token and
+used expert. So a record can mix MVMs on one and on two streams, and its ideal is the sum. `meta.json` has `mvm_dual`, 1
+when MVMs of T ≤ T_MAX / 2 ran on two streams, and the Summary tab shows it (a dump without the field is read as one
+stream). The bytes of an MVM op are the weight bytes of its record over its MVMs. The stream rate ceiling of the Summary
+tab (E at clock) is the rate the streams ask for over the `tsr_bw` bandwidth: the weight bytes per ideal cycle, `NUM_CH` x
+64 B on one stream and up to twice that on two, at the core clock. The ideal is the limit of the streams, not of the
+memory. On the card two streams ask for more than the memory gives ([performance.md](performance.md)), so E at clock is
+above 100 % and the DDR, not the core, sets the time of such an MVM. The efficiency of such an MVM is then about
+1 / (E at clock) at best. F holds the time the DDR cannot follow, about 1 - 1 / (E at clock) of the MVM time, and above
+that the fill, broadcast and tail. E, the DDR read rate over the ideal MVM time, is above 100 %.
+
+The report checks the record cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters
+(DB §8.7), `RETIRED` against the ops, the markers against the records, the trace writer's drops and the simulator against
+the card. The dump and the publisher of `tsr-top` (§7) run in the same process and only read, so neither moves a counter,
+a record or an output bit.
 
 ### 3.2 Comparing a card run with the simulator
 

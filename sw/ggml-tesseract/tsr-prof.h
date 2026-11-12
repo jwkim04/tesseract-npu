@@ -9,7 +9,7 @@
 //   cpu_fallback.json  the nodes supports_op refused, with the reason (they run on the CPU)
 //   trw.raw          the trace writer's records of the whole run (started when the device opens, drained when the backend is
 //                    freed; TSR_PROF_TRW_MIB sets the ring size, default 32)
-//   meta.json        device, image and clock facts of the run
+//   meta.json        device, image and clock facts of the run, and mvm_dual: 1 when MVMs of T <= T_MAX / 2 ran on two weight streams
 // TSR_DUMP_PLAN also turns on the descriptor's PROF bit (a NODE_BEGIN marker before every record) unless TSR_OPL_PROF=0:
 // the markers are what joins a trace slice to its record. This file knows no ggml types: ggml-tesseract.cpp fills the
 // structures below.
@@ -42,7 +42,9 @@ struct rec {
     std::vector<range> rd, wr;
     uint64_t rd_bytes = 0, wr_bytes = 0;     // the record's DRAM traffic by the kind's own formula (weights, rows, KV)
     uint64_t w_bytes = 0;                    // weight bytes the MVMs stream (MUL_MAT, MUL_MAT_ID)
-    double   ideal_cycles = 0;               // w_bytes / (num_ch x 64 B per cycle)
+    double   ideal_cycles = 0;               // their weight phase at the stream limit: per MVM the rows of the slowest channel x ROW_BEATS cycles,
+                                             // half the rows rounded up on two weight streams (T <= T_MAX / 2, CAPS bit 16, TSR_MVM_DUAL not 0)
+    std::vector<std::pair<uint64_t, double>> mvm_passes;   // the MVMs of the record in issue order: (count, ideal cycles of one)
     uint32_t n_tiles = 0, scratch_lines = 0, tile_rows = 0;   // the firmware's plan of the record (SPM ring tiles)
 };
 

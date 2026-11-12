@@ -123,7 +123,7 @@ def view_events(view, rows, pid, name, f, flows=True, flow_base=0):
                          "shape": r["shape"], "record_bytes_read": r["rd"]})
             if o.ideal:
                 args["ideal_cycles"] = round(o.ideal, 2)
-                args["bytes_read"] = round(o.ideal * 256)
+                args["bytes_read"] = round(o.wbytes)
                 if run:
                     args["efficiency"] = round(o.ideal / run, 4)
         else:
@@ -139,7 +139,7 @@ def view_events(view, rows, pid, name, f, flows=True, flow_base=0):
             ev.append({"ph": "s", "pid": pid, "tid": TID_ISSUE, "id": fid, "name": "issue", "cat": "record", "ts": _us(mark_t[o.rec] - t0, f) })
             ev.append({"ph": "f", "pid": pid, "tid": tid, "id": fid, "name": "issue", "cat": "record", "bp": "e", "ts": round(ts + 0.0005, 4)})
         if o.unit == 2 and o.ideal:
-            wcum += o.ideal * 256
+            wcum += o.wbytes
             ev.append({"ph": "C", "pid": pid, "name": "weights streamed (MB, model)", "ts": _us(o.tend - t0, f), "args": {"MB": round(wcum / 1e6, 3)}})
     # queue depth per unit: ops dispatched and not completed
     for u in (0, 1, 2, 3):

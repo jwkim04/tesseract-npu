@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- The profile dump (`TSR_DUMP_PLAN`) records the weight streams that the ideal MVM cycles are counted on. `meta.json` has `mvm_dual`, 1 when MVMs of T ≤ T_MAX / 2 ran on two weight streams. Each MVM record of a plan file has `mvm_passes`, the ideal cycles of its MVMs as pairs of a count and the cycles of one MVM. `summary.json` has `mvm_dual` and `t_max`, and the Summary tab of the profile report has the row "MVM ideal streams". A dump without these fields is read as one stream.
+
+### Changed
+
+- `sw/tools/prof/capture_sim.sh` runs the simulator as the release image by default: `TSR_SIM_CARD=k4dual` (was `k4full`, one weight stream) and `TSR_SIM_GDN=1` (the fused GDN op, which a card configuration left off). The cycles of a capture differ from those of one made with the old default: MVMs of T ≤ T_MAX / 2 take fewer, and a Gated DeltaNet model runs the op stream of the card. `SIM_CARD=` (empty) still gives the plain simulator, and `TSR_SIM_GDN=0` the composed GDN path.
+
+### Fixed
+
+- The profile report (`sw/tools/prof`, `TSR_DUMP_PLAN`) compares an MVM with the ideal of the weight streams it ran on. It counted one weight beat per cycle and cluster, so a decode profile of a core with the dual weight stream (`CAPS` bit 16) showed an MVM efficiency above 100 % and a negative fill term F. `sw/ggml-tesseract/tsr-prof.cpp` takes two streams for an MVM of T ≤ T_MAX / 2 when `CAPS` bit 16 is set and `TSR_MVM_DUAL` is not 0, and one stream otherwise. The report takes the bytes of an op from the weight bytes of its record, and the stream rate ceiling (E at clock) from the weight bytes over the ideal cycles. The ideal is the limit of the streams, not of the memory. On a card with two streams the DDR gives less than the streams ask for, so an MVM stays below 100 % efficiency, F holds the time the DDR cannot follow, and E is above 100 % (`docs/prof-dbg.md` §3 and §3.1). The ctest `tools_prof_report_*` check the ideal against the simulated run time of every MVM op, with the dual weight stream on and off.
+
 ## [1.2.0] - 2026-11-12
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).

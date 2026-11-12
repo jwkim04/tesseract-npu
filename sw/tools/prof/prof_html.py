@@ -82,7 +82,7 @@ def page_data(model, extra):
     sim = model.get("sim")
     summary = {k: s.get(k) for k in ("cycles", "span", "core_hz", "t_dev_ms", "tok_s_dev", "launch_wall_ms", "token_period_ms", "tok_s", "n_decode",
                                      "ref_toks", "mvm_cycles", "ideal_cycles", "w_bytes", "rd_model", "rd_meas", "setup", "tail", "H", "G", "F", "E", "U",
-                                     "E_clock", "empty", "wait")}
+                                     "E_clock", "empty", "wait", "mvm_dual", "t_max")}
     summary["llama_on"] = s.get("llama_on")
     summary["llama_off"] = s.get("llama_off")
     return {

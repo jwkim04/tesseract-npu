@@ -10,7 +10,7 @@ Inputs (docs/prof-dbg.md "Comparing a card run with the simulator"):
   --sim FILE    the simulator's log of the same run: TSR_SIM_LOG=w,FILE (push, start and done lines)
   --kinds FILE  the record kinds of each launch, from TSR_OPL_KINDS=FILE (the backend writes one line per launch)
 Run both with TSR_OPL_PROF=1 (the descriptor's PROF bit: a NODE_BEGIN marker before every record), and the simulator with
-the card's configuration (TSR_SIM_CARD=k4full), so that the two op streams are the same.
+the release image's configuration (TSR_SIM_CARD=k4dual TSR_SIM_GDN=1), so that the two op streams are the same.
 
   trw_vs_sim.py kinds --trw T --sim S --kinds K --launch N       per record kind: cycles the record adds to the launch
   trw_vs_sim.py units --trw T --sim S --launch N                 per unit and op class: run time of each op, sim and card

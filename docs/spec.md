@@ -1022,9 +1022,12 @@ time, so host time counts. By cause, U is split as follows (the product is an ap
   round trips, synchronization between launches.
 - G: the share of device time outside the MVM (LD, QACT, VU, ST). The counters `MVM_WAIT` and `MVM_EMPTY`
   split it into a dependency-bound and an issue-bound share (section 10, PERF counters).
-- F: fill, broadcast and tail inside the MVM.
+- F: fill, broadcast and tail inside the MVM, counted against the stream limit of the core (one 64-byte beat per
+  cycle and weight stream). Two weight streams ask for more than B_M0 at the core clock ([rtl-mvm.md](rtl-mvm.md) §15),
+  so F then also holds the time the DDR cannot follow.
 - E: the effective bandwidth while the MVM reads weights, divided by B_M0. DDR efficiency (refresh, bank
-  conflicts), `PERF_CH_WAIT` and an unbalanced row distribution between channels are in it.
+  conflicts), `PERF_CH_WAIT` and an unbalanced row distribution between channels are in it. E is counted over the
+  ideal MVM time of F, so on two weight streams it is above 1 ([prof-dbg.md](prof-dbg.md) §3.1).
 
 U ≈ (1 − H) × (1 − G) × (1 − F) × E. H is measured with host timestamps, the rest with the `PERF_*` counters
 ([prof-dbg.md](prof-dbg.md)).

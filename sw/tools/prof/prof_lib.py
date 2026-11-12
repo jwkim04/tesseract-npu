@@ -44,7 +44,7 @@ def perf_dict(perf, num_ch=4):
 class Op:
     """One trace-writer OP record: a unit's run of one tile op."""
     __slots__ = ("unit", "opcode", "sub", "pidx", "ticket", "tend", "run", "qwait", "hwait", "ran", "code", "rec", "ordinal",
-                 "ideal")
+                 "ideal", "wbytes")
 
     @property
     def t_start(self):
@@ -117,6 +117,7 @@ def load_trw(path):
             o.rec = -1
             o.ordinal = 0
             o.ideal = 0.0
+            o.wbytes = 0.0
             ops_all.append(o)
     ops_all.sort(key=lambda o: o.pidx)
     done = [l for l in launches if l.t_end]          # a launch the ring cut off at either end is dropped

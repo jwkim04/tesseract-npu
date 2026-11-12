@@ -96,6 +96,15 @@ bool write_file(const std::string & path, const std::string & s, const char * mo
 
 std::string path_in(const std::string & name) { return dir() + "/" + name; }
 
+// Do MVMs of at most T_MAX / 2 tokens read two weight streams per channel? They do when the device has the dual weight stream (CAPS
+// bit 16, docs/rtl-mvm.md §15; with T_MAX 1 no MVM qualifies) and its run-time enable is on. No transport call reports the enable, so
+// it is read the way the transports read TSR_MVM_DUAL: unset or empty is on, 0 is off (xrt: ADAPTER_CTRL.DUAL_DIS, sim: the cycle
+// model's enable).
+bool mvm_dual(uint32_t caps, uint32_t t_max) {
+    const char * e = getenv("TSR_MVM_DUAL");
+    return (caps & TSR_CAPS_MVM_DUAL) != 0 && t_max >= 2 && (e == nullptr || e[0] == '\0' || atoi(e) != 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The argument words of each kind (SW §7.2) as "NAME:t": h DRAM handle, s stride or lines, n count, b beats, p preload byte
 // offset, f f32 bits, x flags.
@@ -158,11 +167,18 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
     for (const range & x : r->rd) r->rd_bytes += range_bytes(x);
     for (const range & x : r->wr) r->wr_bytes += range_bytes(x);
     const uint32_t C = cfg.num_ch != 0 ? cfg.num_ch : 4u;
-    auto mvm_beats = [&](uint32_t fmt, uint32_t N, uint32_t K, uint64_t passes, uint64_t * bytes, double * cycles) {
+    const uint32_t dual_t = mvm_dual(cfg.caps, cfg.t_max) ? cfg.t_max / 2u : 0u;   // an MVM of at most dual_t tokens reads two streams
+    // `passes` MVMs of T tokens each. A pass streams the weights once: the slowest channel has rows_ch rows of rb beats, and a weight
+    // stream takes one beat per cycle. So the weight phase is rows_ch x rb cycles, and ceil(rows_ch / 2) x rb on two streams. This is
+    // mvm_weight_cycles of sw/sim/tsr_sim.c without its memory rate bound: the ideal is the limit of the core's streams, not the memory's.
+    auto add_mvm_passes = [&](uint32_t fmt, uint32_t N, uint32_t K, uint64_t passes, uint32_t T) {
+        if (passes == 0) return;
         const uint32_t rb = pl::row_beats(fmt, K);
         const uint64_t rows_ch = (N + C - 1u) / C;
-        *bytes = passes * rows_ch * C * rb * 64ull;
-        *cycles = (double) (passes * rows_ch) * rb;
+        const double cycles = (double) (T <= dual_t ? (rows_ch + 1u) / 2u : rows_ch) * rb;
+        r->w_bytes += passes * rows_ch * C * rb * 64ull;
+        r->ideal_cycles += (double) passes * cycles;
+        r->mvm_passes.emplace_back(passes, cycles);
     };
     switch (r->kind) {
     case opl::K_MUL_MAT:
@@ -175,7 +191,9 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
         r->n_tiles = t.n_tiles;
         r->tile_rows = t.t_tile;
         r->scratch_lines = t.t_tile * t.lpt;
-        mvm_beats(fmt, N, K, t.n_tiles, &r->w_bytes, &r->ideal_cycles);
+        // one MVM per T-tile (SW §7.4): n_tiles - 1 tiles of t_tile tokens, then the last tile with the rest
+        add_mvm_passes(fmt, N, K, t.n_tiles - 1u, t.t_tile);
+        add_mvm_passes(fmt, N, K, 1u, T - (t.n_tiles - 1u) * t.t_tile);
         r->rd_bytes = r->w_bytes + (uint64_t) T * t.x_lines * 64ull;
         if (a[opl::mm::ADD] != opl::HANDLE_NONE) r->rd_bytes += (uint64_t) T * t.y_lines * 64ull;
         r->wr_bytes = (uint64_t) T * t.y_lines * 64ull;
@@ -190,7 +208,7 @@ void fill_record(rec * r, const pl::dev_cfg & cfg) {
             r->tile_rows = kp.tile_rows;
             r->scratch_lines = kp.scratch_lines;
         }
-        mvm_beats(fmt, N, K, (uint64_t) T * U, &r->w_bytes, &r->ideal_cycles);
+        add_mvm_passes(fmt, N, K, (uint64_t) T * U, 1u);   // per (token, used expert) the MUL_MAT sequence with T = 1 (SW §7.5)
         r->rd_bytes = r->w_bytes + (uint64_t) T * U * (K / 16u) * 64ull + (uint64_t) T * U * 4ull;
         r->wr_bytes = (uint64_t) T * U * ((N + 15u) / 16u) * 64ull;
         break;
@@ -289,8 +307,14 @@ void write_plan(const plan & p) {
             json_ranges(s, r.rd);
             s += ",\"wr\":";
             json_ranges(s, r.wr);
-            app(s, ",\"rd_bytes\":%" PRIu64 ",\"wr_bytes\":%" PRIu64 ",\"w_bytes\":%" PRIu64 ",\"ideal\":%.1f,\"tiles\":%u,\"tile_rows\":%u,\"scratch_lines\":%u}",
-                r.rd_bytes, r.wr_bytes, r.w_bytes, r.ideal_cycles, r.n_tiles, r.tile_rows, r.scratch_lines);
+            app(s, ",\"rd_bytes\":%" PRIu64 ",\"wr_bytes\":%" PRIu64 ",\"w_bytes\":%" PRIu64 ",\"ideal\":%.1f", r.rd_bytes, r.wr_bytes, r.w_bytes,
+                r.ideal_cycles);
+            if (!r.mvm_passes.empty()) {
+                s += ",\"mvm_passes\":[";
+                for (size_t k = 0; k < r.mvm_passes.size(); ++k) app(s, "%s[%" PRIu64 ",%.1f]", k ? "," : "", r.mvm_passes[k].first, r.mvm_passes[k].second);
+                s += "]";
+            }
+            app(s, ",\"tiles\":%u,\"tile_rows\":%u,\"scratch_lines\":%u}", r.n_tiles, r.tile_rows, r.scratch_lines);
         }
         s += "\n]}";
     }
@@ -429,10 +453,10 @@ void session_close(tsr_transport * t) {
 #endif
     std::string s;
     app(s, "{\"format\":\"tsr-meta-1\",\"image\":%s,\"image_id\":\"%016" PRIx64 "\",\"description\":%s,\"num_ch\":%u,\"caps\":%u,\"t_max\":%u,"
-           "\"spm_lines\":%u,\"pcap\":%u,\"vl\":%u,\"kind_mask\":\"%016" PRIx64 "\",\"simulated\":%s,\"trw_note\":%s,\"trw_records\":%" PRIu64
+           "\"mvm_dual\":%d,\"spm_lines\":%u,\"pcap\":%u,\"vl\":%u,\"kind_mask\":\"%016" PRIx64 "\",\"simulated\":%s,\"trw_note\":%s,\"trw_records\":%" PRIu64
            ",\"trw_lost\":%" PRIu64 ",\"regions\":{\"opl\":[%llu,%llu],\"io\":[%llu,%llu],\"aux\":[%llu,%llu],\"weight_off\":%llu},\"kinds\":{",
-        esc(g_si.image).c_str(), g_si.image_id, esc(g_si.description).c_str(), g_si.num_ch, g_si.caps, g_si.t_max, g_si.spm_lines, g_si.pcap, g_si.vl,
-        g_si.kind_mask, g_si.simulated ? "true" : "false", esc(g_trw_note).c_str(), g_trw_records, g_trw_lost,
+        esc(g_si.image).c_str(), g_si.image_id, esc(g_si.description).c_str(), g_si.num_ch, g_si.caps, g_si.t_max, mvm_dual(g_si.caps, g_si.t_max) ? 1 : 0,
+        g_si.spm_lines, g_si.pcap, g_si.vl, g_si.kind_mask, g_si.simulated ? "true" : "false", esc(g_trw_note).c_str(), g_trw_records, g_trw_lost,
         (unsigned long long) TSR_REGION_OPL_OFF, (unsigned long long) TSR_REGION_OPL_SIZE, (unsigned long long) TSR_REGION_IO_OFF,
         (unsigned long long) TSR_REGION_IO_SIZE, (unsigned long long) TSR_REGION_AUX_OFF, (unsigned long long) TSR_REGION_AUX_SIZE,
         (unsigned long long) TSR_REGION_WEIGHT_OFF);

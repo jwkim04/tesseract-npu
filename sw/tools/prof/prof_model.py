@@ -13,7 +13,6 @@ GROUP_LABEL = {"attention": "attention", "router": "router", "experts": "experts
                "residual": "residual and norms", "head": "embedding and head"}
 B_M0 = 72.05e9                  # four channels, read bursts of 64 beats at 300 MHz (the tsr_bw measurement, docs/bandwidth-kernel.md §7)
 CORE_HZ_NOMINAL = 200e6         # the release image's core clock: the fallback when the launch log has no fitted clock
-STREAM_B_PER_CYCLE = 256.0      # four channels x 64 B per core cycle
 HANDLE_NONE = 0xFFFFFFFF
 REGIONS = [(0x0, 0x4000000, "OPL"), (0x4000000, 0x14000000, "IO"), (0x14000000, 0x20000000, "AUX"), (0x20000000, 1 << 62, "WEIGHT/KV heap")]
 
@@ -235,18 +234,24 @@ class LaunchView:
         self.cost, self.setup, self.tail = P.frontier_costs(order, by_idx, pre, tl.t_begin, tl.t_end)
         self.span = tl.t_end - tl.t_begin
         self.markers = len(tl.nodes)
-        # tag ops: record index, ordinal within (record, unit), ideal cycles of an MVM op (the record's, split evenly)
+        # tag ops: record index, ordinal within (record, unit), ideal cycles and weight bytes of an MVM op. The record's MVMs run in issue
+        # order, with the ideal of each from "mvm_passes" ([count, ideal cycles of one] runs: the T-tiles of a MUL_MAT can differ in their
+        # streams). Every MVM streams the record's weights once, so the weight bytes split evenly. A plan without "mvm_passes", or with
+        # another count than the trace has, splits the ideal evenly too.
         for i in order:
             t_mark, ops = by_idx.get(i, (None, []))
             cnt = collections.Counter()
-            mvm = [o for o in ops if o.unit == 2 and o.opcode == 0x20]
-            ideal = self.recs[i].get("ideal", 0.0)
             for o in ops:
                 o.rec = i
                 o.ordinal = cnt[o.unit]
                 cnt[o.unit] += 1
-                if o in mvm and mvm:
-                    o.ideal = ideal / len(mvm)
+            mvm = [o for o in ops if o.unit == 2 and o.opcode == 0x20]
+            ideal = [c for n, c in self.recs[i].get("mvm_passes", []) for _ in range(n)]
+            if len(ideal) != len(mvm):
+                ideal = [self.recs[i].get("ideal", 0.0) / len(mvm)] * len(mvm) if mvm else []
+            for o, c in zip(mvm, ideal):
+                o.ideal = c
+                o.wbytes = self.recs[i].get("w_bytes", 0) / len(mvm)
         for o in pre:
             o.rec = -1
         self.unassigned = sum(1 for o in tl.ops if o.rec < 0)
@@ -355,6 +360,7 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
          "launch_wall_ms": walls[len(walls) // 2] * 1e3 if walls else None, "token_period_ms": period * 1e3 if period else None,
          "tok_s": (1.0 / period) if period else None, "n_decode": len(dec), "ref_toks": ref_toks,
          "mvm_cycles": mvm, "ideal_cycles": ideal_total, "w_bytes": w_bytes, "rd_model": rd_model, "rd_meas": rd_meas,
+         "mvm_dual": meta.get("mvm_dual", 0), "t_max": meta.get("t_max"),     # the ideal's streams: two for T <= t_max / 2, else one (no field: one)
          "perf": pf, "setup": cv.setup, "tail": cv.tail}
     s["llama_on"] = P.parse_llama_log(os.path.join(run.path, "run.log"))
     if ref_run:
@@ -367,7 +373,8 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
         F = 1.0 - ideal_total / mvm
         U = rd_meas / (B_M0 * period)
         E = U / ((1 - H) * (1 - G) * (1 - F)) if (1 - H) * (1 - G) * (1 - F) > 0 else 0.0
-        s.update({"H": H, "G": G, "F": F, "E": E, "U": U, "U_w": w_bytes / (B_M0 * period), "E_clock": STREAM_B_PER_CYCLE * f / B_M0,
+        # the stream limit: weight bytes per ideal cycle (num_ch x 64 B on one stream, up to twice that on two) at the clock, over the tsr_bw bandwidth
+        s.update({"H": H, "G": G, "F": F, "E": E, "U": U, "U_w": w_bytes / (B_M0 * period), "E_clock": w_bytes / ideal_total * f / B_M0,
                   "empty": pf.get("MVM_EMPTY", 0) / cyc, "wait": pf.get("MVM_WAIT", 0) / cyc})
     out["summary"] = s
     # ---- per kind

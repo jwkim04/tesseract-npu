@@ -458,7 +458,8 @@
     var dev = [
       mrow("Device cycles (PERF)", "cycle", fint(s.cycles)), mrow("Launch span", "cycle", fint(s.span)), mrow("Setup", "cycle", fint(s.setup)), mrow("Tail", "cycle", fint(s.tail)),
       mrow("Core clock", "MHz", fx(F / 1e6, 1)), mrow("MVM busy", "cycle", fint(s.mvm_cycles)), mrow("MVM busy share", "%", fpct(div(s.mvm_cycles, s.cycles))),
-      mrow("MVM ideal", "cycle", fint(s.ideal_cycles)), mrow("MVM empty", "%", fpct(s.empty)), mrow("MVM wait", "%", fpct(s.wait)),
+      mrow("MVM ideal", "cycle", fint(s.ideal_cycles)), mrow("MVM ideal streams", "", s.mvm_dual ? esc("2 for T <= " + (s.t_max >> 1)) : "1"),
+      mrow("MVM empty", "%", fpct(s.empty)), mrow("MVM wait", "%", fpct(s.wait)),
       mrow("DDR read (PERF)", "GB", fx(s.rd_meas / 1e9, 3)), mrow("DDR read (records)", "GB", fx(s.rd_model / 1e9, 3)), mrow("Weights", "GB", fx(s.w_bytes / 1e9, 3))
     ];
     h += '<div class="grid">';
