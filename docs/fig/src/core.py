@@ -17,18 +17,34 @@ tsr_mem_arb, and docs/rtl-mvm.md §2 for tsr_mvm:
   QACT 4, MVM 4, VU 16, SYNC 4; unit 4 is reserved and absent), the units DMA (LD, ST, KVST),
   QACT, MVM (NUM_CH clusters; attention modes ATTQK, ATTPV), VU, and `tsr_spm` (4 MiB, 64 B
   lines; even / odd banks, 2R2W, with the RISC-V bridge as client 3, CC §10); one
-  `tsr_mem_arb` per channel (sources DMA and weight stream; channel 0 also the trace writer,
+  `tsr_mem_arb` per channel (sources DMA and weight stream A; channel 0 also the trace writer,
   CC §13.2);
-- the dashed bus under the dispatcher stands for the unit queues feeding every unit (CC §7.4).
+- the dashed bus under the dispatcher stands for the unit queues feeding every unit (CC §7.4);
+- the dual weight stream (`CAPS` bit 16; docs/rtl-mvm.md §15.1, §15.5, docs/rtl-core.md §4,
+  docs/design/04-control-core.md §13.1): stream A keeps the channel's main port (`TSR_SRC_WS` of
+  `tsr_mem_arb`); stream B of cluster c has a read-only port of its own, one per channel, that does
+  not go through `tsr_mem_arb` (docs/rtl-mvm.md §15.5). `tsr_core_dp` (`g_pb`) puts a register
+  slice behind an outstanding limit on the B request and one register stage on the response. The
+  core boundary carries `mb_rd_req_*` and `mb_rd_rsp_*` per channel: the read request and read
+  response streams of the main port, 512-bit data, no write channels (docs/rtl-core.md §4). On the
+  U200 the port is `m_axi_chb<c>` on the same DDR4 bank as `m_axi_ch<c>` (docs/platform-u200.md §1,
+  §4, §8.2). The arrow runs beside the arbiter, from the core boundary to the cluster;
+- when stream B runs: a weight MVM (not ATTQK or ATTPV) with T <= T_MAX / 2 on a core with CAPS bit
+  16 and the run-time enable on; every other MVM runs with stream A alone (docs/rtl-mvm.md §15.1).
+  The note at the foot of the figure says it, so the port is not read as a path of every MVM.
 Every block is drawn solid: the figure shows what the tree contains.
-Arrow direction: weights flow from the arbiter into the clusters (as the `system` figure does).
+Arrow direction: weights flow from the arbiter into the clusters (as the `system` figure does);
+port B follows the same rule (weights flow from the boundary into the cluster).
+Geometry: the SPM <-> TSR_MVM arrow ends 8 units short of the CLUSTER chip (the SPM client is
+`tsr_mvm`, not the cluster), and the two weight arrows enter the chip 6 units deep, so that their
+heads stay inside the TSR_MVM block and clear of the chip's text.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/core.py        (TSR_FIG_THEME=dark: core-dark.svg)
 """
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK, INK_SOFT, Fig  # noqa: E402
+from tsrfig import INK, INK_SOFT, Fig, wrap  # noqa: E402
 
 W = 1600
 PX0, PX1 = 224, 1376                  # tsr_core panel; callouts in the 224 margins
@@ -50,25 +66,37 @@ B1_Y, B1_H = B_Y + 64, 128
 BUS_GAP = 64
 U_Y = B1_Y + B1_H + BUS_GAP           # units row top
 UQ_H = 112                            # QACT, VU
-SPM_Y, SPM_H = U_Y + UQ_H + 56, 136
+SPM_Y, SPM_H = U_Y + UQ_H + 56, 144
 U_B = SPM_Y + SPM_H                   # DMA, MVM stand from U_Y to here
-ARB_Y, ARB_H = U_B + 96, 144
+ARB_Y, ARB_H = U_B + 120, 144         # the gap holds the callout of the WS arrow, left of it
 B_B = ARB_Y + ARB_H + 40
 PY1 = B_B + 24
-PORT_B = PY1 + 72
-LEG_Y = PORT_B + 72
-H = LEG_Y + 64
+PORT_B = PY1 + 112                    # the port arrows end here; their names stand beside them
+LEG_Y = PORT_B + 56
+NOTE_B = ("Dual weight stream (CAPS bit 16): a weight MVM with T ≤ T_MAX / 2 reads its weights as "
+          "two streams when the run-time enable is on, A through tsr_mem_arb and B through the "
+          "read-only port B. Every other MVM runs with stream A alone.")
+note_b = wrap(NOTE_B, 1440)
+NOTE_Y0 = LEG_Y + 38                  # first baseline of the footnote under the legend
+H = int(NOTE_Y0 + 17 * 1.35 * note_b.count("\n")) + 6 + 56        # descenders, outer padding of 56
+H = (H + 7) // 8 * 8
 
 f = Fig("core", W, H,
-        title="Inside tsr_core",
+        title="Inside tsr_core, with the read-only port B",
         desc="tsr_core in two clock domains. In the clk_rv domain (100 MHz): the Ibex "
              "RV32IMC control core with ITCM, DTCM, a debug module and the control window. Clock "
              "domain crossings connect it to the core clock domain (200 MHz): tsr_csr with the "
              "launch queue, completion ring and log ring, the issue FIFO, the checker tsr_chk "
              "and the dispatcher with one in-order queue per unit. The units are the DMA (LD, "
              "ST, KVST), QACT, the MVM clusters (with ATTQK and ATTPV) and the vector unit; all "
-             "use the 4 MiB tsr_spm. One tsr_mem_arb per channel merges the DMA and "
-             "weight-stream traffic onto that channel's memory port.")
+             "use the 4 MiB tsr_spm. One tsr_mem_arb per channel merges the DMA traffic and "
+             "weight stream A of cluster c onto that channel's memory port. With the dual "
+             "weight stream (CAPS bit 16) every cluster has a second stream, stream B, which "
+             "reads the same channel through a read-only port B of its own: port B does not "
+             "pass through tsr_mem_arb and runs beside the arbiter from the core boundary to "
+             "the MVM cluster, one port B per channel. A weight MVM with T <= T_MAX / 2 uses "
+             "stream B when the run-time enable is on; every other MVM runs with stream A "
+             "alone.")
 
 f.panel(PX0, PY0, PX1 - PX0, PY1 - PY0, label="TSR_CORE")
 
@@ -142,8 +170,8 @@ f.box(mvm_x, U_Y, MVM_W, U_B - U_Y, "compute")
 f.label_block(mvm_x, U_Y + 20, MVM_W, 96, "TSR_MVM", "reads QA lines,\nwrites y lines")
 f.box(mvm_x + 12, U_Y + 114, MVM_W - 24, 44, "compute", "ATTQK · ATTPV", sub="",
       label_role="label_s", cut=10)
-CL_W, CL_H = 176, 80
-CL_X, CL_Y = mvm_x + (MVM_W - CL_W) / 2 - 8, U_B - 28 - CL_H
+CL_W, CL_H = 184, 80                  # wide enough for two fat arrowheads side by side (A and B)
+CL_X, CL_Y = mvm_x + 20, U_B - 36 - CL_H     # 8 clear of the SPM arrow; heads end inside TSR_MVM
 f.box(CL_X, CL_Y, CL_W, CL_H, "neutral", "CLUSTER", sub="128 MACs", stack=2, label_role="label_s", cut=12)
 f.tag(CL_X + CL_W + 16, CL_Y - 16, "× NUM_CH", anchor="end")
 
@@ -165,20 +193,27 @@ f.arrow([(dma_x + DMA_W - 12, spm_m), (mid_x0 + 12, spm_m)], tail=True)
 f.arrow([(mvm_x + 12, spm_m), (mid_x1 - 12, spm_m)], tail=True)
 
 # ---- arbiters ------------------------------------------------------------------------------------
-ARB_X1 = X1 - 16                      # room for the two stacked copies behind it
+# The arbiter stops left of port B, so that port B runs beside it and not through it.
+ws_x = CL_X + 46                      # stream A: arbiter -> cluster
+pb_x = CL_X + 138                     # stream B: read-only port B -> cluster, beside the arbiter
+ARB_X1 = pb_x - 20 - 20 - 16          # 20 clear of the port B shaft; the two copies add 16
 f.box(X0, ARB_Y, ARB_X1 - X0, ARB_H, "io", "TSR_MEM_ARB", stack=2,
       sub="one per channel · round robin per burst · ≤ 16 reads in flight\n"
-          "sources: DMA, weight stream (cluster c) · channel 0 also the trace writer")
-f.tag(CX, ARB_Y - 16, "× NUM_CH")
+          "sources: DMA, weight stream A (cluster c) · channel 0 also the trace writer")
+f.tag((X0 + ARB_X1) / 2, ARB_Y - 16, "× NUM_CH")
 dma_c = dma_x + DMA_W / 2
 f.arrow([(dma_c, U_B - 8), (dma_c, ARB_Y + 12)], tail=True)                     # LD / ST
-ws_x = CL_X + CL_W / 2
-f.arrow([(ws_x, ARB_Y + 12), (ws_x, CL_Y + CL_H - 12)], fat=True)               # weight streams
+f.arrow([(ws_x, ARB_Y + 12), (ws_x, CL_Y + CL_H - 6)], fat=True)                # weight stream A
+f.arrow([(pb_x, PORT_B), (pb_x, CL_Y + CL_H - 6)], fat=True)                    # read-only port B
 f.arrow([(CX, ARB_Y + ARB_H - 12), (CX, PORT_B)], tail=True, fat=True)           # memory ports
 f.text(dma_c + 44, (U_B + ARB_Y) / 2, "DMA: LD · ST", "callout", valign="middle")
-f.text(CX + 64, (PY1 + PORT_B) / 2 - 12, "NUM_CH MEMORY PORTS", "callout", valign="middle")
-f.text(CX + 64, (PY1 + PORT_B) / 2 + 16, "five valid/ready streams each · 512-bit data",
-       "note", valign="middle", color=INK_SOFT)
+# names of the two port arrows under the panel: the name 25 under its outline, the note under it
+f.text(CX + 64, PY1 + 32, "NUM_CH MEMORY PORTS", "callout", valign="middle")
+f.text(CX + 64, PY1 + 52, "five valid/ready streams\neach · 512-bit data",
+       "note", valign="top", color=INK_SOFT)
+f.text(pb_x + 44, PY1 + 32, "NUM_CH PORTS B", "callout", valign="middle")
+f.text(pb_x + 44, PY1 + 52, "read-only · two\nvalid/ready streams\neach · 512-bit data",
+       "note", valign="top", color=INK_SOFT)
 
 # ---- external CSR port, left margin; callouts ------------------------------------------------------
 csr_y = B1_Y + B1_H / 2
@@ -189,9 +224,11 @@ f.callout("QUEUE DEPTHS:\nDMA 8, QACT 4,\nMVM 4, VU 16,\nSYNC 4", (RX, B1_Y + B1
           target=(dsp_x + DSP_W - 8, B1_Y + B1_H / 2))
 f.callout("ONLY THE CONTROL\nCORE ISSUES\nTILE OPS; THE\nHOST LAUNCHES\nKERNELS", (RX, WIN_Y + WIN_H / 2),
           target=(CX + WIN_W / 2 - 8, WIN_Y + WIN_H / 2))
-wy = (U_B + ARB_Y) / 2
-f.text(ws_x - 44, wy, "WS", "callout", anchor="end", valign="middle")
-f.callout("WEIGHT STREAMS:\nCLUSTER c READS\nONLY CHANNEL c", (RX, wy), target=(ws_x, wy))
+wy = (U_B + ARB_Y - 16) / 2           # the middle of the free band above the arbiter's back copy
+f.text((ws_x + pb_x) / 2, wy - 28, "WS", "callout", anchor="middle", valign="middle")
+f.callout("WEIGHT STREAMS:\nCLUSTER c READS\nONLY CHANNEL c", (ws_x - 148, wy), target=(ws_x, wy),
+          anchor="end")                # left of the arrow: the leader of port B comes from the right
+f.callout("READ-ONLY\nPORT B FOR\nSTREAM B; NOT\nTHROUGH\ntsr_mem_arb", (RX, wy), target=(pb_x, wy))
 ay = ARB_Y + ARB_H / 2
 f.callout("RESPONSES\nROUTED BY ID;\nEVERY STREAM\nTHROUGH A\nREGISTER SLICE", (LX, ay),
           target=(X0 + 72, ay))
@@ -199,5 +236,6 @@ f.callout("RESPONSES\nROUTED BY ID;\nEVERY STREAM\nTHROUGH A\nREGISTER SLICE", (
 # ---- legend ------------------------------------------------------------------------------------------
 f.legend(800, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
                       ("io", "DATA MOVEMENT")])
+f.text(W / 2, NOTE_Y0, note_b, "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=1)
