@@ -218,7 +218,7 @@ struct launch_ctx {
     uint32_t take(uint64_t beats) { return take(beats, rr++ & 3u); }
     // --hold: the held MUL_MAT's data and its expected y rows (a plain launch)
     bool hold_ready = false;
-    std::vector<uint8_t> hold_y;
+    std::vector<uint8_t> hold_y{};
 };
 
 struct kind_digest {
