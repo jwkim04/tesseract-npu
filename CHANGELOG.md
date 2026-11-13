@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Changed
+
+- The logit soft cap behind an output head stored in row blocks (Gemma: `SCALE`, `UNARY` tanh, `SCALE` over the logits of every token row) is lowered per block. The blocks are deferred (`MUL_MAT_BEGIN` and `MUL_MAT_END`, at most two BEGINs of the head open) and the cap of block p is three records (`SCALE`, `UNARY`, `SCALE`) over the slice of block p, placed after the END of block p, so that it runs on the DMA and VU units under the MVM of block p + 1 and only the cap of the last block runs with the MVM idle. The list is `MUL_MAT_BEGIN` 0, `MUL_MAT_BEGIN` 1, `MUL_MAT_END` 0, cap 0, `MUL_MAT_BEGIN` 2, ..., `MUL_MAT_END` P - 1, cap P - 1. It applies when the three chain nodes are free to move to the head, the builder may defer, one block is one T-tile of the firmware's plan, the chain lowers as three records without preload entries and no chain node shares bytes with the head's x; otherwise the head is P plain `MUL_MAT` records followed by the whole-row cap, as before. The fusion pass records the chain (`tsr_fusion::cap_first`, `cap_mid`, `cap_tail`) whether or not the image has the fused kind. The device output of a graph is the same, and there is no new kind and no firmware change. `TSR_MM_DEFER=0` and `TSR_HEAD_SPLIT=0` give the earlier lists. `TSR_DUMP_RE` dumps the head after its group has run, so with the chain in place on the head's result the head's dump holds the capped values. The test knob `TSR_TEST_CAP_FAULT` (1: slices one line off, 2: slices 16 elements short) is the negative control. The ctests `ggml_tesseract_headcap` (the logits byte for byte between the default lowering, `TSR_MM_DEFER=0`, `TSR_HEAD_SPLIT=0` and cut lists; the record order and the slice arguments), `ggml_tesseract_headcap_fault1`, `_fault2` and the cases of `ggml_tesseract_units` check it (SW §7.11).
+
 ## [1.3.0] - 2026-11-13
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).

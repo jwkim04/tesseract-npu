@@ -282,6 +282,10 @@ struct tsr_gdn_cell {
 
 struct tsr_fusion {
     std::vector<int32_t> with, into, softcap_mid, softcap_tail;
+    // SW-97: the structure of a logit soft cap behind the MUL_MAT i (SCALE, TANH, SCALE: tsr_softcap_shape, each node free to move
+    // to the MUL_MAT's position), whether or not the image has the fused kind: a head stored in row blocks lowers the chain per
+    // block. -1 for none. softcap_mid / softcap_tail above are set only when the image has MUL_MAT_SOFTCAP.
+    std::vector<int32_t> cap_first, cap_mid, cap_tail;
     std::vector<int32_t> route_of, scale_of;
     std::vector<tsr_moe_route> routes;
     std::vector<tsr_moe_scale> scales;

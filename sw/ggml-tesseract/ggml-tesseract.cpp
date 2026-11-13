@@ -2719,11 +2719,78 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
             n_tiles, tc_max);
 }
 
+static tsr_buffer_ctx * tsr_written_buf(tsr_device * d, const ggml_tensor * t);
+
+// SW-97: the logit soft cap behind a head (SCALE, TANH, SCALE: tsr_fusion cap_*), by node and graph index.
+struct tsr_head_cap {
+    const ggml_tensor * node[3] = {};
+    int32_t             idx[3]  = { -1, -1, -1 };
+};
+
+// SW-97: the records of the soft cap of a head in P row blocks, for block p: the lowered chain (all rows, whole row) moved to the
+// elements [p N / P, (p + 1) N / P) of every token row. The handles move by p N / P x 4 bytes (a whole number of lines: N / P is
+// a multiple of 16); the count is N / P; the rows and the row strides stay those of the whole row.
+static void tsr_cap_slice(const tsr_rec & whole, uint32_t p, uint32_t N, uint32_t P, tsr_rec * out) {
+    namespace ou = tsr::opl;
+    // TSR_TEST_CAP_FAULT (test knob, read once): 1 moves every slice by one line, 2 makes every slice 16 elements short; the ctests
+    // ggml_tesseract_headcap_fault* check that the comparison with the unsplit lowering then fails
+    static const int fault = [] {
+        const char * e = getenv("TSR_TEST_CAP_FAULT");
+        return e != nullptr ? atoi(e) : 0;
+    }();
+    *out = whole;
+    const uint32_t lines = p * (N / P) / 16u + (fault == 1 ? 1u : 0u);
+    const uint32_t n     = N / P - (fault == 2 ? 16u : 0u);
+    uint32_t * a = out->args;
+    const bool scale = whole.kind == ou::K_SCALE;
+    a[scale ? ou::scl::DST : ou::unary::DST] += lines;
+    a[scale ? ou::scl::SRC : ou::unary::SRC] += lines;
+    a[scale ? ou::scl::N : ou::unary::N] = n;
+}
+
+// SW-97: lower the three nodes of a soft cap as whole-row records, to be cut into slices. False (and the chain is lowered on its own,
+// after the head) when a node does not lower, or its record is not SCALE, UNARY, SCALE over N elements of T rows.
+static bool tsr_lower_cap_chain(tsr_segment & seg, const tsr_head_cap & cap, const ggml_tensor * x, uint32_t N, uint32_t T,
+                                tsr_rec * recs) {
+    namespace ou = tsr::opl;
+    if (seg.gctx == nullptr) {
+        return false;
+    }
+    // The cap of block p runs before blocks p + 2 .. P - 1, which still read x: a chain node that shares bytes with x (an allocator may
+    // reuse a dead x) would overwrite it. Then the cap stays whole, after the last block.
+    for (int q = 0; q < 3; ++q) {
+        if (cap.node[q] == nullptr) {
+            return false;
+        }
+        const char * a0 = (const char *) cap.node[q]->data;
+        const char * b0 = (const char *) x->data;
+        if (cap.node[q]->buffer == x->buffer && a0 < b0 + ggml_nbytes(x) && b0 < a0 + ggml_nbytes(cap.node[q])) {
+            return false;
+        }
+    }
+    static const uint32_t kinds[3] = { ou::K_SCALE, ou::K_UNARY, ou::K_SCALE };
+    for (int q = 0; q < 3; ++q) {
+        std::string why;
+        if (cap.node[q] == nullptr || !tsr_lower_m7(seg.gctx->env, false, cap.node[q], nullptr, &recs[q], &why) ||
+            recs[q].kind != kinds[q] || !recs[q].more.empty() || !recs[q].pre.empty()) {
+            return false;
+        }
+        const uint32_t n = recs[q].args[q == 1 ? ou::unary::N : ou::scl::N];
+        const uint32_t r = recs[q].args[q == 1 ? ou::unary::ROWS : ou::scl::ROWS];
+        if (n != N || r != T) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // One MUL_MAT and its candidate fusion. Bias and residual ADD use the existing addend.
 // A pointwise epilogue exports only the final result. A staged MUL_MAT or an
 // ineligible epilogue leaves the graph's original consumers to be lowered separately.
+// cap: the soft cap behind the node, or nullptr. *cap_done is set when the three nodes of cap were lowered here (SW-97).
 static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const ggml_tensor * after,
-                              const ggml_tensor * softcap_tail) {
+                              const ggml_tensor * softcap_tail, const tsr_head_cap * cap, bool * cap_done) {
+    *cap_done = false;
     const ggml_tensor * src0 = node->src[0];
     const ggml_tensor * src1 = node->src[1];
     if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || src0->ne[2] != 1 || src0->ne[3] != 1 ||
@@ -2783,9 +2850,40 @@ static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
             TSR_DBG(1, "MUL_MAT %s + %s not fused: the weight is stored in %u row blocks\n", node->name,
                     (softcap_tail ? softcap_tail : after)->name, w.parts);
         }
+        // SW-97: a block may be deferred as a plain MUL_MAT of one T-tile (SW-92 for the block's rows); the blocks' y slices are
+        // disjoint, so the next block's record leaves y alone and the builder keeps a BEGIN open while it runs.
+        // Only a head with a soft cap is deferred: the cap is what hides behind the next block's MVM; a head without one is lowered as
+        // before.
+        bool block_defer = false;
+        if (seg.ops.defer() && cap != nullptr) {
+            tsr::plan::mm_tiling bt{};
+            block_defer = tsr::plan::mm_plan(d->m7cfg_ok ? d->m7cfg : tsr_plan_cfg_m7(d), fmt, w.part_rows, K, T, &bt) ==
+                              tsr::opl::RET_OK && bt.n_tiles == 1u;
+        }
+        // The soft cap behind the head is lowered per block, after the next block's record: the cap of block p runs on the DMA
+        // and VU units while the MVM of block p + 1 streams. Without deferral the cap stays whole, after the last block.
+        tsr_rec cap_whole[3];
+        const bool cap_split = block_defer && tsr_lower_cap_chain(seg, *cap, src1, N, T, cap_whole);
+        const int32_t node_now = seg.cur_node;
+        auto add_cap = [&](uint32_t p) {
+            for (int q = 0; q < 3; ++q) {
+                tsr_rec slice;
+                tsr_cap_slice(cap_whole[q], p, N, w.parts, &slice);
+                seg.cur_node = cap->idx[q];
+                tsr_seg_add_rec(d, seg, slice, cap->node[q]->name, tsr_written_buf(d, cap->node[q]), false);
+            }
+            seg.cur_node = node_now;
+        };
         for (uint32_t p = 0; p < w.parts; ++p) {
             tsr_mm_args_part(args, ax.handle(), ay.handle(), w, p, K, T, tl);
-            tsr_seg_add_mm(d, seg, args, node->name, ay.b, false);
+            tsr_seg_add_mm(d, seg, args, node->name, ay.b, false, tsr::opl::K_MUL_MAT, cap_split);
+            if (cap_split && p >= 1) {
+                add_cap(p - 1);
+            }
+        }
+        if (cap_split) {
+            add_cap(w.parts - 1);
+            *cap_done = true;
         }
         TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " in %u row blocks of %u rows x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "\n",
                 node->name, ggml_type_name(src0->type), N, K, T, w.w_off, w.parts, w.part_rows, ax.b->ch, ax.io_off(), ay.b->ch, ay.io_off());
@@ -3570,8 +3668,15 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
         if (node->op == GGML_OP_MUL_MAT) {
             const int32_t tail = g.fusion.softcap_tail[i];
-            if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr,
-                                  tail >= 0 ? cgraph->nodes[tail] : nullptr) && k >= 0) {
+            tsr_head_cap cap;
+            const int32_t ci[3] = { g.fusion.cap_first[i], g.fusion.cap_mid[i], g.fusion.cap_tail[i] };
+            for (int q = 0; q < 3; ++q) {
+                cap.idx[q]  = ci[q];
+                cap.node[q] = ci[q] >= 0 ? cgraph->nodes[ci[q]] : nullptr;
+            }
+            bool cap_done = false;
+            if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr, tail >= 0 ? cgraph->nodes[tail] : nullptr,
+                                  ci[0] >= 0 ? &cap : nullptr, &cap_done) && k >= 0) {
                 absorbed[k] = 1;
                 host_of[k] = i;
                 if (tail >= 0) {
@@ -3580,10 +3685,23 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
                     host_of[g.fusion.softcap_mid[i]] = host_of[tail] = i;
                 }
             }
+            if (cap_done) {                    // SW-97: the head's blocks and the soft cap per block are in the list
+                for (int q = 0; q < 3; ++q) {
+                    absorbed[(size_t) ci[q]] = 1;
+                    host_of[(size_t) ci[q]] = i;
+                }
+            }
             if (tsr_stats_on()) {
                 d->st_mm++;
             }
-            tsr_dump_node(d, seg, absorbed[k >= 0 ? k : i] && k >= 0 ? cgraph->nodes[k] : node);
+            if (cap_done) {                    // the head and the chain's three nodes, as the unsplit lowering dumps them
+                tsr_dump_node(d, seg, node);
+                for (int q = 0; q < 3; ++q) {
+                    tsr_dump_node(d, seg, cap.node[q]);
+                }
+            } else {
+                tsr_dump_node(d, seg, absorbed[k >= 0 ? k : i] && k >= 0 ? cgraph->nodes[k] : node);
+            }
             continue;
         }
         const ggml_tensor * mul = node->op == GGML_OP_RMS_NORM && k >= 0 ? cgraph->nodes[k] : nullptr;

@@ -1302,6 +1302,61 @@ static void test_build_fusion() {
             }
         }
     }
+    {
+        // SW-97: the soft cap behind a MUL_MAT (SCALE, TANH, SCALE) is recorded in cap_* whether or not the image has MUL_MAT_SOFTCAP;
+        // softcap_* (the fused kind) only with it. A TANH with a second user is no soft cap.
+        gctx c;
+        ggml_tensor * x = c.f32(64, 1, 0x0, "x");
+        ggml_tensor * w = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q8_0, 64, 64);
+        w->data = fake_at(0x10000000);
+        ggml_tensor * h  = ggml_mul_mat(c.ctx, w, x);          h->data  = fake_at(0x10000);
+        ggml_tensor * s1 = ggml_scale(c.ctx, h, 1.0f / 30);    s1->data = fake_at(0x11000);
+        ggml_tensor * t  = ggml_tanh(c.ctx, s1);               t->data  = fake_at(0x12000);
+        ggml_tensor * o  = ggml_scale(c.ctx, t, 30.0f);        o->data  = fake_at(0x13000);
+        ggml_tensor * h2 = ggml_mul_mat(c.ctx, w, x);          h2->data = fake_at(0x20000);
+        ggml_tensor * u1 = ggml_scale(c.ctx, h2, 1.0f / 30);   u1->data = fake_at(0x21000);
+        ggml_tensor * ut = ggml_tanh(c.ctx, u1);               ut->data = fake_at(0x22000);
+        ggml_tensor * u2 = ggml_scale(c.ctx, ut, 30.0f);       u2->data = fake_at(0x23000);
+        ggml_tensor * u3 = ggml_scale(c.ctx, ut, 2.0f);        u3->data = fake_at(0x24000);   // the TANH's second user
+        ggml_cgraph * g = ggml_new_graph(c.ctx);
+        for (ggml_tensor * e : { o, u2, u3 }) {
+            ggml_build_forward_expand(g, e);
+        }
+        const int ih = node_index(g, h), ih2 = node_index(g, h2);
+        tsr_build_env env_cap = env, env_nokind = env;     // the epilogue needs the capability and the kind
+        env_cap.cfg.caps |= tsr::plan::CAPS_MVM_LOCAL_SOFTCAP;
+        env_nokind.cfg.caps |= tsr::plan::CAPS_MVM_LOCAL_SOFTCAP;
+        env_nokind.kinds &= ~(1ull << opl::K_MUL_MAT_SOFTCAP);
+        const tsr_build_env * const envs[2] = { &env_cap, &env_nokind };
+        for (const tsr_build_env * e : envs) {
+            const tsr_fusion f = tsr_build_fusion(*e, g);
+            CHECK(f.cap_first[ih] == node_index(g, s1) && f.cap_mid[ih] == node_index(g, t) && f.cap_tail[ih] == node_index(g, o));
+            const bool fused = e == &env_cap;
+            CHECK(f.softcap_tail[ih] == (fused ? node_index(g, o) : -1) && f.softcap_mid[ih] == (fused ? node_index(g, t) : -1));
+            CHECK(f.cap_first[ih2] == -1 && f.cap_mid[ih2] == -1 && f.cap_tail[ih2] == -1 && f.softcap_tail[ih2] == -1);
+        }
+    }
+    {
+        // SW-97: a node between the head and the chain that writes the bytes of the chain's last node blocks the hoist of the chain to
+        // the head: no cap_* (the soft cap would run before that node)
+        gctx c;
+        ggml_tensor * x = c.f32(64, 1, 0x0, "x");
+        ggml_tensor * w = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q8_0, 64, 64);
+        w->data = fake_at(0x10000000);
+        ggml_tensor * h  = ggml_mul_mat(c.ctx, w, x);          h->data  = fake_at(0x30000);
+        ggml_tensor * m  = ggml_scale(c.ctx, x, 2.0f);         m->data  = fake_at(0x33000);   // writes where o is
+        ggml_tensor * s1 = ggml_scale(c.ctx, h, 1.0f / 30);    s1->data = fake_at(0x31000);
+        ggml_tensor * t  = ggml_tanh(c.ctx, s1);               t->data  = fake_at(0x32000);
+        ggml_tensor * o  = ggml_scale(c.ctx, t, 30.0f);        o->data  = fake_at(0x33000);
+        ggml_cgraph * g = ggml_new_graph(c.ctx);
+        for (ggml_tensor * e : { h, m, o }) {
+            ggml_build_forward_expand(g, e);
+        }
+        CHECK(node_index(g, m) > node_index(g, h) && node_index(g, m) < node_index(g, s1));
+        const int ih = node_index(g, h);
+        const tsr_fusion f = tsr_build_fusion(env, g);
+        CHECK(f.cap_first[ih] == -1 && f.cap_mid[ih] == -1 && f.cap_tail[ih] == -1);
+    }
 }
 
 // Passes 2 and 4-6: records of views and KV planes, their dependencies, the shared preload entries and

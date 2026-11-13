@@ -2280,6 +2280,9 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     f.into.assign(n, -1);
     f.softcap_mid.assign(n, -1);
     f.softcap_tail.assign(n, -1);
+    f.cap_first.assign(n, -1);
+    f.cap_mid.assign(n, -1);
+    f.cap_tail.assign(n, -1);
     f.route_of.assign(n, -1);
     f.scale_of.assign(n, -1);
     tsr_moe_groups(env, cg, &f);
@@ -2367,11 +2370,14 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
         }
         if (node->op == GGML_OP_MUL_MAT && u->op == GGML_OP_SCALE) {
             if (!tsr_can_hoist(cg, i, k, nullptr, u)) continue;
-            if (tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SOFTCAP) && ggml_node_has_n_uses(cg, k, 1)) {
-                int mid = -1, tail = -1;
-                if (tsr_softcap_shape(cg, k, &mid, &tail) && f.into[mid] < 0 && f.with[mid] < 0 && f.into[tail] < 0 && f.with[tail] < 0 &&
-                    tsr_can_hoist(cg, i, mid, nullptr, cg->nodes[mid], k) &&
-                    tsr_can_hoist(cg, i, tail, nullptr, cg->nodes[tail], k, mid)) {
+            int mid = -1, tail = -1;
+            if (ggml_node_has_n_uses(cg, k, 1) && tsr_softcap_shape(cg, k, &mid, &tail) && f.into[mid] < 0 && f.with[mid] < 0 &&
+                f.into[tail] < 0 && f.with[tail] < 0 && tsr_can_hoist(cg, i, mid, nullptr, cg->nodes[mid], k) &&
+                tsr_can_hoist(cg, i, tail, nullptr, cg->nodes[tail], k, mid)) {
+                f.cap_first[i] = k;
+                f.cap_mid[i] = mid;
+                f.cap_tail[i] = tail;
+                if (tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SOFTCAP)) {
                     f.softcap_mid[i] = mid;
                     f.softcap_tail[i] = tail;
                     f.into[mid] = f.into[tail] = i;

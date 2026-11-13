@@ -96,6 +96,49 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     # the debug log says so, and the cases above (head N = 131072 at T = 4, 1 and a split upload) are bit-exact
     add_test(NAME ggml_tesseract_head_blocks COMMAND sh -c "TSR_DEBUG=1 $<TARGET_FILE:test-ggml-tesseract> 2>&1 | grep -q 'in 2 row blocks of 65536 rows'")
     set_tests_properties(ggml_tesseract_head_blocks PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=4;TSR_SIM_RACE=fatal" TIMEOUT 600)
+    # SW-97: the logit soft cap of a head stored in row blocks (tests/test-tsr-headcap.cpp), in the default lowering (deferred blocks, the cap per
+    # block slice), with TSR_MM_DEFER=0 and with TSR_HEAD_SPLIT=0: the logits are byte for byte the same, and the records of the launch are
+    # the expected ones (tests/check_headcap.py on TSR_DEBUG=2). The lists cut after 5 records (TSR_OPL_SPLIT) cut inside the group. The _fault
+    # tests (TSR_TEST_CAP_FAULT: a slice one line off, a slice 16 elements short) must fail the byte comparison.
+    add_executable(test-tsr-headcap tests/test-tsr-headcap.cpp)
+    target_link_libraries(test-tsr-headcap PRIVATE ggml ggml-base)
+    target_compile_features(test-tsr-headcap PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-headcap PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    set_target_properties(test-tsr-headcap PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    find_package(Python3 COMPONENTS Interpreter)
+    if (Python3_Interpreter_FOUND)
+        set(_hc_dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/headcap)
+        set(_hc_bin $<TARGET_FILE:test-tsr-headcap>)
+        set(_hc_env "TSR_SIM_TMAX=4 TSR_SIM_RACE=fatal TSR_DEVICE=sim")
+        # name | extra environment | what the records must be
+        add_test(NAME ggml_tesseract_headcap
+                 COMMAND sh -c "set -e; mkdir -p ${_hc_dir}; export ${_hc_env}; \
+                     TSR_DEBUG=2 ${_hc_bin} ${_hc_dir}/new.bin > ${_hc_dir}/new.log 2>&1; \
+                     TSR_MM_DEFER=0 TSR_DEBUG=2 ${_hc_bin} ${_hc_dir}/nodefer.bin > ${_hc_dir}/nodefer.log 2>&1; \
+                     TSR_HEAD_SPLIT=0 TSR_DEBUG=2 ${_hc_bin} ${_hc_dir}/whole.bin > ${_hc_dir}/whole.log 2>&1; \
+                     TSR_OPL_SPLIT=5 TSR_DEBUG=2 ${_hc_bin} ${_hc_dir}/cut.bin > ${_hc_dir}/cut.log 2>&1; \
+                     cmp ${_hc_dir}/new.bin ${_hc_dir}/nodefer.bin; cmp ${_hc_dir}/new.bin ${_hc_dir}/whole.bin; \
+                     cmp ${_hc_dir}/new.bin ${_hc_dir}/cut.bin; \
+                     rm -rf ${_hc_dir}/plan; mkdir -p ${_hc_dir}/plan; TSR_DUMP_PLAN=${_hc_dir}/plan ${_hc_bin} > /dev/null 2>&1; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py plan ${_hc_dir}/plan; \
+                     rm -rf ${_hc_dir}/dump; mkdir -p ${_hc_dir}/dump; \
+                     TSR_DUMP_RE='result_output_pre|cap_scale_in|cap_tanh|result_output' TSR_DUMP_DIR=${_hc_dir}/dump ${_hc_bin} > /dev/null 2> ${_hc_dir}/dump.log; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py dump ${_hc_dir}/dump.log; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py new ${_hc_dir}/new.log; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py nodefer ${_hc_dir}/nodefer.log; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py whole ${_hc_dir}/whole.log; \
+                     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_headcap.py cut ${_hc_dir}/cut.log")
+        set_tests_properties(ggml_tesseract_headcap PROPERTIES TIMEOUT 1800)
+        foreach (_f 1 2)
+            add_test(NAME ggml_tesseract_headcap_fault${_f}
+                     COMMAND sh -c "set -e; export ${_hc_env}; mkdir -p ${_hc_dir}; \
+                         if TSR_TEST_CAP_FAULT=${_f} ${_hc_bin} ${_hc_dir}/fault${_f}.bin > ${_hc_dir}/fault${_f}.log 2>&1; then exit 1; fi; \
+                         grep -q 'FAIL .*NMSE vs the CPU' ${_hc_dir}/fault${_f}.log; \
+                         TSR_MM_DEFER=0 ${_hc_bin} ${_hc_dir}/ref${_f}.bin > /dev/null 2>&1; \
+                         ! cmp -s ${_hc_dir}/fault${_f}.bin ${_hc_dir}/ref${_f}.bin")
+            set_tests_properties(ggml_tesseract_headcap_fault${_f} PROPERTIES TIMEOUT 1800)
+        endforeach()
+    endif()
     add_test(NAME ggml_tesseract_e2e_tmax8 COMMAND test-ggml-tesseract)
     set_tests_properties(ggml_tesseract_e2e_tmax8 PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal")
     # Every activation buffer in host memory and a 64 KiB IO stage: every MUL_MAT takes the
