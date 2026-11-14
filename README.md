@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
   <a href="rtl/CHANGELOG.md"><img alt="Core: 1.1.0" src="https://img.shields.io/badge/core-1.1.0-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.3.0" src="https://img.shields.io/badge/basis-1.3.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.4.0" src="https://img.shields.io/badge/basis-1.4.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -37,17 +37,19 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 
 ## Latest releases
 
-**Tesseract Basis 1.3.0** (2026-11-13), the firmware SDK and the host side
+**Tesseract Basis 1.4.0** (2026-11-14), the firmware SDK and the host side
 
-- Tesseract Pivot, a graph scheduler. It orders the nodes of a graph so that independent matrix products run on the MVM
-  unit while the control core and the element-wise pipeline work on other records (op list kinds `MUL_MAT_BEGIN` and
-  `MUL_MAT_END`). Gemma 4 26B-A4B decodes at 14.34 tok/s, from 13.32.
-- A mixture-of-experts prefill reads each expert once per tile of a batch. Gemma 4 26B-A4B prefill is 39.34 tok/s, from
-  25.33.
-- Gated DeltaNet runs as a token block pipeline. Qwen3.8 27B prefill is 5.59 tok/s, from 5.08, and with Pivot its decode
-  is 2.30 tok/s, from 2.11.
-- Multi-token prediction gains with them: 17.54 tok/s on Gemma 4 26B-A4B, from 15.15.
-- `tsr-top` shows the generation rate of a multi-token prediction run.
+- Full mode in the PyTorch backend, and it is the default. `torch.compile(model, backend="tesseract")` lowers the aten
+  graph of a model as regions of norms, projections, RoPE, attention, activations and residuals. A region runs as one op
+  list in one launch, and its values stay on the device. The forward of a Qwen2.5-0.5B decoder is one region and one
+  launch, from 169 device calls, and the host sends 0.1 MB and reads 19.4 MB per forward, from 31.6 MB and 58.4 MB. The
+  forward itself is not faster at this size (0.148 s against 0.135 s).
+- Attention from PyTorch runs on the device with the q8_0 numerics of the llama.cpp path. `attention="cpu"` keeps it in
+  float32.
+- A reference executor checks every region bit for bit (`TSR_TORCH_VERIFY=1`), and a differential fuzzer compares full
+  mode with eager PyTorch and with matmul mode.
+- The logit soft cap behind Gemma's output head runs per row block, under the matrix product of the next block. Gemma 4
+  E2B decodes at 23.55 tok/s, from 23.24, and Gemma 4 26B-A4B at 14.48, from 14.34.
 
 **Tesseract Core 1.1.0** (2026-11-12), the RTL and the Alveo U200 image
 
@@ -66,21 +68,21 @@ board power.
 
 | Model | Quantization | Prefill tok/s | Decode tok/s | tok/s/W |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q8_0 | 5.59 | 2.30 | 0.038 |
-| Qwen3.5 9B | Q8_0 | 18.46 | 7.16 | 0.121 |
-| Gemma 4 31B | Q4_K_M | 9.30 | 3.39 | 0.054 |
-| Gemma 4 26B-A4B | Q8_0 | 39.34 | 14.34 | 0.248 |
-| Gemma 4 12B | Q8_0 | 15.54 | 5.20 | 0.085 |
-| Gemma 4 E4B | Q8_0 | 39.44 | 12.40 | 0.206 |
-| Gemma 4 E2B | Q8_0 | 76.03 | 23.24 | 0.403 |
+| Qwen3.8 27B | Q8_0 | 5.59 | 2.29 | 0.038 |
+| Qwen3.5 9B | Q8_0 | 18.44 | 7.14 | 0.120 |
+| Gemma 4 31B | Q4_K_M | 9.30 | 3.40 | 0.054 |
+| Gemma 4 26B-A4B | Q8_0 | 39.31 | 14.48 | 0.246 |
+| Gemma 4 12B | Q8_0 | 15.54 | 5.22 | 0.086 |
+| Gemma 4 E4B | Q8_0 | 39.39 | 12.49 | 0.208 |
+| Gemma 4 E2B | Q8_0 | 76.00 | 23.55 | 0.404 |
 
 With multi-token prediction the draft head proposes tokens and the device verifies them in one launch. The output is identical to plain greedy decoding.
 
 | Model | Quantization | Plain tok/s | MTP tok/s | Speedup |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q4_K_M | 3.20 | 4.49 | 1.40x |
-| Qwen3.8 2B | Q4_K_M | 31.45 | 33.89 | 1.08x |
-| Gemma 4 26B-A4B | Q8_0 | 14.31 | 17.54 | 1.23x |
+| Qwen3.8 27B | Q4_K_M | 3.20 | 4.48 | 1.40x |
+| Qwen3.8 2B | Q4_K_M | 31.50 | 33.97 | 1.08x |
+| Gemma 4 26B-A4B | Q8_0 | 14.42 | 17.67 | 1.23x |
 
 The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
 
