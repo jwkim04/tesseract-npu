@@ -22,13 +22,13 @@
  *   table entry, the .note.tsr layout and the .tsr_kinds entry, the launch protocol as the runtime
  *   implements it (descriptor, record and HELLO layouts, R1-R10), the op list format (header, record
  *   layout, every kind's argument words and their meaning, removing a kind) and a planner accepting
- *   less (SW-20). Bumped by the breaking change itself. Basis 1.3.0 has ABI 1.
+ *   less (SW-20). Bumped by the breaking change itself. Basis 1.4.0 has ABI 1.
  */
 #ifndef TSR_VERSION_H
 #define TSR_VERSION_H
 
 #define TSR_BASIS_VERSION_MAJOR 1
-#define TSR_BASIS_VERSION_MINOR 3
+#define TSR_BASIS_VERSION_MINOR 4
 #define TSR_BASIS_VERSION_PATCH 0
 
 #define TSR_BASIS_VERSION_OF(major, minor, patch) \
