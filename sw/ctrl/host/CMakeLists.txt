@@ -175,8 +175,8 @@ foreach(_snip build hdr runtime exec kernels e2e)   # e2e: fw_m6_e2e, fw_m6_perf
     endif()
 endforeach()
 # the M7 kinds' tests, required (m7layer links the other three snippets' reference libraries);
-# kindrevs: the kinds' numerics revisions (fw_kind_revs, SW §6.9).
-foreach(_snip elem kvfa normrope m7layer moe gdn kindrevs)
+# kindrevs: the kinds' numerics revisions (fw_kind_revs, SW §6.9); oplref: tsr_opl_ref, the host executor of an op list.
+foreach(_snip elem kvfa normrope m7layer moe gdn kindrevs oplref)
     include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
 endforeach()
 # [additive] SDK example kernel (sw/ctrl/examples/vadd.cpp, ctest fw_example_vadd)

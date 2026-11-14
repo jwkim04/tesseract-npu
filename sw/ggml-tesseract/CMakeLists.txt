@@ -75,6 +75,21 @@ set_tests_properties(ggml_tesseract_opl_launch PROPERTIES ENVIRONMENT "TSR_DEVIC
 set_tests_properties(ggml_tesseract_opl_launch_mock PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_SIM_RACE=fatal;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64")
 
+# The framework-free encoders of every kind (tsr-kinds.h) and the reference executor (sw/ctrl/ref/opl_ref.hpp, tsr_opl_ref): lists built
+# with the encoders run on the device (TSR_DEVICE, default sim) and compared bit for bit with opl_exec and with the per-kind
+# references called directly; a decoder layer of Qwen2.5-0.5B's shape as one list; negative controls. No ggml.
+add_executable(test-tsr-kinds tests/test-tsr-kinds.cpp)
+target_link_libraries(test-tsr-kinds PRIVATE tsr_lower tsr_opl_ref tsr_ref)
+target_compile_features(test-tsr-kinds PRIVATE cxx_std_17)
+target_compile_options(test-tsr-kinds PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+set_target_properties(test-tsr-kinds PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME ggml_tesseract_kinds COMMAND test-tsr-kinds)
+set_tests_properties(ggml_tesseract_kinds PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal" TIMEOUT 1800)
+add_test(NAME ggml_tesseract_kinds_tmax4 COMMAND test-tsr-kinds)
+set_tests_properties(ggml_tesseract_kinds_tmax4 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=4;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal" TIMEOUT 1800)
+add_test(NAME ggml_tesseract_kinds_tmax8 COMMAND test-tsr-kinds)
+set_tests_properties(ggml_tesseract_kinds_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal" TIMEOUT 1800)
+
 if (TARGET ggml AND TARGET ggml-tesseract)
     # The ctests below are the MUL_MAT end-to-end tests (docs/design/06-software-verification.md
     # §10.2): every MUL_MAT goes through an op list and the firmware's `graph` kernel

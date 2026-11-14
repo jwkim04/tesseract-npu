@@ -40,7 +40,9 @@ The backend runs a model in one of two execution modes.
 
 `tsr-top` shows the mode in its MODE column, and the backend names it in error messages: `M7` is full
 mode and `M6` is matmul mode. A third value, `rt`, marks the direct runtime `tsr_rt` without a ggml
-graph. `klcheck` and `numcheck` take the same two names as `--phase m7` (full mode) and `--phase m6`
+graph. The PyTorch backend has the same two modes: in full mode it runs regions of the aten graph as one
+op list each, in matmul mode only the weight matmuls ([torch-backend.md](../torch-backend.md) §1).
+`klcheck` and `numcheck` take the same two names as `--phase m7` (full mode) and `--phase m6`
 (matmul mode).
 
 Both modes use the `graph` kernel and the same op-list format (SW §7). The pass criteria that compare

@@ -71,6 +71,13 @@ def log(msg: str) -> None:
 # counters of the Python layer (the runtime's own are in device().counters())
 # ------------------------------------------------------------------------------------------
 _STAT_KEYS = (
+    "regions",           # full mode: device regions formed by the backend (one op list each)
+    "region_calls",      # region calls that ran on the device
+    "region_tokens",     # their total T (rows)
+    "region_cpu_fallback_calls",  # region calls that ran their aten subgraph on the CPU (placement failed)
+    "consts_uploaded",   # constants (norm weights, biases, RoPE tables) uploaded, including re-uploads
+    "const_reuploads",   # uploads of a cached constant that changed in place
+    "verified_regions",  # region calls checked against the reference executor (TSR_TORCH_VERIFY)
     "graphs",            # AOT graphs partitioned by the backend
     "graphs_eager",      # Dynamo graphs run eagerly because they need autograd (training / requires_grad)
     "nodes_device",      # matmul nodes put on Tesseract
@@ -142,9 +149,13 @@ def placement_error(err: BaseException) -> bool:
 
 
 def close_device() -> None:
-    """Release every cached weight and close the device (a later call reopens it)."""
+    """Release every cached weight, constant and region graph and close the device (a later call
+    reopens it)."""
     with _lock:
         _cache.forget()
+        _consts.forget()
+        for rg in _REGIONS:
+            rg.forget()
         _C.close()
 
 
@@ -209,6 +220,11 @@ class WeightCache:
     new device. Entries whose storage died are released on the next miss, by ``sweep()`` or with
     ``release_weights()``."""
 
+    _free_method = "free"        # Device method that releases an entry's handle
+    _stat_upload = "uploads"     # counters bumped by an upload
+    _stat_reupload = "reuploads"
+    _stat_bytes = "upload_bytes"
+
     def __init__(self) -> None:
         self._map: dict[tuple, _Entry] = {}
 
@@ -254,7 +270,7 @@ class WeightCache:
             try:
                 h = upload(dev)
             except TesseractError as err:
-                if "heap full" not in str(err):
+                if "heap full" not in str(err) and "does not fit" not in str(err):
                     raise
                 self.sweep()
                 h = upload(dev)
@@ -267,11 +283,12 @@ class WeightCache:
                            f"{_SAMPLE} x {_SAMPLE} elements on each use; call tesseract_torch.release_weights() after "
                            "changing such a weight in place")
             self._map[k] = _Entry(h, ver, StorageWeakRef(w.untyped_storage()), N, K, w.dtype, name, dev.serial, sample)
-            _bump("uploads")
-            _bump("upload_bytes", w.numel() * w.element_size())
+            _bump(self._stat_upload)
+            if self._stat_bytes:
+                _bump(self._stat_bytes, w.numel() * w.element_size())
             if reupload:
-                _bump("reuploads")
-            if _debug >= 1:
+                _bump(self._stat_reupload)
+            if _debug >= 1 and self._free_method == "free":
                 info = dev.info(h)
                 log(f"upload {name or 'weight'} [{N} x {K}] {what} -> {info['fmt']}"
                     f" ({info['n_parts']} x {info['k_parts']} parts, {info['dev_bytes'] / 2**20:.2f} MiB on the device)"
@@ -298,10 +315,11 @@ class WeightCache:
             d = _C.get()
             if d.serial == e.serial:
                 try:
-                    d.free(e.handle)
+                    getattr(d, self._free_method)(e.handle)
                 except ValueError:
                     pass
-                _bump("weights_freed")
+                if self._free_method == "free":
+                    _bump("weights_freed")
 
     def sweep(self) -> int:
         """Release the device copies of weights whose storage is gone, and drop the entries of closed
@@ -343,8 +361,298 @@ def weight_cache() -> WeightCache:
 
 
 def release_weights() -> int:
-    """Free every device weight (they are uploaded again on their next use)."""
-    return _cache.clear()
+    """Free every device weight, constant and region graph (they are made again on their next use).
+    Returns the number of weights."""
+    with _lock:
+        for rg in _REGIONS:
+            rg.release()
+        _consts.clear()
+        return _cache.clear()
+
+
+# ------------------------------------------------------------------------------------------
+# constants and regions (full mode)
+# ------------------------------------------------------------------------------------------
+class ConstCache(WeightCache):
+    """Device copies of the constant rows of region programs (norm weights, biases, RoPE tables): the
+    same identity rules as the weight cache (storage, offset, shape, stride, dtype, ``_version`` or the
+    sample of an inference tensor, device serial). The transform ("identity", or "one_plus" for the
+    Gemma norm: the row ``1 + w``) is applied on the host before ``Device.const_upload``."""
+
+    _free_method = "const_free"
+    _stat_upload = "consts_uploaded"
+    _stat_reupload = "const_reuploads"
+    _stat_bytes = ""
+
+    def acquire_const(self, t: torch.Tensor, transform: str, n: int, name: str = "") -> tuple:
+        """(device, handle, uploaded) of the constant row t (n elements) after ``transform``."""
+        if t.numel() != n:
+            raise ValueError(f"tesseract_torch: constant {name or '?'} has {t.numel()} elements, the program expects {n}")
+        if transform not in ("identity", "one_plus"):
+            raise ValueError(f"tesseract_torch: unknown constant transform {transform!r}")
+
+        def upload(dev):
+            x = t.detach().reshape(-1).to(torch.float32)
+            if transform == "one_plus":
+                x = 1.0 + x
+            return dev.const_upload(x.contiguous())
+
+        t2 = t.detach().reshape(1, -1)      # _acquire reads the version and samples a 2D view of the same storage
+        return self._acquire(t2, self.key(t) + (transform,), 1, n, upload, name, transform)
+
+
+_consts = ConstCache()
+
+
+def const_cache() -> ConstCache:
+    return _consts
+
+
+class _GraphRefused(TesseractError):
+    """The device refused a whole region program at graph_create (the per-op probe accepted every op). The
+    region runs on the CPU for that key, like a placement failure."""
+
+
+def region_placement_error(err: BaseException) -> bool:
+    """True if err says that a region does not fit the device (T above a limit, a heap or the IO region
+    full) or that the device refused its program. Other errors are raised."""
+    return isinstance(err, _GraphRefused) or isinstance(err, TesseractError) and ("does not fit" in str(err) or "heap full" in str(err))
+
+
+class RegionRT:
+    """Run-time state of one region: its lowering result (``lower.Region``), the aten subgraph for the CPU
+    fallback and the C++ graph with the key (handles and scalars) it was made for."""
+
+    def __init__(self, region, fallback, n_ext: int, gid: int, name: str) -> None:
+        self.region, self.fallback, self.n_ext, self.gid, self.name = region, fallback, n_ext, gid, name
+        self.id = -1
+        self.calls = self.tokens = self.cpu_calls = 0
+        self.graph: int | None = None
+        self.key: tuple | None = None
+        self.failed: tuple | None = None       # (key, reason): the graph does not fit for this key
+        self.serial = -1
+        self.logged = False
+
+    def _free_graph(self) -> None:
+        if self.graph is not None and _C.is_open():
+            d = _C.get()
+            if d.serial == self.serial:
+                try:
+                    d.graph_free(self.graph)
+                except ValueError:
+                    pass
+        self.graph = self.key = None
+
+    def release(self) -> None:
+        self._free_graph()
+        self.failed = None
+
+    def forget(self) -> None:
+        self.graph = self.key = self.failed = None
+
+    def describe(self) -> str:
+        r = self.region
+        return f"{self.name} ({len(r.ops)} ops, {len(r.weights)} weights)"
+
+
+_REGIONS: list[RegionRT] = []
+
+
+def register_region(rg: RegionRT) -> int:
+    with _lock:
+        rg.id = len(_REGIONS)
+        _REGIONS.append(rg)
+        return rg.id
+
+
+def release_regions(rgs: list[RegionRT]) -> None:
+    """Free the device graphs of regions whose compiled function is gone."""
+    with _lock:
+        for rg in rgs:
+            rg.release()
+
+
+def regions() -> list[RegionRT]:
+    """Every region formed so far (with per-region call, token and CPU-fallback counts)."""
+    return list(_REGIONS)
+
+
+def _first_diff(a: torch.Tensor, b: torch.Tensor):
+    ia, ib = a.contiguous().view(torch.int32), b.contiguous().view(torch.int32)
+    bad = (ia != ib).nonzero()
+    t, n = (int(v) for v in bad[0])
+    return int(bad.shape[0]), t, n, a[t, n].item(), b[t, n].item(), ia[t, n].item() & 0xFFFFFFFF, ib[t, n].item() & 0xFFFFFFFF
+
+
+def _check_f32(x, what: str, rg: RegionRT, want=torch.float32) -> None:
+    if not isinstance(x, torch.Tensor) or x.dtype != want or x.device.type != "cpu":
+        got = f"{x.dtype} on {x.device}" if isinstance(x, torch.Tensor) else type(x).__name__
+        raise TesseractError(f"tesseract: {rg.name}: {what} must be a {str(want).replace('torch.', '')} CPU tensor, got {got}")
+
+
+def _device_run(rg: RegionRT, ins, cs, ws, ss) -> list:
+    """The outputs of region ``rg`` on the device (call with _lock held). Raises TesseractError; a
+    placement failure or a refused program is recognised by ``region_placement_error``.
+
+    Mask rule: the device takes mask values 0 and -inf. In a float32 mask every value <= -1e9 (Hugging Face
+    uses finfo.min or -1e9) is replaced by -inf before the run: exp of a score plus such a value is 0 in
+    float32, as with -inf. A row of such values and no larger one (every key masked, as a left-padded
+    query row) does not fit the device: eager gives a uniform softmax over it, the device would not. The
+    call is refused with a placement error and runs on the CPU; a row that is all -inf is not refused.
+    A mask without such a value is passed as it is. Any other non-zero value is a placement error of the
+    device and the call runs on the CPU."""
+    r = rg.region
+    inputs = []
+    T = None
+    for spec, x in zip(r.inputs, ins):
+        if spec.kind == "in":
+            _check_f32(x, f"input {spec.node.name}", rg)
+            x = x.contiguous()
+            if x.dim() != 2:
+                raise TesseractError(f"tesseract: {rg.name}: input {spec.node.name} must be [T, n], got {tuple(x.shape)}")
+            if T is None:
+                T = int(x.shape[0])
+        elif spec.kind == "mask":
+            if x.dtype not in (torch.bool, torch.float32):
+                raise TesseractError(f"tesseract: {rg.name}: the mask must be bool or float32, got {x.dtype}")
+            x = x.contiguous()
+            if x.dtype == torch.float32:
+                big = (x <= -1e9) & ~torch.isneginf(x)
+                if bool(big.any()):
+                    top = x.amax(-1)
+                    if bool(((top <= -1e9) & ~torch.isneginf(top)).any()):
+                        raise TesseractError(f"tesseract: {rg.name}: a row of the mask has every key masked with a finite "
+                                             "value (<= -1e9); eager gives a uniform softmax there, which the device does "
+                                             "not: the call does not fit the device")
+                    x = x.masked_fill(big, float("-inf"))
+        else:
+            x = x.contiguous()
+        inputs.append(x)
+    if not T:
+        raise TesseractError(f"tesseract: {rg.name}: T = {T} does not fit (the device needs T >= 1)")
+    dev = device()
+    wh = []
+    for spec, w in zip(r.weights, ws):
+        if spec.kind == "blocks":
+            _check_f32(w, f"weight {spec.node.name}", rg, torch.uint8)
+            wh.append(_cache.acquire_blocks(w, spec.fmt, spec.K, name=spec.node.name)[1])
+        else:
+            _check_f32(w, f"weight {spec.node.name}", rg)
+            wh.append(_cache.acquire(w, spec.node.name)[1])
+    ch = []
+    for spec, c in zip(r.consts, cs):
+        _check_f32(c, f"constant {spec.node.name}", rg)
+        ch.append(_consts.acquire_const(c, spec.transform, spec.n, spec.node.name)[1])
+    sv = [float(v) for v in ss]
+    key = (dev.serial, tuple(wh), tuple(ch), tuple(sv))
+    if rg.key != key:
+        rg._free_graph()
+        if rg.failed is not None and rg.failed[0] == key:
+            raise _GraphRefused(rg.failed[1])
+        prog = r.to_program(sv)
+        for v in prog["values"]:
+            if v["kind"] == "const":
+                v["handle"] = ch[v.pop("source")]
+        for o in prog["ops"]:
+            if o["op"] == "mul_mat":
+                o["w"] = wh[o["w"]]
+        try:
+            rg.graph = dev.graph_create(prog)
+        except TesseractError as err:
+            rg.failed = (key, str(err))
+            raise _GraphRefused(str(err)) from err
+        rg.key, rg.serial, rg.failed = key, dev.serial, None
+    h = rg.graph
+    outs = dev.graph_run(h, inputs)
+    if _debug >= 1 and not rg.logged:
+        rg.logged = True
+        info = dev.graph_info(h, T)
+        kinds = ", ".join(f"{k} x{v}" for k, v in sorted(info["by_kind"].items()))
+        log(f"{rg.name}: first plan T={T}: {info['records']} records in {info['lists']} list(s) ({kinds}), "
+            f"{info['io_bytes'] / 2**20:.2f} MiB of IO")
+    if _debug >= 2:
+        log(f"call {rg.name} T={T}")
+    if _verify:
+        refs = dev.graph_run_ref(h, inputs)
+        names = {}
+        for o in r.outputs:
+            names.setdefault(o.value, o.node.name)
+        for k, (y, y_ref) in enumerate(zip(outs, refs)):
+            if y.shape != y_ref.shape or not torch.equal(y.view(torch.int32), y_ref.view(torch.int32)):
+                if y.shape != y_ref.shape:
+                    raise TesseractError(f"tesseract verify: {rg.name} output {k}: shape {tuple(y.shape)} against the "
+                                         f"reference {tuple(y_ref.shape)}")
+                nbad, t, n, vy, vr, by, br = _first_diff(y, y_ref)
+                node = names[sorted(names)[k]]
+                raise TesseractError(
+                    f"tesseract verify: {rg.name} output {k} ({node}) T={T}: {nbad} of {y.numel()} values differ from the "
+                    f"reference executor; first y[{t}, {n}] = {vy!r} (0x{by:08x}), reference {vr!r} (0x{br:08x}) on {dev.description}")
+        _bump("verified_regions")
+    rg.calls += 1
+    rg.tokens += T
+    _bump("region_calls")
+    _bump("region_tokens", T)
+    return _per_output(r, outs)
+
+
+def _share_key(o):
+    return (o.value, o.sroot if o.sroot is not None else o.node)
+
+
+def _per_output(r, outs: list) -> list:
+    """The device returns one tensor per distinct out value, in value order. A region has one output per
+    node; the outputs of a value that share storage in the aten graph (one ``sroot``) get one tensor object,
+    so that their views share storage. A group of the value that eager separates by a copy gets a copy."""
+    vals = sorted({o.value for o in r.outputs})
+    pos = {v: k for k, v in enumerate(vals)}
+    given: dict = {}
+    used: set = set()
+    res = []
+    for o in r.outputs:
+        key = _share_key(o)
+        if key not in given:
+            y = outs[pos[o.value]]
+            given[key] = y.clone() if o.value in used else y
+            used.add(o.value)
+        res.append(given[key])
+    return res
+
+
+def _cpu_run(rg: RegionRT, ext) -> list:
+    """The outputs of region ``rg`` from its saved aten subgraph, as the [T, n] rows the device gives (one
+    tensor object for the outputs that share storage, as ``_per_output``)."""
+    res = rg.fallback(*ext)
+    outs = []
+    given: dict = {}
+    for o, y in zip(rg.region.outputs, res):
+        key = _share_key(o)
+        if key not in given:
+            if o.recipe["transpose12"]:
+                y = y.transpose(1, 2)
+            given[key] = y.reshape(-1, rg.region.values[o.value]["n"])
+        outs.append(given[key])
+    return outs
+
+
+def device_region(rid: int, *args):
+    """The device form of one region of the aten graph (full mode). args: the flattened inputs, the
+    constants, the weight roots, the scalars (0-dim tensors) and the nodes the saved aten subgraph needs.
+    Returns the tuple of [T, n] float32 outputs."""
+    rg = _REGIONS[rid]
+    r = rg.region
+    ni, nc, nw, ns = len(r.inputs), len(r.consts), len(r.weights), len(r.scalars)
+    ins, cs, ws = args[:ni], args[ni:ni + nc], args[ni + nc:ni + nc + nw]
+    ss, ext = args[ni + nc + nw:ni + nc + nw + ns], args[ni + nc + nw + ns:]
+    with _lock:
+        try:
+            return tuple(_device_run(rg, ins, cs, ws, ss))
+        except TesseractError as err:
+            if not region_placement_error(err):
+                raise
+            rg.cpu_calls += 1
+            _bump("region_cpu_fallback_calls")
+            _warn_once(f"region:{rid}", f"tesseract: {rg.name} runs on the CPU for a call that the device does not take: {err}")
+    return tuple(_cpu_run(rg, ext))
 
 
 # ------------------------------------------------------------------------------------------
@@ -464,6 +772,7 @@ def counters() -> dict:
     with _lock:
         r = dict(_stats)
         r["cached_weights"] = len(_cache)
+        r["cached_consts"] = len(_consts)
         if _C.is_open():
             for k, v in _C.get().counters().items():
                 r["rt_" + k] = v

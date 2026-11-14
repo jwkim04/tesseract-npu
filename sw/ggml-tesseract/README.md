@@ -33,6 +33,7 @@ planner (`plan.hpp`, SW-20), so the host refuses exactly what the firmware canno
 | --- | --- |
 | `ggml-tesseract.cpp` | reg, device, buffer type, buffer and backend, placement, lazy conversion, segments, staging, execution |
 | `tsr-opl.*`, `tsr-opl-dev.cpp` | the op-list path (no ggml): the OPL builder, the OPL cache, the `graph` kernel on a transport |
+| `tsr-rec.*`, `tsr-kinds.*` | the record type and its encoding, and one encoder per kind over plain descriptors (no ggml; shared with `sw/rt`) |
 | `tsr-build.*`, `tsr-lower.*` | the graph builder (ggml-aware, device-free) and MUL_MAT shape checks and SPM tiling |
 | `tsr-pivot.*`, `tsr-pivot-graph.*` | Tesseract Pivot, the graph scheduler (`graph_optimize`; [PV](../../docs/design/07-graph-scheduler.md)): the core (units, machine model, search; no ggml) and the ggml adapter (units from nodes, order constraints, the node validator) |
 | `tsr-weights.*`, `tsr-alloc.*`, `tsr-wlayout.*` | ggml type to device format and back, the first-fit allocator, row repack with symmetric scatter and gather |

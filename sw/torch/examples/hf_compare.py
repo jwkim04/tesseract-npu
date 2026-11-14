@@ -4,7 +4,8 @@
     PYTHONPATH= build/tools/torchvenv/bin/python -I sw/torch/examples/hf_compare.py \
         models/hf/Qwen2.5-0.5B-Instruct [--gguf models/qwen2.5-0.5b-instruct-q8_0.gguf]
 
-(-I: the model directory is data; this script puts sw/torch and build/torch/python on sys.path itself.)
+(-I: the model directory is data; this script puts sw/torch and the directory of the extension, TSR_TORCH_EXT_DIR
+or else build/torch/python, on sys.path itself.)
 The model is loaded from a local directory: safetensors only, no remote code.
 
 1. The compiled model greedy-generates --gen tokens after the prompt (full recompute per step, no KV
@@ -27,12 +28,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(REPO / "sw" / "torch"), str(REPO / "build" / "torch" / "python")]
+sys.path[:0] = [str(REPO / "sw" / "torch"), os.environ.get("TSR_TORCH_EXT_DIR") or str(REPO / "build" / "torch" / "python")]
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -171,7 +173,7 @@ def main() -> int:
     T = ids.shape[1]
 
     # (1) device generation, every step's logits kept
-    compiled = tt.compile(model)
+    compiled = tt.compile(model, mode="matmul")    # the bit-exact check (1) is of the per-matmul path
     steps = []
     seq = ids
     t0 = time.time()

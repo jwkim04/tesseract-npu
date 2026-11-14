@@ -23,6 +23,13 @@ way: a body placeholder is a weight if the HOP passes it a weight at every call 
 all layers sees every layer's weight). Matmuls in the bodies of other HOPs stay on the CPU and are
 reported as CPU nodes.
 
+Full mode (the default, ``mode="full"``, ``TSR_TORCH_MODE``) first forms regions: runs of lowerable
+aten ops (norms, projections, RoPE, attention, activations, residuals; ``lower.py``) that become one
+``device_region`` node, one op list and one launch per call. A region has at least two lowered ops, is
+float32 only, and anything the lowering does not cover stays on the CPU around it. A weight matmul that
+is not in a region is a ``device_mm`` node as in matmul mode. In matmul mode (``mode="matmul"``) no
+region is formed and the graph is rewritten as described above.
+
 The run-time state of a device node (uploads in a row, CPU fallback) is kept per weight, because one
 node can see many weights: regional compilation (``layer.compile()`` per block) and compiled helpers
 called per layer reuse one graph, and a shared HOP body runs once per layer.
@@ -34,10 +41,14 @@ weight that cannot be placed (WEIGHT heap full) runs on the CPU.
 """
 from __future__ import annotations
 
+import copy
 import itertools
+import operator
+import os
 import re
 import math
 import threading
+import weakref
 from dataclasses import dataclass, field
 
 import torch
@@ -45,7 +56,7 @@ import torch.fx as fx
 from torch.multiprocessing.reductions import StorageWeakRef
 
 from . import runtime as _rt
-from .runtime import SUPPORTED_DTYPES, BLOCK, log
+from .runtime import SUPPORTED_DTYPES, BLOCK, device_region, log
 
 aten = torch.ops.aten
 
@@ -77,20 +88,49 @@ _OTHER_MM_OPS.pop(None, None)
 # ------------------------------------------------------------------------------------------
 # options
 # ------------------------------------------------------------------------------------------
+MODES = ("full", "matmul")
+ATTENTIONS = ("device", "cpu")
+
+
+def resolve_mode(mode: str | None) -> str:
+    """The execution mode: ``mode`` if given, else TSR_TORCH_MODE, else "full"."""
+    m = mode if mode else (os.environ.get("TSR_TORCH_MODE") or "full")
+    if m not in MODES:
+        raise ValueError(f"tesseract backend: unknown mode {m!r} (full, matmul)")
+    return m
+
+
+def resolve_attention(attention: str | None) -> str:
+    """Where full mode computes attention: ``attention`` if given, else TSR_TORCH_ATTENTION, else "device"."""
+    a = attention if attention else (os.environ.get("TSR_TORCH_ATTENTION") or "device")
+    if a not in ATTENTIONS:
+        raise ValueError(f"tesseract backend: unknown attention {a!r} (device, cpu)")
+    return a
+
+
 @dataclass
 class Options:
     strict: bool = False        # raise instead of running training graphs / failed partitions eagerly
     debug: int | None = None    # override TSR_TORCH_DEBUG (process-wide)
     verify: bool | None = None  # override TSR_TORCH_VERIFY (process-wide): check every device call vs the reference
     offload: bool = True        # False: partition report only, every matmul stays on the CPU
+    mode: str | None = None     # "full" (regions of ops, one launch each) | "matmul" (one launch per weight matmul);
+                                # None: TSR_TORCH_MODE, else full
+    kv_size: int = 4096         # full mode: cells of every KV plane of a region (the longest sequence it takes)
+    attention: str | None = None  # full mode: "device" (q8_0 attention in the regions) | "cpu" (attention stays on the
+                                  # CPU in float32); None: TSR_TORCH_ATTENTION, else device
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Options:
         o = cls()
         for k, v in (d or {}).items():
             if not hasattr(o, k):
-                raise ValueError(f"tesseract backend: unknown option {k!r} (strict, debug, verify, offload)")
+                raise ValueError(f"tesseract backend: unknown option {k!r} (strict, debug, verify, offload, mode, kv_size, attention)")
             setattr(o, k, v)
+        if o.mode is not None:
+            resolve_mode(o.mode)
+        if o.attention is not None:
+            resolve_attention(o.attention)
         return o
 
 
@@ -576,10 +616,287 @@ def partition(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) ->
     return decisions
 
 
-def _report(gid: int, aot_gm: fx.GraphModule, decisions: list[_Decision]) -> None:
+# ------------------------------------------------------------------------------------------
+# regions (full mode)
+# ------------------------------------------------------------------------------------------
+def _probe(prog: dict):
+    """lower.form_regions' probe: why the device cannot run a one-op program, or None. Handles are not
+    known yet: constants and weights are given as handle 0, which the device checks by shape."""
+    p = {"values": [], "ops": [], "kv_size": prog["kv_size"]}
+    for v in prog["values"]:
+        v = dict(v)
+        if v["kind"] == "const":
+            v.pop("source", None)
+            v["handle"] = 0
+        p["values"].append(v)
+    for o in prog["ops"]:
+        o = dict(o)
+        if o["op"] == "mul_mat":
+            o["w"] = 0
+        p["ops"].append(o)
+        p["values"][o["dst"]]["out"] = True      # the device wants an output
+    try:
+        return _rt.device().graph_unsupported(p)
+    except ValueError as err:
+        return f"program rejected: {err}"
+
+
+@dataclass
+class RegionDecision:
+    """One region put on the device (full mode)."""
+    region: object                # lower.Region
+    rt: _rt.RegionRT
+    node: fx.Node | None = None   # the device_region call node
+
+
+def _pure(n: fx.Node) -> bool:
+    if n.op != "call_function" or isinstance(n.target, torch._ops.HigherOrderOperator):
+        return False
+    sch = getattr(n.target, "_schema", None)
+    return sch is not None and not sch.is_mutable and not n.is_impure()
+
+
+def _dying(g: fx.Graph, r, replaced: dict | None = None) -> list[fx.Node]:
+    """The nodes the rewrite of region r removes, in graph order: its own nodes, the nodes the lowering
+    only read (cos / sin tables, masks) that nothing else uses, and what only those used. What the region
+    is given stays, as the nodes an earlier rewrite put in place of the originals (``replaced``)."""
+    S = set(r.nodes)
+    rep = (replaced or {}).get
+    keep = {rep(n, n) for n in (*(i.node for i in r.inputs), *(c.node for c in r.consts),
+                                *(w.node for w in r.weights), *r.scalars) if isinstance(n, fx.Node)}
+    D = set(S)
+    cand = set()
+    for b in r.bypassed:
+        if b not in S:
+            cand.add(b)
+    for n in reversed(list(g.nodes)):
+        if n in D:
+            cand.update(a for a in n.all_input_nodes if a not in D)
+            continue
+        if n in cand and n not in keep and _pure(n) and n.users and all(u in D for u in n.users):
+            D.add(n)
+            cand.update(a for a in n.all_input_nodes if a not in D)
+    # a node of the region that something outside still uses stays (with what it reads); the users of
+    # an output are moved to the new node, so they do not count
+    outs = {o.node for o in r.outputs}
+    stay = {n for n in D if n not in outs and any(u not in D for u in n.users)}
+    stack = list(stay)
+    while stack:
+        n = stack.pop()
+        for a in n.all_input_nodes:
+            if a in D and a not in stay:
+                stay.add(a)
+                stack.append(a)
+    return [n for n in g.nodes if n in D and n not in stay]
+
+
+def _fallback_graph(g: fx.Graph, dying: list[fx.Node], outputs: list) -> tuple[fx.GraphModule, list[fx.Node]]:
+    """The aten subgraph of a region as a GraphModule of its external inputs: returns the original output
+    values (original shapes) of ``outputs`` (nodes of ``dying``). A node that is not in ``dying`` but reads
+    one of its nodes and is read by another (the expansion of a GQA key that the lowering bypasses and
+    something else also reads) stays in the graph for its other users and is computed here as well: as an
+    input it would derive from an output of the region, which does not exist before the call."""
+    D = set(dying)
+    order = list(g.nodes)
+    derived: set = set(D)
+    for n in order:
+        if n not in D and any(a in derived for a in n.all_input_nodes):
+            derived.add(n)
+    members = set(D)
+    stack = list(dying)
+    while stack:
+        for a in stack.pop().all_input_nodes:
+            if a not in members and a in derived:
+                members.add(a)
+                stack.append(a)
+    nodes = [n for n in order if n in members]
+    ext: list[fx.Node] = []
+    for n in nodes:
+        for a in n.all_input_nodes:
+            if a not in members and a not in ext:
+                ext.append(a)
+    fg = fx.Graph()
+    env: dict = {}
+    for e in ext:
+        env[e] = fg.placeholder(e.name)
+    for n in nodes:
+        env[n] = fg.node_copy(n, lambda a: env[a])
+    fg.output(tuple(env[o] for o in outputs))
+    return fx.GraphModule({}, fg), ext
+
+
+def _ancestors(nodes, skip: set) -> set:
+    seen, stack = set(), list(nodes)
+    while stack:
+        n = stack.pop()
+        if n in seen or n in skip:
+            continue
+        seen.add(n)
+        stack.extend(n.all_input_nodes)
+    return seen
+
+
+def _alias_root(n):
+    """The node whose storage ``n`` is a view of (n itself when it is not a view)."""
+    from .lower import storage_root
+    return storage_root(n)
+
+
+def _mutated_roots(n: fx.Node) -> set:
+    """The storage roots a node with a mutable schema writes to (empty for any other node)."""
+    sch = getattr(n.target, "_schema", None) if n.op == "call_function" else None
+    if sch is None or not sch.is_mutable:
+        return set()
+    out = set()
+    for spec, a in zip(sch.arguments, n.args):
+        if spec.alias_info is not None and spec.alias_info.is_write and isinstance(a, fx.Node):
+            out.add(_alias_root(a))
+    for spec in sch.arguments:
+        a = n.kwargs.get(spec.name)
+        if spec.alias_info is not None and spec.alias_info.is_write and isinstance(a, fx.Node):
+            out.add(_alias_root(a))
+    return out
+
+
+def _first_mutation(g: fx.Graph, reads: set, skip: set):
+    """The first node of ``g`` (not in ``skip``) that writes in place to the storage of a node in
+    ``reads``, or None."""
+    roots = {_alias_root(n) for n in reads}
+    for n in g.nodes:
+        if n not in skip and _mutated_roots(n) & roots:
+            return n
+    return None
+
+
+def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None = None) -> RegionDecision:
+    """Replace region r of aten graph g by one device_region call (DESIGN: flattened inputs, getitem and
+    shape-restoring nodes for the outputs). ``replaced`` maps nodes that earlier rewrites replaced to
+    their new nodes; the roots that a later region may read are rebuilt from the rows and listed in ``spare``
+    (partition_regions erases the ones nothing reads)."""
+    spare = [] if spare is None else spare
+    rep = lambda n: replaced.get(n, n)  # noqa: E731
+    aten_ = torch.ops.aten
+    S = set(r.nodes)
+    dying = _dying(g, r, replaced)
+    out_nodes = [o.node for o in r.outputs]
+    fb, ext = _fallback_graph(g, dying, out_nodes)
+    name = f"region {gid}.{r.id} ({len(r.ops)} ops: " + ", ".join(f"{k} x{v}" for k, v in sorted(r.op_counts().items())) + ")"
+    rg = _rt.RegionRT(r, fb, len(ext), gid, name)
+    rid = _rt.register_region(rg)
+
+    inputs = [rep(i.node) for i in r.inputs]
+    consts = [rep(c.node) for c in r.consts]
+    weights = [rep(w.node) for w in r.weights]
+    scalars = [rep(s_) for s_ in r.scalars]
+    ext = [rep(e) for e in ext]
+    needed = inputs + consts + weights + scalars + ext
+
+    # the call goes before the first user of an output and before the first node that changes in place
+    # a value it reads (AOT puts the update of an input or a buffer, a copy_, at the end of the graph);
+    # what it needs and is computed later moves up
+    order = {n: i for i, n in enumerate(g.nodes)}
+    dset = set(dying)
+    users = [u for o in out_nodes for u in o.users if u not in S and u not in dset]
+    anchor = min(users, key=lambda u: order[u])
+    reads = _ancestors([n for n in needed if isinstance(n, fx.Node)], S)
+    mut = _first_mutation(g, reads, S | dset)
+    if mut is not None and order[mut] < order[anchor]:
+        anchor = mut
+    late = [n for n in reads if order[n] >= order[anchor]]
+    if mut is not None and any(order[n] > order[mut] and n.op == "call_function" for n in reads):
+        raise RuntimeError(f"{name}: a node it needs is computed after a node that changes its inputs in place")
+    for n in sorted(late, key=lambda n: order[n]):
+        anchor.prepend(n)
+
+    with g.inserting_before(anchor):
+        flat = []
+        for inp, x in zip(r.inputs, inputs):
+            if inp.kind == "in":
+                if inp.recipe["transpose12"]:
+                    x = g.call_function(aten_.transpose.int, (x, 1, 2))
+                x = g.call_function(aten_.reshape.default, (x, list(inp.recipe["reshape"])))
+            elif inp.kind == "pos":
+                x = g.call_function(aten_.reshape.default, (x, list(inp.recipe["reshape"])))
+            flat.append(x)
+        call = g.call_function(device_region, (rid, *flat, *consts, *weights, *scalars, *ext))
+        new_outs = []
+        for k, o in enumerate(r.outputs):     # the call returns one tensor per output (device_region)
+            y = g.call_function(operator.getitem, (call, k))
+            dims = []
+            for d in o.recipe["dims"]:
+                if isinstance(d, dict):
+                    d = g.call_function(aten_.sym_size.int, (inputs[d["input"]], d["dim"]))
+                dims.append(d)
+            y = g.call_function(aten_.reshape.default, (y, dims))
+            if o.recipe["transpose12"]:
+                y = g.call_function(aten_.transpose.int, (y, 1, 2))
+            if o.recipe["contiguous"]:
+                y = g.call_function(aten_.clone.default, (y,), {"memory_format": torch.contiguous_format})
+            y.meta = dict(o.node.meta)
+            new_outs.append(y)
+        # a later region can read the root of an op through views that an output ends: the root, rebuilt from the rows
+        for k, o in enumerate(r.outputs):
+            if o.root_recipe is None or o.root in replaced:
+                continue
+            rec = o.root_recipe
+            made = [g.call_function(operator.getitem, (call, k))]
+            dims = []
+            for d in rec["dims"]:
+                if isinstance(d, dict):
+                    made.append(g.call_function(aten_.sym_size.int, (inputs[d["input"]], d["dim"])))
+                    d = made[-1]
+                dims.append(d)
+            made.append(g.call_function(aten_.reshape.default, (made[0], dims)))
+            if rec["transpose12"]:
+                made.append(g.call_function(aten_.transpose.int, (made[-1], 1, 2)))
+            if rec["contiguous"]:
+                made.append(g.call_function(aten_.clone.default, (made[-1],), {"memory_format": torch.contiguous_format}))
+            made[-1].meta = dict(o.root.meta)
+            replaced[o.root] = made[-1]
+            spare.extend(made)
+    for o, y in zip(r.outputs, new_outs):
+        o.node.replace_all_uses_with(y, delete_user_cb=lambda u: u not in dset)
+        replaced[o.node] = y
+    for n in reversed(dying):
+        g.erase_node(n)
+    return RegionDecision(r, rg, call)
+
+
+def partition_regions(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) -> list[RegionDecision]:
+    """Full mode: form the regions of the top-level aten graph and replace each by a device_region call.
+    Returns the decisions; the CPU reasons of the nodes beside a region are in ``decision.region.touching``."""
+    from . import lower
+
+    regions, why = lower.form_regions(aot_gm, weights, _probe, lower.LowerOpts(kv_size=int(opts.kv_size),
+                                                                        attention=resolve_attention(opts.attention)))
+    out = []
+    replaced: dict = {}
+    spare: list = []
+    for r in regions:
+        out.append(rewrite_region(aot_gm.graph, r, gid, replaced, spare))
+    for z in reversed(spare):          # a rebuilt root that no region reads
+        if not z.users:
+            aot_gm.graph.erase_node(z)
+    if out:
+        aot_gm.graph.lint()
+        aot_gm.recompile()
+    return out
+
+
+
+def _report(gid: int, aot_gm: fx.GraphModule, decisions: list[_Decision], rdecs: list[RegionDecision] = ()) -> None:
     nd = sum(d.device for d in decisions)
     n_nodes = sum(1 for _ in aot_gm.graph.nodes)
-    log(f"graph {gid}: {nd} matmul(s) on Tesseract, {len(decisions) - nd} on the CPU (aten graph of {n_nodes} nodes)")
+    log(f"graph {gid}: {len(rdecs)} region(s), {nd} matmul(s) on Tesseract, {len(decisions) - nd} on the CPU "
+        f"(aten graph of {n_nodes} nodes)")
+    for rd in rdecs:
+        r = rd.region
+        log(f"  region     {rd.rt.name}")
+        log(f"             {len(r.inputs)} input(s) [" + ", ".join(f"{i.node.name}:{i.kind}" for i in r.inputs)
+            + f"], {len(r.outputs)} output(s) [" + ", ".join(o.node.name for o in r.outputs)
+            + f"], {len(r.weights)} weight(s), {len(r.consts)} constant(s), kv_size {r.kv_size}")
+        for n, why in r.touching.items():
+            log(f"             cpu beside the region: {n.name}: {why or 'no lowering'}")
     for d in decisions:
         if d.device:
             s = d.spec
@@ -607,11 +924,17 @@ def _needs_autograd(example_inputs) -> bool:
 
 def tesseract_backend(gm: fx.GraphModule, example_inputs, options: dict | None = None, mode: str | None = None):
     """torch.compile backend: ``torch.compile(model, backend="tesseract")`` (after ``import
-    tesseract_torch``). options: strict (bool), debug (int), verify (bool), offload (bool)."""
+    tesseract_torch``). options: strict (bool), debug (int), verify (bool), offload (bool), mode ("full" |
+    "matmul"; default TSR_TORCH_MODE, else full), kv_size (int, full mode), attention ("device" | "cpu";
+    default TSR_TORCH_ATTENTION, else device; full mode only)."""
     from functorch.compile import make_boxed_func
     from torch._dynamo.backends.common import aot_autograd
 
     opts = Options.from_dict(options)
+    # torch.compile passes its own mode string ("default", ...) to a backend: only ours count
+    mode = resolve_mode(opts.mode or (mode if mode in MODES else None))
+    if mode == "full":
+        resolve_attention(opts.attention)     # an unknown TSR_TORCH_ATTENTION is an error, not a matmul-mode graph
     if opts.debug is not None:
         _rt.set_debug(opts.debug)
     if opts.verify is not None:
@@ -637,8 +960,22 @@ def tesseract_backend(gm: fx.GraphModule, example_inputs, options: dict | None =
         with _specs_lock:
             gid = _graph_counter[0]
             _graph_counter[0] += 1
+        rdecs: list[RegionDecision] = []
         try:
             weights = _aot_weights(aot_gm, dyn_weights, n_dyn)
+            if mode == "full" and opts.offload:
+                backup = copy.deepcopy(aot_gm.graph)
+                try:
+                    rdecs = partition_regions(aot_gm, weights, opts, gid)
+                except Exception as err:  # noqa: BLE001
+                    if opts.strict or isinstance(err, _rt.TesseractError):
+                        raise
+                    aot_gm.graph = backup     # the graph as it was: matmul mode for this graph
+                    weights = _aot_weights(aot_gm, dyn_weights, n_dyn)
+                    rdecs = []
+                    _rt._warn_once(f"regions:{gid}",   # one per graph
+                                   f"tesseract backend: forming regions failed ({type(err).__name__}: {err}); "
+                                   "this graph uses matmul mode")
             decisions = partition(aot_gm, weights, opts, gid)
         except Exception as err:  # noqa: BLE001
             if opts.strict or isinstance(err, _rt.TesseractError):
@@ -647,14 +984,18 @@ def tesseract_backend(gm: fx.GraphModule, example_inputs, options: dict | None =
                            f"tesseract backend: partitioning failed ({type(err).__name__}: {err}); graph runs on the CPU")
             return make_boxed_func(aot_gm.forward)
         _rt._bump("graphs")
+        _rt._bump("regions", len(rdecs))
         _rt._bump("nodes_device", sum(d.device for d in decisions))
         _rt._bump("nodes_cpu", sum(not d.device for d in decisions))
         if _rt.debug_level() >= 1:
-            _report(gid, aot_gm, decisions)
+            _report(gid, aot_gm, decisions, rdecs)
         if _rt.debug_level() >= 3:
             log("rewritten aten graph:\n" + aot_gm.print_readable(print_output=False))
         fn = make_boxed_func(aot_gm.forward)
         fn._tesseract_decisions = decisions
+        fn._tesseract_regions = rdecs
+        if rdecs:   # the device graphs of the regions go with the compiled function
+            weakref.finalize(fn, _rt.release_regions, [d.rt for d in rdecs])
         return fn
 
     return aot_autograd(fw_compiler=compiler, inference_compiler=compiler,

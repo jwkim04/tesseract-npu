@@ -1,5 +1,6 @@
 // tsr_rt.cpp — see tsr_rt.h
 #include "tsr_rt.h"
+#include "tsr_rt_internal.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -29,27 +30,6 @@
 
 namespace tsr::rt {
 
-namespace {
-
-constexpr uint64_t HEAP_ALIGN      = 4096;              // as the ggml backend
-constexpr size_t   XFER_CHUNK      = 8u << 20;          // weight scatter batch (tsr_weight_store_rows)
-
-int debug_level() {
-    static const int lvl = [] {
-        const char * e = getenv("TSR_RT_DEBUG");
-        return e ? atoi(e) : 0;
-    }();
-    return lvl;
-}
-
-#define TSR_RT_DBG(lvl, ...)                                \
-    do {                                                    \
-        if (debug_level() >= (lvl)) {                       \
-            fprintf(stderr, "[tsr_rt] " __VA_ARGS__);       \
-        }                                                   \
-    } while (0)
-
-std::string strf(const char * fmt, ...) __attribute__((format(printf, 1, 2)));
 std::string strf(const char * fmt, ...) {
     char buf[1024];
     va_list ap;
@@ -59,7 +39,10 @@ std::string strf(const char * fmt, ...) {
     return buf;
 }
 
-double mib(uint64_t b) { return (double) b / (1024.0 * 1024.0); }
+namespace {
+
+constexpr uint64_t HEAP_ALIGN      = 4096;              // as the ggml backend
+constexpr size_t   XFER_CHUNK      = 8u << 20;          // weight scatter batch (tsr_weight_store_rows)
 
 enum ggml_type ggml_type_of(dtype t) {
     switch (t) {
@@ -89,27 +72,7 @@ size_t   dtype_block_bytes(dtype t) {
 // Alignment the converters read the host data with (f32: float, f16/bf16 and blocks: uint16).
 size_t dtype_align(dtype t) { return t == dtype::f32 ? 4 : 2; }
 
-// One N x K part of a weight: rows [r0, r0 + n), columns [k0, k0 + k); its own symmetric allocation.
-struct part {
-    uint32_t r0 = 0, n = 0, k0 = 0, k = 0;
-    uint64_t w_off = 0;        // byte offset of W_OFF (every channel)
-    uint64_t ch_bytes = 0;     // reserved per channel
-};
-
-struct plan {
-    uint32_t fmt = 0, kind = 0;
-    uint32_t n_parts = 0, n_part = 0;
-    uint32_t k_parts = 0, k_part = 0;
-};
-
-struct weight {
-    dtype    src = dtype::f32;
-    uint32_t N = 0, K = 0;
-    plan     pl;
-    std::vector<part> parts;   // [i * k_parts + j]
-    uint64_t dev_bytes = 0;
-    const part & at(uint32_t i, uint32_t j) const { return parts[(size_t) i * pl.k_parts + j]; }
-};
+}  // namespace
 
 // The N / K split of a weight (see tsr_rt.h). nullptr on success, else the reason.
 const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, const weight_options & o, plan * p) {
@@ -159,8 +122,6 @@ const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, 
     return nullptr;
 }
 
-}  // namespace
-
 const char * dtype_name(dtype t) {
     switch (t) {
         case dtype::f32:  return "f32";
@@ -183,162 +144,142 @@ size_t dtype_row_bytes(dtype t, uint32_t K) {
 // Device state
 // ---------------------------------------------------------------------------
 
-struct device::impl {
-    mutable std::mutex mtx;
-    tsr_transport * tp = nullptr;
-    tsr_config  cfg = {};
-    std::string kind;
-    std::string desc;
+device::impl::~impl() {
+    if (tp != nullptr) tsr_transport_close(tp);
+}
 
-    bool        read_perf = true;
-
-    uint64_t io_off = 0;              // ch0 byte offset of the activation area (IO region)
-    uint64_t io_size = 0;
-    tsr_range_alloc heap;             // WEIGHT heap, symmetric (one offset on every channel)
-    tsr_opl_dev odev;                 // `graph` kernel + OPL cache over the OPL region (tsr-opl.h)
-
-    std::unordered_map<weight_handle, weight> weights;
-    weight_handle next_handle = 1;
-
-    std::vector<uint64_t> perf_last;  // PERF_CYCLES, PERF_MVM_CYCLES, PERF_CH_RD_BEATS[c]
-    counters cnt;
-    std::vector<uint8_t> hbuf;        // host staging (x packing, y gathering)
-
-    ~impl() {
-        if (tp != nullptr) tsr_transport_close(tp);
+// -- transport -----------------------------------------------------------
+void device::impl::write(uint32_t ch, uint64_t off, const void * src, size_t size, bool is_weight) {
+    if (size == 0) return;
+    if (tsr_transport_write(tp, ch, off, src, size) != 0) {
+        throw error(strf("tsr_rt: transport write failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
     }
+    cnt.h2d_bytes += size;
+    if (is_weight) cnt.h2d_weight_bytes += size;
+}
+void device::impl::read(uint32_t ch, uint64_t off, void * dst, size_t size) {
+    if (size == 0) return;
+    if (tsr_transport_read(tp, ch, off, dst, size) != 0) {
+        throw error(strf("tsr_rt: transport read failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
+    }
+    cnt.d2h_bytes += size;
+}
 
-    // -- transport -----------------------------------------------------------
-    void write(uint32_t ch, uint64_t off, const void * src, size_t size, bool is_weight = false) {
-        if (size == 0) return;
-        if (tsr_transport_write(tp, ch, off, src, size) != 0) {
-            throw error(strf("tsr_rt: transport write failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
-        }
-        cnt.h2d_bytes += size;
-        if (is_weight) cnt.h2d_weight_bytes += size;
-    }
-    void read(uint32_t ch, uint64_t off, void * dst, size_t size) {
-        if (size == 0) return;
-        if (tsr_transport_read(tp, ch, off, dst, size) != 0) {
-            throw error(strf("tsr_rt: transport read failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
-        }
-        cnt.d2h_bytes += size;
-    }
+uint64_t device::impl::perf(uint32_t idx) {
+    const uint32_t lo = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx);       // LO first: snapshot
+    const uint32_t hi = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
+    return ((uint64_t) hi << 32) | lo;
+}
+void device::impl::perf_snapshot(std::vector<uint64_t> & v) {
+    v.resize(2 + cfg.num_ch);
+    v[0] = perf(TSR_PERF_CYCLES);
+    v[1] = perf(TSR_PERF_MVM_CYCLES);
+    for (uint32_t c = 0; c < cfg.num_ch; ++c) v[2 + c] = perf(tsr_perf_ch_rd_beats(c));
+}
 
-    uint64_t perf(uint32_t idx) {
-        const uint32_t lo = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx);       // LO first: snapshot
-        const uint32_t hi = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
-        return ((uint64_t) hi << 32) | lo;
+// -- op lists -------------------------------------------------------------
+// Run one op list through `graph` (OPL cache: a list seen before is not written again).
+void device::impl::run_blob(const std::vector<uint8_t> & blob, uint32_t n_ops, uint32_t n_joins,
+                            const std::function<std::string(int32_t)> & name_op) {
+    const tsr_opl_run_result r = odev.run(blob, 0u, [this](uint32_t ch, uint64_t off, const void * src, size_t size) {
+        write(ch, off, src, size);
+    });
+    if (!r.too_big) {
+        cnt.execs++;
+        (r.cache_hit ? cnt.prog_hits : cnt.prog_misses)++;
     }
-    void perf_snapshot(std::vector<uint64_t> & v) {
-        v.resize(2 + cfg.num_ch);
-        v[0] = perf(TSR_PERF_CYCLES);
-        v[1] = perf(TSR_PERF_MVM_CYCLES);
-        for (uint32_t c = 0; c < cfg.num_ch; ++c) v[2 + c] = perf(tsr_perf_ch_rd_beats(c));
+    if (read_perf) {
+        std::vector<uint64_t> now;
+        perf_snapshot(now);
+        // PERF_* do not change between launches while the device is idle, so now - last is this
+        // launch's; a counter that went down was reset (SOFT_RESET): count from zero.
+        auto delta = [&](size_t i) { return now[i] >= perf_last[i] ? now[i] - perf_last[i] : now[i]; };
+        cnt.perf_cycles += delta(0);
+        cnt.perf_mvm_cycles += delta(1);
+        for (uint32_t c = 0; c < cfg.num_ch; ++c) cnt.dev_read_bytes += delta(2 + c) * TSR_BEAT_BYTES;
+        perf_last.swap(now);
     }
+    TSR_RT_DBG(1, "launch: %u records (%u JOIN), %zu B at OPL ch0+0x%07" PRIx64 "%s, %.3f ms\n", n_ops, n_joins,
+               blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
+    const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
+    if (!ok) {
+        std::string name;
+        const int32_t failed = tsr_opl_failed_op(r, n_ops);
+        if (failed >= 0) name = name_op(failed);
+        throw error(strf("tsr_rt: device execution failed on %s: %s (op list of %u records, %zu B)", kind.c_str(),
+                         tsr_opl_describe(r, name.empty() ? nullptr : name.c_str()).c_str(), n_ops, blob.size()));
+    }
+}
 
-    // -- op lists -------------------------------------------------------------
-    // Run one op list through `graph` (OPL cache: a list seen before is not written again).
-    void run(const tsr_opl_builder & b) {
-        const std::vector<uint8_t> blob = b.finish();
-        if (blob.empty()) throw error(strf("tsr_rt: internal error: op list build failed: %s", b.error()));
-        const tsr_opl_run_result r = odev.run(blob, 0u, [this](uint32_t ch, uint64_t off, const void * src, size_t size) {
-            write(ch, off, src, size);
-        });
-        if (!r.too_big) {
-            cnt.execs++;
-            (r.cache_hit ? cnt.prog_hits : cnt.prog_misses)++;
-        }
-        if (read_perf) {
-            std::vector<uint64_t> now;
-            perf_snapshot(now);
-            // PERF_* do not change between launches while the device is idle, so now - last is this
-            // launch's; a counter that went down was reset (SOFT_RESET): count from zero.
-            auto delta = [&](size_t i) { return now[i] >= perf_last[i] ? now[i] - perf_last[i] : now[i]; };
-            cnt.perf_cycles += delta(0);
-            cnt.perf_mvm_cycles += delta(1);
-            for (uint32_t c = 0; c < cfg.num_ch; ++c) cnt.dev_read_bytes += delta(2 + c) * TSR_BEAT_BYTES;
-            perf_last.swap(now);
-        }
-        TSR_RT_DBG(1, "launch: %u records (%u JOIN), %zu B at OPL ch0+0x%07" PRIx64 "%s, %.3f ms\n", b.n_ops(), b.n_joins(),
-                   blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
-        const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
-        if (!ok) {
-            std::string name;
-            if (tsr_opl_failed_op(r, b.n_ops()) >= 0) {
-                const int32_t tag = tsr_opl_failed_tag(b, r);
-                name = tag >= 0 ? strf("MUL_MAT of N part %d, K part %d", tag >> 16, tag & 0xFFFF) : "JOIN";
+void device::impl::run(const tsr_opl_builder & b) {
+    const std::vector<uint8_t> blob = b.finish();
+    if (blob.empty()) throw error(strf("tsr_rt: internal error: op list build failed: %s", b.error()));
+    run_blob(blob, b.n_ops(), b.n_joins(), [&b](int32_t failed) {
+        const int32_t tag = b.tag_of((uint32_t) failed);
+        return tag >= 0 ? strf("MUL_MAT of N part %d, K part %d", tag >> 16, tag & 0xFFFF) : std::string("JOIN");
+    });
+}
+
+uint64_t device::impl::y_off(const weight & w, uint32_t tc, uint32_t i) const {
+    uint64_t off = io_off + (uint64_t) tc * w.K * 4;
+    for (uint32_t ii = 0; ii < i; ++ii) off += (uint64_t) tc * y_lines(w.at(ii, 0).n) * TSR_LINE_BYTES;
+    return off;
+}
+
+// The op list of one linear call of tc tokens (SW §9.4): per N part i one MUL_MAT record per K
+// part j over the x columns [k0, k0 + k) (x rows K / 16 lines apart), the parts after the first
+// with ACC_DST (y += W x: one f32 add per part, in order, as MVM.ACC does). The builder orders
+// the K parts of an N part (each reads and writes its y rows); the N parts are independent. A
+// list that would exceed 4096 records runs in pieces.
+void device::impl::run_linear(const weight & w, uint32_t tc, const float * scale) {
+    namespace mm = tsr::opl::mm;
+    tsr_opl_builder b(cfg.num_ch, tsr::opl::F_STOP_ON_ERROR);
+    for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
+        for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
+            const part & p = w.at(i, j);
+            uint32_t a[tsr::opl::mm_scale::NARGS];
+            a[mm::X]          = tsr_dram_handle(0, io_off + (uint64_t) p.k0 * 4);
+            a[mm::X_STRIDE]   = w.K / 16;
+            a[mm::Y]          = tsr_dram_handle(0, y_off(w, tc, i));
+            a[mm::Y_STRIDE]   = y_lines(p.n);
+            a[mm::W_OFF]      = (uint32_t) (p.w_off / TSR_BEAT_BYTES);
+            a[mm::FMT]        = w.pl.fmt;
+            a[mm::N]          = p.n;
+            a[mm::K]          = p.k;
+            a[mm::T]          = tc;
+            a[mm::ADD]        = tsr::opl::HANDLE_NONE;
+            a[mm::ADD_STRIDE] = 0;
+            a[mm::FLAGS]      = j == 0 ? 0u : mm::FLAG_ACC_DST;
+            if (scale) a[tsr::opl::mm_scale::SCALE] = tsr_f32_bits(*scale);
+            const int32_t tag = (int32_t) ((i << 16) | j);
+            uint32_t idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
+            if (idx == tsr_opl_builder::NO_ROOM) {
+                run(b);
+                b.reset();
+                idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
             }
-            throw error(strf("tsr_rt: device execution failed on %s: %s (op list of %u records, %zu B)", kind.c_str(),
-                             tsr_opl_describe(r, name.empty() ? nullptr : name.c_str()).c_str(), b.n_ops(), blob.size()));
-        }
-    }
-
-    // IO layout of one linear call of tc tokens: x rows (K * 4 bytes each) at io_off, then per N
-    // part i its y rows (y_lines(n_i) * 64 bytes each).
-    static uint32_t y_lines(uint32_t n) { return (uint32_t) tsr_ceil_div_u64((uint64_t) n * 4, TSR_LINE_BYTES); }
-
-    uint64_t y_off(const weight & w, uint32_t tc, uint32_t i) const {
-        uint64_t off = io_off + (uint64_t) tc * w.K * 4;
-        for (uint32_t ii = 0; ii < i; ++ii) off += (uint64_t) tc * y_lines(w.at(ii, 0).n) * TSR_LINE_BYTES;
-        return off;
-    }
-
-    // The op list of one linear call of tc tokens (SW §9.4): per N part i one MUL_MAT record per K
-    // part j over the x columns [k0, k0 + k) (x rows K / 16 lines apart), the parts after the first
-    // with ACC_DST (y += W x: one f32 add per part, in order, as MVM.ACC does). The builder orders
-    // the K parts of an N part (each reads and writes its y rows); the N parts are independent. A
-    // list that would exceed 4096 records runs in pieces.
-    void run_linear(const weight & w, uint32_t tc, const float * scale) {
-        namespace mm = tsr::opl::mm;
-        tsr_opl_builder b(cfg.num_ch, tsr::opl::F_STOP_ON_ERROR);
-        for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
-            for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
-                const part & p = w.at(i, j);
-                uint32_t a[tsr::opl::mm_scale::NARGS];
-                a[mm::X]          = tsr_dram_handle(0, io_off + (uint64_t) p.k0 * 4);
-                a[mm::X_STRIDE]   = w.K / 16;
-                a[mm::Y]          = tsr_dram_handle(0, y_off(w, tc, i));
-                a[mm::Y_STRIDE]   = y_lines(p.n);
-                a[mm::W_OFF]      = (uint32_t) (p.w_off / TSR_BEAT_BYTES);
-                a[mm::FMT]        = w.pl.fmt;
-                a[mm::N]          = p.n;
-                a[mm::K]          = p.k;
-                a[mm::T]          = tc;
-                a[mm::ADD]        = tsr::opl::HANDLE_NONE;
-                a[mm::ADD_STRIDE] = 0;
-                a[mm::FLAGS]      = j == 0 ? 0u : mm::FLAG_ACC_DST;
-                if (scale) a[tsr::opl::mm_scale::SCALE] = tsr_f32_bits(*scale);
-                const int32_t tag = (int32_t) ((i << 16) | j);
-                uint32_t idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
-                if (idx == tsr_opl_builder::NO_ROOM) {
-                    run(b);
-                    b.reset();
-                    idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
-                }
-                if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
-                    throw error(strf("tsr_rt: internal error: op list: %s", b.error()));
-                }
+            if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
+                throw error(strf("tsr_rt: internal error: op list: %s", b.error()));
             }
         }
-        TSR_RT_DBG(1, "linear: %s [%u x %u] T=%u, %u x %u parts\n", w.pl.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", w.N, w.K, tc,
-                   w.pl.n_parts, w.pl.k_parts);
-        run(b);
     }
+    TSR_RT_DBG(1, "linear: %s [%u x %u] T=%u, %u x %u parts\n", w.pl.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", w.N, w.K, tc,
+               w.pl.n_parts, w.pl.k_parts);
+    run(b);
+}
 
-    const weight & get(weight_handle h) const {
-        auto it = weights.find(h);
-        if (it == weights.end()) throw std::invalid_argument(strf("tsr_rt: unknown weight handle %" PRIu64, h));
-        return it->second;
-    }
+const weight & device::impl::get(weight_handle h) const {
+    auto it = weights.find(h);
+    if (it == weights.end()) throw std::invalid_argument(strf("tsr_rt: unknown weight handle %" PRIu64, h));
+    return it->second;
+}
 
-    void release_parts(weight & w) {
-        for (part & p : w.parts) {
-            if (p.ch_bytes != 0) heap.release(p.w_off);
-            p.ch_bytes = 0;
-        }
+void device::impl::release_parts(weight & w) {
+    for (part & p : w.parts) {
+        if (p.ch_bytes != 0) heap.release(p.w_off);
+        p.ch_bytes = 0;
     }
-};
+}
 
 // ---------------------------------------------------------------------------
 // device
@@ -387,6 +328,9 @@ device::device(const open_options & o) : p_(new impl) {
                          (host >> 8) & 0xFFu, host & 0xFFu));
     if (v.kind_rev[tsr::opl::K_MUL_MAT] == 0 || v.kind_rev[tsr::opl::K_JOIN] == 0)
         throw error(strf("tsr_rt: the booted image %s does not provide the MUL_MAT kind (.tsr_kinds)", d.odev.image_path()));
+    d.aux.init(TSR_REGION_AUX_OFF, TSR_REGION_AUX_SIZE, TSR_LINE_BYTES);
+    d.pcap = ((tsr_transport_csr_read(d.tp, TSR_CSR_CFG3) & TSR_CFG3_PCAP16) >> TSR_CFG3_PCAP16_LSB) * 16u;
+    d.kenv = tsr_kenv_make(d.cfg, d.pcap, tsr_kinds_mask(v), d.odev.image_path());
     d.perf_snapshot(d.perf_last);
     char vs[256];
     tsr_versions_str(&v, 0, vs, sizeof(vs));
@@ -401,6 +345,7 @@ device::~device() = default;
 const tsr_config & device::config() const { return p_->cfg; }
 const char * device::transport() const { return p_->kind.c_str(); }
 const char * device::description() const { return p_->desc.c_str(); }
+uint32_t device::pcap() const { return p_->pcap; }
 
 const char * device::unsupported_reason(dtype t, uint32_t N, uint32_t K, const weight_options & o) const {
     std::lock_guard<std::mutex> lk(p_->mtx);

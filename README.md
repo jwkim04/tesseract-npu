@@ -97,7 +97,7 @@ The device runs these ggml ops. The op list kinds behind them are in [docs/versi
 - Routing: softmax, top-k selection and weight normalization of a mixture-of-experts router.
 - Recurrent layers: `SSM_CONV` and `GATED_DELTA_NET` for Gated DeltaNet.
 
-Any other op runs on the CPU through the ggml scheduler, and PyTorch keeps its eager ops. A model that llama.cpp runs therefore
+Any other op runs on the CPU through the ggml scheduler, and PyTorch runs the ops that match no pattern eagerly. A model that llama.cpp runs therefore
 runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE and Qwen3.5 are examples.
 [docs/README.md](docs/README.md) lists the limits.
 
@@ -106,7 +106,7 @@ runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE an
 - Graph scheduling. Tesseract Pivot orders the nodes of a graph before they are lowered, so that independent matrix products run on the MVM unit while the control core and the element-wise pipeline work on other records ([design](docs/design/07-graph-scheduler.md)).
 - Kernel SDK. Basis kernels are freestanding C++20 for the control core and build for the host as well.
 - Bit-exact simulator. `sw/sim` is the oracle for the RTL, the firmware and the host stack. The transports are `sim`, `mock` and `xrt` (the card).
-- PyTorch backend. `torch.compile(model, backend="tesseract")` runs the weight matmuls of a model on the device.
+- PyTorch backend. `torch.compile(model, backend="tesseract")` runs regions of a model's aten graph on the device, one op list each, in full mode, or only the weight matmuls in matmul mode.
 - Tools. `tsr-selftest` checks a device, `klcheck` and `numcheck` compare a whole model and every weight matmul with the CPU, `tsr-prof` and the profile report show where a token spends its cycles, `tsr-top` monitors a running card, and `tsr-dbg` debugs the control core with GDB.
 
 ## Architecture
@@ -175,6 +175,34 @@ build/dev/bin/tsr-selftest --device sim      # boots the firmware on the simulat
 # put a GGUF in models/, then run it on the simulator:
 LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
     -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
+```
+
+To run a PyTorch model, configure with `-DTSR_WITH_TORCH=ON` and build the extension. The Python
+environment (torch, transformers, safetensors) is in [PyTorch backend](docs/torch-backend.md) §2.1.
+
+```sh
+cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_TORCH=ON
+cmake --build build/dev -j8 --target tesseract_torch_ext
+export PYTHONPATH=$PWD/sw/torch:$PWD/build/dev/python
+build/tools/torchvenv/bin/python run.py          # run.py is the snippet below
+```
+
+```python
+import torch, tesseract_torch as tt              # importing registers the backend "tesseract"
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+path = "models/hf/Qwen2.5-0.5B-Instruct"         # safetensors files from the Hugging Face Hub
+tok = AutoTokenizer.from_pretrained(path)
+model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32).eval()
+
+# Full mode: the decoder forward runs on the device as one region, in one launch.
+# tt.compile(model, mode="matmul") keeps only the weight matmuls on the device;
+# tt.compile(model, attention="cpu") keeps attention in float32.
+model = torch.compile(model, backend="tesseract")
+ids = tok("The capital of France is", return_tensors="pt").input_ids
+with torch.no_grad():
+    logits = model(ids, use_cache=False).logits   # on the simulator unless TSR_DEVICE says otherwise
+print(tok.decode(logits[0, -1].argmax()))        # " Paris"
 ```
 
 For the card, configure with `-DTSR_WITH_XRT=ON` and set `TSR_DEVICE=xrt` and

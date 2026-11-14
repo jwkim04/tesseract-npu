@@ -8,6 +8,8 @@
 #                        the `graph` kernel on a transport (boot, launch, wait, error text)
 #   tsr-pivot.{h,cpp}    Tesseract Pivot, the graph scheduler's core (units with preds, the machine model, the hoist search;
 #                        no ggml, no device)
+#   tsr-rec.{h,cpp}      tsr_rec, tsr_fanew_map, tsr_encode: one record and its encoding (preload, ranges, deps)
+#   tsr-kinds.{h,cpp}    one encoder per kind over plain descriptors (no ggml): the PyTorch runtime's records
 #   tsr-alloc.{h,cpp}    first-fit range allocator (IO windows, AUX, symmetric WEIGHT heap, OPL cache)
 #   tsr-wlayout.{h,cpp}  device-format row bytes, row repack + symmetric scatter / gather
 #
@@ -26,6 +28,9 @@ add_library(tsr_lower STATIC
     ${CMAKE_CURRENT_LIST_DIR}/tsr-lower.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl-dev.cpp
+    # the record and its encoding (tsr_rec, tsr_encode) and the framework-free encoders of every kind (no ggml)
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-rec.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-kinds.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-pivot.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-wlayout.cpp
     # KV-cache buffers (tsr-kvbuf, AT §4.6) and the mask-summary producer (tsr-msum, AT §7.3)

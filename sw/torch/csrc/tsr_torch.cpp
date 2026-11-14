@@ -7,18 +7,25 @@
 // by QACT on the device, results are f32. The Python package tesseract_torch (sw/torch) builds the
 // torch.compile backend on top of this module.
 //
+// Graphs (whole-graph lowering, full mode): const_upload / graph_unsupported / graph_create / graph_run / graph_run_ref /
+// graph_info bind the graph API of tsr_rt.h. A program is the Python dict of docs/torch-backend.md (values, ops, kv_size),
+// parsed strictly here.
+//
 // Errors: tsr::rt::error -> _tesseract_rt.TesseractError (a RuntimeError); std::invalid_argument ->
 // ValueError (pybind11's translation).
 #include <torch/extension.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "tsr_rt.h"
 
@@ -77,6 +84,202 @@ at::Tensor rows_contiguous(const at::Tensor & t) {
     if (t.stride(1) == 1 && (n == 1 || t.stride(0) >= k)) return t;
     return t.contiguous();
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// The graph program (a Python dict) -> rt::graph_desc, strictly
+// ---------------------------------------------------------------------------------------------
+[[noreturn]] void bad_prog(const std::string & what) { throw std::invalid_argument("tesseract: program: " + what); }
+
+std::string op_label(size_t i, int tag, const std::string & name) {
+    return "op #" + std::to_string(i) + " (tag " + std::to_string(tag) + ", " + name + ")";
+}
+
+// One dict of a program: the keys it may have, which of them it must have; reads are checked against the label.
+class Fields {
+public:
+    Fields(const py::dict & d, std::string label, std::initializer_list<const char *> required, std::initializer_list<const char *> optional)
+        : d_(d), label_(std::move(label)) {
+        for (const char * k : required) allowed_.push_back(k);
+        for (const char * k : optional) allowed_.push_back(k);
+        for (auto item : d) {
+            if (!py::isinstance<py::str>(item.first)) bad_prog(label_ + ": a key that is not a string");
+            const std::string key = item.first.cast<std::string>();
+            if (std::find(allowed_.begin(), allowed_.end(), key) == allowed_.end()) bad_prog(label_ + ": unknown key '" + key + "'");
+        }
+        for (const char * k : required) {
+            if (!d.contains(k)) bad_prog(label_ + ": missing key '" + k + "'");
+        }
+    }
+    bool has(const char * k) const { return d_.contains(k) && !d_[k].is_none(); }
+    int64_t integer(const char * k) const {
+        const py::object o = d_[k];
+        if (py::isinstance<py::bool_>(o) || !py::isinstance<py::int_>(o)) bad_prog(label_ + ": '" + k + "' must be an int");
+        try {
+            return o.cast<int64_t>();
+        } catch (const py::cast_error &) {
+            bad_prog(label_ + ": '" + k + "' is out of range");
+        }
+    }
+    uint32_t u32(const char * k) const {
+        const int64_t v = integer(k);
+        if (v < 0 || v > (int64_t) UINT32_MAX) bad_prog(label_ + ": '" + k + "' is out of range");
+        return (uint32_t) v;
+    }
+    int32_t id(const char * k) const {
+        const int64_t v = integer(k);
+        if (v < 0 || v > INT32_MAX) bad_prog(label_ + ": '" + k + "' is not a value id");
+        return (int32_t) v;
+    }
+    int32_t opt_id(const char * k) const { return has(k) ? id(k) : -1; }
+    float real(const char * k) const {
+        const py::object o = d_[k];
+        if (py::isinstance<py::bool_>(o) || !(py::isinstance<py::float_>(o) || py::isinstance<py::int_>(o))) {
+            bad_prog(label_ + ": '" + k + "' must be a float");
+        }
+        const double v = o.cast<double>();
+        const float f = (float) v;
+        if (!std::isfinite(f) && !std::isinf(v)) bad_prog(label_ + ": '" + k + "' is not a number");
+        return f;
+    }
+    bool boolean(const char * k) const {
+        const py::object o = d_[k];
+        if (!py::isinstance<py::bool_>(o)) bad_prog(label_ + ": '" + k + "' must be a bool");
+        return o.cast<bool>();
+    }
+    std::string str(const char * k) const {
+        const py::object o = d_[k];
+        if (!py::isinstance<py::str>(o)) bad_prog(label_ + ": '" + k + "' must be a string");
+        return o.cast<std::string>();
+    }
+
+private:
+    const py::dict & d_;
+    std::string label_;
+    std::vector<std::string> allowed_;
+};
+
+rt::graph_desc parse_program(const py::object & prog) {
+    if (!py::isinstance<py::dict>(prog)) bad_prog("must be a dict with 'values', 'ops' and 'kv_size'");
+    const py::dict top = py::reinterpret_borrow<py::dict>(prog);
+    Fields tf(top, "program", { "values", "ops", "kv_size" }, {});
+    rt::graph_desc g;
+    g.kv_size = tf.u32("kv_size");
+    if (!py::isinstance<py::list>(top["values"]) || !py::isinstance<py::list>(top["ops"])) bad_prog("'values' and 'ops' must be lists");
+    const py::list values = py::reinterpret_borrow<py::list>(top["values"]);
+    const py::list ops = py::reinterpret_borrow<py::list>(top["ops"]);
+    size_t vi = 0;
+    for (const py::handle & hv : values) {
+        const std::string label = "value #" + std::to_string(vi++);
+        if (!py::isinstance<py::dict>(hv)) bad_prog(label + ": must be a dict");
+        const py::dict d = py::reinterpret_borrow<py::dict>(hv);
+        if (!d.contains("kind")) bad_prog(label + ": missing key 'kind'");
+        if (!py::isinstance<py::str>(d["kind"])) bad_prog(label + ": 'kind' must be a string");
+        const std::string kind = d["kind"].cast<std::string>();
+        rt::graph_value v;
+        if (kind == "in") {
+            Fields f(d, label + " (in)", { "kind", "n" }, {});
+            v.kind = rt::gv::in;
+            v.n = f.u32("n");
+        } else if (kind == "tmp") {
+            Fields f(d, label + " (tmp)", { "kind", "n" }, { "out" });
+            v.kind = rt::gv::tmp;
+            v.n = f.u32("n");
+            v.out = f.has("out") && f.boolean("out");
+        } else if (kind == "const") {
+            Fields f(d, label + " (const)", { "kind", "n", "handle" }, { "rows" });
+            v.kind = rt::gv::konst;
+            v.n = f.u32("n");
+            v.rows = f.has("rows") ? f.u32("rows") : 1u;
+            v.handle = (uint64_t) f.integer("handle");
+        } else if (kind == "pos") {
+            Fields f(d, label + " (pos)", { "kind" }, {});
+            v.kind = rt::gv::pos;
+        } else if (kind == "mask") {
+            Fields f(d, label + " (mask)", { "kind" }, {});
+            v.kind = rt::gv::mask;
+        } else {
+            bad_prog(label + ": unknown kind '" + kind + "' (in, tmp, const, pos, mask)");
+        }
+        g.values.push_back(v);
+    }
+    size_t oi = 0;
+    for (const py::handle & ho : ops) {
+        const size_t i = oi++;
+        if (!py::isinstance<py::dict>(ho)) bad_prog("op #" + std::to_string(i) + ": must be a dict");
+        const py::dict d = py::reinterpret_borrow<py::dict>(ho);
+        if (!d.contains("op")) bad_prog("op #" + std::to_string(i) + ": missing key 'op'");
+        if (!py::isinstance<py::str>(d["op"])) bad_prog("op #" + std::to_string(i) + ": 'op' must be a string");
+        const std::string name = d["op"].cast<std::string>();
+        int tag = -1;
+        if (d.contains("tag") && !d["tag"].is_none()) {
+            if (!py::isinstance<py::int_>(d["tag"])) bad_prog("op #" + std::to_string(i) + " (" + name + "): 'tag' must be an int");
+            long long t = -2;
+            try {
+                t = d["tag"].cast<long long>();
+            } catch (const py::cast_error &) {
+            }
+            if (t < -1 || t > 0x7fffffffLL) bad_prog("op #" + std::to_string(i) + " (" + name + "): 'tag' out of range");
+            tag = (int) t;
+        }
+        const std::string label = op_label(i, tag, name);
+        rt::graph_op o;
+        o.tag = tag;
+        if (name == "mul_mat") {
+            Fields f(d, label, { "op", "w", "x", "dst" }, { "addend", "tag" });
+            o.op = rt::gop::mul_mat;
+            o.w = (uint64_t) f.integer("w");
+            o.x = f.id("x"); o.dst = f.id("dst"); o.addend = f.opt_id("addend");
+        } else if (name == "add" || name == "mul") {
+            Fields f(d, label, { "op", "a", "b", "dst" }, { "tag" });
+            o.op = name == "add" ? rt::gop::add : rt::gop::mul;
+            o.a = f.id("a"); o.b = f.id("b"); o.dst = f.id("dst");
+        } else if (name == "scale") {
+            Fields f(d, label, { "op", "x", "dst", "s", "b" }, { "tag" });
+            o.op = rt::gop::scale;
+            o.x = f.id("x"); o.dst = f.id("dst"); o.s = f.real("s"); o.sb = f.real("b");
+        } else if (name == "rms_norm") {
+            Fields f(d, label, { "op", "x", "dst", "eps" }, { "weight", "tag" });
+            o.op = rt::gop::rms_norm;
+            o.x = f.id("x"); o.dst = f.id("dst"); o.eps = f.real("eps"); o.weight = f.opt_id("weight");
+        } else if (name == "glu") {
+            Fields f(d, label, { "op", "gate", "up", "dst", "variant" }, { "tag" });
+            o.op = rt::gop::glu;
+            o.gate = f.id("gate"); o.up = f.id("up"); o.dst = f.id("dst"); o.variant = f.u32("variant");
+        } else if (name == "unary") {
+            Fields f(d, label, { "op", "x", "dst", "func" }, { "tag" });
+            o.op = rt::gop::unary;
+            o.x = f.id("x"); o.dst = f.id("dst"); o.func = f.u32("func");
+        } else if (name == "rope") {
+            Fields f(d, label, { "op", "x", "dst", "n_heads", "head_dim", "n_dims", "table", "pos", "factor" }, { "tag" });
+            o.op = rt::gop::rope;
+            o.x = f.id("x"); o.dst = f.id("dst"); o.n_heads = f.u32("n_heads"); o.head_dim = f.u32("head_dim"); o.n_dims = f.u32("n_dims");
+            o.table = f.id("table"); o.pos = f.id("pos"); o.factor = f.real("factor");
+        } else if (name == "attn") {
+            Fields f(d, label, { "op", "q", "k", "v", "dst", "n_head", "n_head_kv", "d", "scale" }, { "mask", "tag" });
+            o.op = rt::gop::attn;
+            o.q = f.id("q"); o.k = f.id("k"); o.v = f.id("v"); o.dst = f.id("dst"); o.n_head = f.u32("n_head");
+            o.n_head_kv = f.u32("n_head_kv"); o.d = f.u32("d"); o.scale = f.real("scale"); o.mask = f.opt_id("mask");
+        } else if (name == "cpy") {
+            Fields f(d, label, { "op", "x", "dst" }, { "tag" });
+            o.op = rt::gop::cpy;
+            o.x = f.id("x"); o.dst = f.id("dst");
+        } else {
+            bad_prog(label + ": unknown op (mul_mat, add, mul, scale, rms_norm, glu, unary, rope, attn, cpy)");
+        }
+        g.ops.push_back(o);
+    }
+    return g;
+}
+
+// The tensors of one graph_run, converted and kept alive for the call.
+struct run_args {
+    uint32_t T = 0;
+    std::vector<at::Tensor> keep;
+    rt::graph_inputs in;
+    std::vector<at::Tensor> out;
+    rt::graph_outputs go;
+};
 
 std::atomic<uint64_t> g_serial{0};
 
@@ -314,6 +517,212 @@ public:
         return y;
     }
 
+
+    // ---- graphs ----
+
+    // f32 [n] or [rows, n] -> constant rows in the AUX region of the device; returns a const handle
+    uint64_t const_upload(const at::Tensor & t) {
+        check_cpu(t, "const");
+        if (t.scalar_type() != at::kFloat) throw std::invalid_argument("tesseract: a const must be a float32 tensor");
+        if (t.dim() != 1 && t.dim() != 2) throw std::invalid_argument("tesseract: a const must be 1D [n] or 2D [rows, n]");
+        const at::Tensor c = t.dim() == 1 ? t.contiguous().unsqueeze(0) : rows_contiguous(t);
+        const uint32_t rows = to_u32(c.size(0), "rows"), n = to_u32(c.size(1), "n");
+        if (rows == 0 || n == 0) throw std::invalid_argument("tesseract: a const must not be empty");
+        const size_t stride = rows > 1 ? (size_t) c.stride(0) : 0;
+        const float * p = c.data_ptr<float>();
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        return l->const_upload(p, rows, n, stride);
+    }
+
+    void const_free(uint64_t h) {
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        l->const_free(h);
+    }
+
+    // None, or why the device cannot run the program (ValueError if the program is malformed)
+    py::object graph_unsupported(const py::object & prog) {
+        const rt::graph_desc g = parse_program(prog);
+        std::string why;
+        bool has = false;
+        {
+            lease l(*this);
+            py::gil_scoped_release nogil;
+            const char * r = l->graph_unsupported(g);
+            if (r != nullptr) {
+                has = true;
+                why = r;
+            }
+        }
+        if (!has) return py::none();
+        return py::str(why);
+    }
+
+    uint64_t graph_create(const py::object & prog) {
+        const rt::graph_desc g = parse_program(prog);
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        return l->graph_create(g);
+    }
+
+    void graph_free(uint64_t h) {
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        l->graph_free(h);
+    }
+
+    py::dict graph_shape(uint64_t h) const {
+        rt::graph_shape s;
+        {
+            lease l(*this);
+            s = l->graph_shape_of(h);
+        }
+        py::list args;
+        for (size_t i = 0; i < s.arg_kind.size(); ++i) {
+            py::dict a;
+            a["kind"] = s.arg_kind[i] == rt::gv::in ? "in" : (s.arg_kind[i] == rt::gv::pos ? "pos" : "mask");
+            a["n"] = s.arg_n[i];
+            args.append(a);
+        }
+        py::list outs;
+        for (uint32_t n : s.out_n) outs.append(n);
+        py::dict r;
+        r["args"] = args;
+        r["outs"] = outs;
+        r["kv_size"] = s.kv_size;
+        r["kv_bytes"] = s.kv_bytes;
+        return r;
+    }
+
+    // The tensors of `inputs` (the in, pos and mask values in value order) as the graph takes them; T = rows of the in tensors.
+    run_args graph_args(uint64_t h, const py::list & inputs) const {
+        rt::graph_shape s;
+        {
+            lease l(*this);
+            s = l->graph_shape_of(h);
+        }
+        if (inputs.size() != s.arg_kind.size()) {
+            throw std::invalid_argument("tesseract: graph_run: " + std::to_string(inputs.size()) + " inputs given, the graph takes " +
+                                        std::to_string(s.arg_kind.size()) + " (its in, pos and mask values in value order)");
+        }
+        run_args a;
+        std::vector<at::Tensor> ts;
+        for (size_t i = 0; i < inputs.size(); ++i) ts.push_back(py::cast<at::Tensor>(inputs[i]));
+        int64_t T = -1;
+        auto agree = [&](int64_t t, const char * what) {
+            if (T >= 0 && t != T) {
+                throw std::invalid_argument(std::string("tesseract: graph_run: ") + what + " has " + std::to_string(t) + " rows, the other inputs " + std::to_string(T));
+            }
+            T = t;
+        };
+        for (size_t i = 0; i < ts.size(); ++i) {
+            const std::string name = "input " + std::to_string(i);
+            check_cpu(ts[i], name.c_str());
+            if (s.arg_kind[i] == rt::gv::in) {
+                if (ts[i].dim() != 2 || ts[i].scalar_type() != at::kFloat || ts[i].size(1) != (int64_t) s.arg_n[i]) {
+                    throw std::invalid_argument("tesseract: graph_run: " + name + " must be float32 [T, " + std::to_string(s.arg_n[i]) + "]");
+                }
+                agree(ts[i].size(0), name.c_str());
+            }
+        }
+        if (T < 0) {
+            for (size_t i = 0; i < ts.size() && T < 0; ++i) {
+                if (s.arg_kind[i] == rt::gv::pos) T = ts[i].numel();
+                else if (s.arg_kind[i] == rt::gv::mask && ts[i].dim() >= 2) T = ts[i].size(-1);
+            }
+        }
+        if (T < 1 || T > (int64_t) UINT32_MAX) throw std::invalid_argument("tesseract: graph_run: T must be >= 1");
+        a.T = (uint32_t) T;
+        for (size_t i = 0; i < ts.size(); ++i) {
+            const std::string name = "input " + std::to_string(i);
+            rt::graph_arg ga;
+            if (s.arg_kind[i] == rt::gv::in) {
+                const at::Tensor c = rows_contiguous(ts[i]);
+                a.keep.push_back(c);
+                ga.data = c.data_ptr<float>();
+                ga.stride = T > 1 ? (size_t) c.stride(0) : 0;
+            } else if (s.arg_kind[i] == rt::gv::pos) {
+                if (ts[i].numel() != T) {
+                    throw std::invalid_argument("tesseract: graph_run: " + name + " (positions) must have " + std::to_string(T) + " elements");
+                }
+                if (ts[i].scalar_type() != at::kInt && ts[i].scalar_type() != at::kLong) {
+                    throw std::invalid_argument("tesseract: graph_run: " + name + " (positions) must be int32 or int64");
+                }
+                const at::Tensor p = ts[i].reshape({-1}).contiguous();
+                if (p.scalar_type() == at::kLong) {
+                    const int64_t lo = p.min().item<int64_t>(), hi = p.max().item<int64_t>();
+                    if (lo < INT32_MIN || hi > INT32_MAX) throw std::invalid_argument("tesseract: graph_run: " + name + " (positions) do not fit int32");
+                }
+                const at::Tensor c = p.to(at::kInt).contiguous();
+                a.keep.push_back(c);
+                ga.data = c.data_ptr<int32_t>();
+            } else {
+                // [.., T, T] with leading dimensions of 1; float32 additive (0 / -inf) or bool (True: visible)
+                const at::Tensor & m = ts[i];
+                bool shape_ok = m.dim() >= 2 && m.size(-1) == T && m.size(-2) == T;
+                for (int64_t d = 0; shape_ok && d < m.dim() - 2; ++d) shape_ok = m.size(d) == 1;
+                if (!shape_ok) throw std::invalid_argument("tesseract: graph_run: " + name + " (mask) must be [T, T] (leading dimensions of 1 allowed)");
+                at::Tensor f;
+                if (m.scalar_type() == at::kBool) {
+                    f = torch::zeros({T, T}, torch::dtype(torch::kFloat)).masked_fill(~m.reshape({T, T}), -INFINITY);
+                } else if (m.scalar_type() == at::kFloat) {
+                    f = m.reshape({T, T}).contiguous();
+                } else {
+                    throw std::invalid_argument("tesseract: graph_run: " + name + " (mask) must be float32 (0 / -inf) or bool (True: visible)");
+                }
+                a.keep.push_back(f);
+                ga.data = f.data_ptr<float>();
+                ga.stride = 0;
+            }
+            a.in.args.push_back(ga);
+        }
+        for (uint32_t n : s.out_n) {
+            a.out.push_back(torch::empty({T, (int64_t) n}, torch::dtype(torch::kFloat)));
+            a.go.outs.push_back({ a.out.back().data_ptr<float>(), 0 });
+        }
+        return a;
+    }
+
+    // The out values of a run: float32 [T, n] tensors in value order
+    py::list graph_run(uint64_t h, const py::list & inputs, bool ref) {
+        run_args a = graph_args(h, inputs);
+        {
+            lease l(*this);
+            py::gil_scoped_release nogil;
+            if (ref) l->graph_run_ref(h, a.T, a.in, a.go);
+            else l->graph_run(h, a.T, a.in, a.go);
+        }
+        py::list r;
+        for (const at::Tensor & t : a.out) r.append(t);
+        return r;
+    }
+
+    py::dict graph_info(uint64_t h, int64_t T) {
+        const uint32_t t = to_u32(T, "T");
+        rt::graph_plan_info i;
+        {
+            lease l(*this);
+            py::gil_scoped_release nogil;
+            i = l->graph_info(h, t);
+        }
+        py::dict r;
+        r["T"] = i.T;
+        r["lists"] = i.lists;
+        r["records"] = i.records;
+        r["joins"] = i.joins;
+        r["mul_mat_begin"] = i.mul_mat_begin;
+        r["io_bytes"] = i.io_bytes;
+        r["preload_lines"] = i.preload_lines;
+        r["fa_new"] = i.fa_new;
+        py::dict kinds;
+        for (uint32_t k = 0; k < 64; ++k) {
+            if (i.by_kind[k] != 0) kinds[rt::record_kind_name(k)] = i.by_kind[k];
+        }
+        r["by_kind"] = kinds;
+        return r;
+    }
+
     py::dict counters() const {
         rt::counters c;
         {
@@ -332,6 +741,13 @@ public:
         r["h2d_bytes"] = c.h2d_bytes;
         r["h2d_weight_bytes"] = c.h2d_weight_bytes;
         r["d2h_bytes"] = c.d2h_bytes;
+        r["graphs"] = c.graphs;
+        r["graph_runs"] = c.graph_runs;
+        r["graph_launches"] = c.graph_launches;
+        r["graph_records"] = c.graph_records;
+        r["graph_plan_hits"] = c.graph_plan_hits;
+        r["graph_plan_misses"] = c.graph_plan_misses;
+        r["consts"] = c.consts;
         return r;
     }
 
@@ -444,6 +860,33 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
              }, py::arg("handle"), py::arg("x"), py::arg("out") = py::none(),
              "The same y on the host with libtsr_ref from the weight rows read back from the device (bit-identical "
              "to linear() on a correct device)")
+        .def("const_upload", &Device::const_upload, py::arg("tensor"),
+             "Upload a float32 [n] or [rows, n] tensor as constant rows (norm weight, bias row, RoPE table) in the AUX "
+             "region; returns a const handle (int, never 0)")
+        .def("const_free", &Device::const_free, py::arg("handle"))
+        .def("graph_unsupported", &Device::graph_unsupported, py::arg("program"),
+             "None if the device can run the program (a dict of values, ops, kv_size), else the reason (it names the op's "
+             "tag and kind); ValueError if the program is malformed. A const with handle 0 and a mul_mat with w = 0 are "
+             "checked by shape only")
+        .def("graph_create", &Device::graph_create, py::arg("program"),
+             "Validate the program as graph_unsupported does and allocate its KV planes; returns a graph handle. "
+             "ValueError: malformed; TesseractError: the device cannot run it, or the planes do not fit")
+        .def("graph_free", &Device::graph_free, py::arg("handle"))
+        .def("graph_shape", &Device::graph_shape, py::arg("handle"),
+             "{'args': [{'kind': 'in' | 'pos' | 'mask', 'n': int}], 'outs': [n], 'kv_size', 'kv_bytes'}")
+        .def("graph_run", [](Device & d, uint64_t h, const py::list & inputs) { return d.graph_run(h, inputs, false); },
+             py::arg("handle"), py::arg("inputs"),
+             "Run the graph: inputs = the tensors of the in, pos and mask values in value order (in: float32 [T, n]; pos: "
+             "int32 / int64 [T]; mask: float32 0 / -inf or bool True = visible, [T, T]); T is the row count of the in "
+             "tensors. Returns the out values as float32 [T, n] tensors, in value order. TesseractError whose text "
+             "contains 'does not fit': this T cannot be placed")
+        .def("graph_run_ref", [](Device & d, uint64_t h, const py::list & inputs) { return d.graph_run(h, inputs, true); },
+             py::arg("handle"), py::arg("inputs"),
+             "The same result on the host: the plan's op lists executed with the per-kind references on an image of the "
+             "device's memory (bit-identical to graph_run on a correct device)")
+        .def("graph_info", &Device::graph_info, py::arg("handle"), py::arg("T"),
+             "The plan of T (made if needed): lists, records, joins, mul_mat_begin, by_kind {name: count}, io_bytes, "
+             "preload_lines, fa_new")
         .def("counters", &Device::counters)
         .def("reset_counters", &Device::reset_counters)
         .def("memory", &Device::memory);

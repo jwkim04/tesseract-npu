@@ -473,7 +473,7 @@ build pushes the same op stream as the RISC-V build (SW §6.8).
 ### 8.6 JIT integration
 
 A JIT is a registry of precompiled kernels launched by name, with a tinygrad or torch.compile backend that maps scheduled kernels
-onto it. `tsr_rt`, the PyTorch path, emits one-record op lists and launches the `graph` kernel
+onto it. `tsr_rt`, the PyTorch path, emits op lists (one MUL_MAT record per weight matmul in matmul mode, a region of ops per list in full mode) and launches the `graph` kernel
 ([sw/rt/README.md](../sw/rt/README.md), SW §9.4). A fixed kernel set covers the LLM hot path (matmul, norms, attention, sampling),
 not arbitrary graphs.
 

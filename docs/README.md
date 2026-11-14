@@ -49,7 +49,7 @@ and their style guide are in [fig/src](fig/src/STYLE.md).
 - Weights: GGUF as shipped. Q8_0 and Q4_K run natively. Every other type is converted to Q8_0 at load.
 - Attention: flash attention on the device with a Q8_0 KV cache, head dimensions 64, 128, 256 and 512.
 - Execution: one launch per decode token in full mode. A prefill or verification pass takes up to `T_MAX` tokens per weight pass; the release image has `T_MAX` 4.
-- PyTorch: `torch.compile(model, backend="tesseract")` runs the weight matmuls on the device. `QuantLinear` takes ggml Q8_0 and Q4_K blocks.
+- PyTorch: `torch.compile(model, backend="tesseract")` runs regions of the aten graph as one op list each (full mode), or only the weight matmuls (matmul mode), on the device. `QuantLinear` takes ggml Q8_0 and Q4_K blocks.
 - Debugging and profiling: GDB over PCIe on the control core, `tsr-dbg`, `tsr-prof`, the profile report and `tsr-top`.
 - Verification: the C simulator is the bit-exact oracle for the RTL, the firmware and the host stack. `klcheck` and `numcheck` check whole models.
 

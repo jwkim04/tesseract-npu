@@ -6,8 +6,8 @@
     build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL_DIR --forward-only --tokens 8 \
         --save-logits sim.npy                                  # then on another device: --expect sim.npy
 
-Run it with -I: the model directory is data, and this script sets sys.path itself (sw/torch,
-build/torch/python, sw/tools). The model is loaded from a local directory: safetensors only,
+Run it with -I: the model directory is data, and this script sets sys.path itself (sw/torch, the
+directory of the extension: TSR_TORCH_EXT_DIR, else build/torch/python, and sw/tools). The model is loaded from a local directory: safetensors only,
 trust_remote_code=False, float32 (a bf16 checkpoint is widened exactly). The device is TSR_DEVICE
 (sim by default). With --download REPO the directory is first filled from the Hugging Face Hub with
 huggingface_hub (weights as *.safetensors, config and tokenizer files only; a repository without
@@ -47,6 +47,18 @@ The KL ratios are reported, not gated. Exit 1 FAIL, 2 usage / input error.
 --forward-only: one compiled forward of the first --tokens prompt tokens; --save-logits writes the f32
 logits (.npy), --expect compares them bit for bit with a saved file (e.g. TSR_DEVICE=vkernel vs sim).
 A second forward of the same prompt gives the steady state (no compilation, every op list cached).
+--full-mode: full mode (docs/torch-backend.md): one compiled forward of the first --tokens prompt tokens
+must be ONE region and ONE launch (no matmul node left), checked bit for bit against the reference executor
+(TSR_TORCH_VERIFY on for this forward), then a second forward (steady state, bit-identical, one more
+launch, no upload); the logits are compared with eager float32 (KL per position, top-1 >= 80 %) and with an
+eager run whose attention quantizes q, k and v as q8_0 (reported, not gated). With --full-mode,
+--save-logits and --expect work as with --forward-only: --expect is a check (the logits must be bit-identical
+to the file; "expect" in the JSON counts the identical rows), e.g. a card against the simulator.
+--full-mode --attention cpu: the same with options={"attention": "cpu"}: attention stays on the CPU in float32 and
+the forward is several regions (one per attention boundary). "one region" and "one launch" become "every region ran
+on the device" (no CPU fallback, every region call verified) and the steady forward launches once per region; the
+matmuls between the regions stay device matmuls, so "no matmul node left" is only checked with attention on the device. The JSON
+records the region and launch counts. --attention device (the default) keeps the checks above.
 --speed 1,8,32: timing only. Steady-state forwards of the first N prompt tokens for each N, with the PERF
 counters read after every launch and with them off.
 """
@@ -62,7 +74,8 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(REPO / "sw" / "torch"), str(REPO / "build" / "torch" / "python"), str(REPO / "sw" / "tools")]
+sys.path[:0] = [str(REPO / "sw" / "torch"), os.environ.get("TSR_TORCH_EXT_DIR") or str(REPO / "build" / "torch" / "python"),
+                str(REPO / "sw" / "tools")]
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -198,6 +211,37 @@ def compare(ref: torch.Tensor, x: torch.Tensor) -> dict:
             "kl_max": float(kl.max()), "top1": float(top1.mean()), "top1_count": int(top1.sum()),
             "bit_identical_rows": int(ident.sum()), "max_abs_dlogit": float(dmax.max()), "min_cosine": float(cos.min()),
             "kl_per_position": [float(v) for v in kl], "top1_per_position": [bool(v) for v in top1]}
+
+
+def q8_0_roundtrip(x: torch.Tensor) -> torch.Tensor:
+    """x quantized as q8_0 and back: blocks of 32 values along the last dimension, d = max|x| / 127 stored as
+    fp16, q = round(x / d) with ties away from zero, value q * fp16(d). The device does this to Q, K and V."""
+    shape = x.shape
+    b = x.float().reshape(-1, 32)
+    d = b.abs().amax(-1, keepdim=True) / 127.0
+    inv = torch.where(d > 0, 1.0 / d, torch.zeros_like(d))
+    t = b * inv
+    q = torch.sign(t) * torch.floor(t.abs() + 0.5)
+    return (q * d.half().float()).reshape(shape).to(x.dtype)
+
+
+class Q8Attention:
+    """While active, torch.nn.functional.scaled_dot_product_attention quantizes q, k and v as q8_0 first
+    (the device's attention: q8 scores, exact P.V). Used for the eager reference only."""
+
+    def __enter__(self):
+        self.orig = F.scaled_dot_product_attention
+        orig = self.orig
+
+        def sdpa(q, k, v, *a, **kw):
+            assert q.shape[-1] % 32 == 0, tuple(q.shape)
+            return orig(q8_0_roundtrip(q), q8_0_roundtrip(k), q8_0_roundtrip(v), *a, **kw)
+
+        F.scaled_dot_product_attention = sdpa
+        return self
+
+    def __exit__(self, *exc):
+        F.scaled_dot_product_attention = self.orig
 
 
 def bits_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
@@ -445,6 +489,21 @@ def gguf_output_blocks(path: str):
 # ------------------------------------------------------------------------------------------
 # modes
 # ------------------------------------------------------------------------------------------
+def save_and_expect(args, raw: np.ndarray, res: dict) -> bool:
+    """--save-logits writes the f32 logits (.npy); --expect compares them bit for bit with a saved file and
+    records the count of identical rows in res["expect"]. False if --expect is given and they differ."""
+    if args.save_logits:
+        np.save(args.save_logits, raw)
+    if not args.expect:
+        return True
+    ref = np.load(args.expect)
+    same_shape = ref.shape == raw.shape and ref.dtype == raw.dtype
+    rows = int((ref.view(np.uint32) == raw.view(np.uint32)).all(-1).sum()) if same_shape else 0
+    res["expect"] = {"file": args.expect, "rows": int(raw.shape[0]), "bit_identical_rows": rows,
+                     "sha256_expected": hashlib.sha256(ref.tobytes()).hexdigest()}
+    return same_shape and rows == raw.shape[0]
+
+
 def run_forward_only(args, tok, model, res: dict) -> int:
     ids = tokenize(tok, args.prompt, args.tokens)
     res["prompt_ids"] = ids[0].tolist()
@@ -480,17 +539,79 @@ def run_forward_only(args, tok, model, res: dict) -> int:
                              "h2d_bytes": c2.get("rt_h2d_bytes"), "d2h_bytes": c2.get("rt_d2h_bytes"),
                              "repeatable": bits_equal(lg, lg2)}
     ok = ok and res["forward_steady"]["repeatable"]
-    if args.save_logits:
-        np.save(args.save_logits, raw)
-    if args.expect:
-        ref = np.load(args.expect)
-        same_shape = ref.shape == raw.shape
-        rows = int((ref.view(np.uint32) == raw.view(np.uint32)).all(-1).sum()) if same_shape else 0
-        res["expect"] = {"file": args.expect, "rows": int(raw.shape[0]), "bit_identical_rows": rows,
-                         "sha256_expected": hashlib.sha256(ref.tobytes()).hexdigest()}
-        ok = ok and same_shape and rows == raw.shape[0]
+    ok = save_and_expect(args, raw, res) and ok
     res["pass"] = bool(ok)
     return 0 if ok else 1
+
+
+def run_regions(args, tok, model, res: dict) -> int:
+    """--full-mode: one forward is one region and one launch, verified against the reference executor;
+    logits against eager float32."""
+    ids = tokenize(tok, args.prompt, args.tokens)
+    T = int(ids.shape[1])
+    res["prompt_ids"] = ids[0].tolist()
+    with torch.no_grad():
+        ref = model(input_ids=ids, use_cache=False).logits[0].float().contiguous()
+        with Q8Attention():
+            ref_q8 = model(input_ids=ids, use_cache=False).logits[0].float().contiguous()
+    tt.set_verify(True)
+    compiled = tt.compile(model, mode="full", attention=args.attention)
+    tt.reset_counters()
+    t0 = time.time()
+    with torch.no_grad():
+        lg = compiled(input_ids=ids, use_cache=False).logits[0].float().contiguous()
+    wall = time.time() - t0
+    c = tt.counters()
+    tt.set_verify(False)
+    regs = tt.regions()
+    res["forward"] = {"tokens": T, "attention": args.attention, "wall_s_incl_compile": round(wall, 2), "regions": c["regions"],
+                      "region_calls": c["region_calls"], "launches": c["rt_graph_launches"],
+                      "records": c["rt_graph_records"], "verified_regions": c["verified_regions"],
+                      "region_cpu_fallback_calls": c["region_cpu_fallback_calls"], "matmul_nodes": c["nodes_device"],
+                      "uploads": c["uploads"], "consts_uploaded": c["consts_uploaded"],
+                      "perf_cycles": c.get("rt_perf_cycles"), "perf_cycles_per_token": c.get("rt_perf_cycles", 0) / T,
+                      "ops": regs[-1].region.op_counts() if regs else {}}
+    tt.reset_counters()
+    t0 = time.time()
+    with torch.no_grad():
+        lg2 = compiled(input_ids=ids, use_cache=False).logits[0].float().contiguous()
+    c2 = tt.counters()
+    raw = lg.numpy()
+    res["logits_sha256"] = hashlib.sha256(raw.tobytes()).hexdigest()
+    res["forward_steady"] = {"wall_s": round(time.time() - t0, 3), "launches": c2["rt_graph_launches"],
+                             "uploads": c2["uploads"] + c2["consts_uploaded"], "plan_hits": c2["rt_graph_plan_hits"],
+                             "repeatable": bits_equal(lg, lg2)}
+    cmp = compare(ref, lg)
+    cmp_q8 = compare(ref_q8, lg)
+    cmp_ref_q8 = compare(ref, ref_q8)
+    res["kl"] = {"cpu_vs_device": cmp, "cpu_q8_attention_vs_device": cmp_q8, "cpu_vs_cpu_q8_attention": cmp_ref_q8}
+    nreg = c["regions"]                       # 1 with attention on the device; one per attention boundary otherwise
+    res["checks"] = {}
+    if args.attention == "device":
+        res["checks"]["one region"] = nreg == 1
+        res["checks"]["one launch"] = c["region_calls"] == 1 and c["rt_graph_launches"] == 1
+        res["checks"]["no matmul node left"] = c["nodes_device"] == 0 and c["device_calls"] == 0
+    else:
+        res["checks"]["every region ran on the device"] = (
+            nreg >= 1 and c["region_calls"] == nreg and c["rt_graph_launches"] == nreg
+            and c["region_cpu_fallback_calls"] == 0 and c["verified_regions"] == nreg)
+    res["checks"].update({
+        "no CPU fallback": c["region_cpu_fallback_calls"] == 0,
+        "verified bit for bit": c["verified_regions"] == nreg,
+        "steady state": res["forward_steady"]["launches"] == nreg and res["forward_steady"]["uploads"] == 0
+        and res["forward_steady"]["repeatable"],
+        "top-1 >= 80 %": cmp["top1"] >= 0.8,
+    })
+    if args.expect:
+        res["checks"]["bit-identical to --expect"] = save_and_expect(args, raw, res)
+    else:
+        save_and_expect(args, raw, res)
+    res["pass"] = all(res["checks"].values())
+    log("KL(cpu || device) per position: " + " ".join(f"{v:.2e}" for v in cmp["kl_per_position"]))
+    for name, c_ in (("KL(eager f32 || device)", cmp), ("KL(eager q8 attention || device)", cmp_q8),
+                     ("KL(eager f32 || eager q8 attention)", cmp_ref_q8)):
+        log(f"{name}: mean {c_['kl_mean']:.2e} median {c_['kl_median']:.2e} max {c_['kl_max']:.2e} top-1 {c_['top1']:.3f}")
+    return 0 if res["pass"] else 1
 
 
 def run_speed(args, tok, model, res: dict) -> int:
@@ -766,15 +887,23 @@ def summary(res: dict) -> str:
         for key, label in (("cpu_vs_device", "KL(cpu || device)"), ("cpu_vs_floor", "KL(cpu || cpu+1ulp)"),
                            ("cpu_vs_cpu_q8", "KL(cpu || cpu-q8)"), ("cpu_vs_weights_only_q8", "KL(cpu || weights-only q8)"),
                            ("cpu_q8_vs_device", "KL(cpu-q8 || device)"), ("cpu_q8_vs_its_floor", "KL(cpu-q8 || cpu-q8+1ulp)")):
+            if key not in k:
+                continue
             s = k[key]
             L.append(f"  {label:<28} mean {s['kl_mean']:.4e}  median {s['kl_median']:.4e}  max {s['kl_max']:.4e}  "
                      f"top-1 {s['top1_count']}/{s['positions']}  identical rows {s['bit_identical_rows']}  "
                      f"max|dlogit| {s['max_abs_dlogit']:.4g}")
         for lab, rk, mk, pk in (("cpu f32", "ratio_device_over_floor", "ratio_floor_moved", "floor_moved_positions"),
                                 ("cpu-q8 ", "ratio_q8_device_over_floor", "q8_ratio_floor_moved", "q8_floor_moved_positions")):
+            if rk not in k:
+                continue
             r, rm = k[rk], k.get(mk)
             L.append(f"  ratio device/floor ({lab}): " + (f"{r:.4g}" if r is not None else "floor 0")
                      + f"; over the {k[pk]} positions where the floor moved: " + (f"{rm:.4g}" if rm is not None else "-"))
+    if "forward" in res and "regions" in res["forward"]:
+        f = res["forward"]
+        L.append(f"  forward T={f['tokens']}: {f['regions']} region, {f['launches']} launch(es), {f['records']} records, "
+                 f"{f['perf_cycles_per_token']:.0f} PERF cycles / token, ops {f['ops']}")
     if "perf" in res:
         p = res["perf"]
         L.append(f"  PERF cycles / token {p['perf_cycles_per_token']:.0f} (MVM {p['perf_mvm_cycles_per_token']:.0f}), "
@@ -806,20 +935,27 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=0, help="torch / oracle threads (default: torch's, oracle 8)")
     ap.add_argument("--no-ref-check", action="store_true", help="skip the bit-exact reference forwards")
     ap.add_argument("--forward-only", action="store_true", help="one compiled forward; --save-logits / --expect")
+    ap.add_argument("--full-mode", action="store_true", help="full mode: one forward = one region = one launch, verified; "
+                    "KL and top-1 against eager f32")
+    ap.add_argument("--attention", choices=["device", "cpu"], default="device",
+                    help="(--full-mode) where attention runs: device (q8_0, one region, one launch) or cpu (float32; "
+                    "several regions, every one on the device)")
     ap.add_argument("--speed", metavar="N,N,...", help="timing mode: steady-state forwards of the first N prompt tokens "
                     "(e.g. 1,8,32), PERF counters on and off; 169 device calls each, no comparison")
-    ap.add_argument("--save-logits", help="(--forward-only) write the logits as .npy")
-    ap.add_argument("--expect", help="(--forward-only) logits .npy that must be bit-identical")
+    ap.add_argument("--save-logits", help="(--forward-only, --full-mode) write the logits as .npy")
+    ap.add_argument("--expect", help="(--forward-only, --full-mode) logits .npy that must be bit-identical")
     ap.add_argument("--json", help="write the results here")
     args = ap.parse_args()
     if args.tokens < 1 or args.gen < 1:
         die("--tokens and --gen must be >= 1")
+    # the other modes tap the per-matmul device calls: they test matmul mode
+    os.environ["TSR_TORCH_MODE"] = "full" if args.full_mode else "matmul"
     if args.threads:
         torch.set_num_threads(args.threads)
 
     model_dir = Path(args.model_dir)
     t_start = time.time()
-    res: dict = {"model_dir": str(model_dir), "mode": "speed" if args.speed else ("forward-only" if args.forward_only else "full")}
+    res: dict = {"model_dir": str(model_dir), "mode": "speed" if args.speed else ("forward-only" if args.forward_only else ("full-mode" if args.full_mode else "full"))}
     if args.download:
         model_dir.mkdir(parents=True, exist_ok=True)
         res["downloaded"] = download(args.download, model_dir, args.revision)
@@ -838,7 +974,7 @@ def main() -> int:
     if args.speed:
         rc = run_speed(args, tok, model, res)
     else:
-        rc = run_forward_only(args, tok, model, res) if args.forward_only else run_full(args, tok, model, res)
+        rc = (run_regions if args.full_mode else run_forward_only if args.forward_only else run_full)(args, tok, model, res)
     res["wall_s"] = round(time.time() - t_start, 1)
     res["peak_rss_gb"] = round(rss_gb(), 2)
     res["counters_end"] = tt.counters()

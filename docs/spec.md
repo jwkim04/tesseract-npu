@@ -643,7 +643,7 @@ written numpy model and by exhaustive comparison of the unary functions over all
   correctly rounded `tsr_frecip`; there is no RECIP_APPROX.
 - GELU16 and GEGLU16: the GELU and GEGLU of llama.cpp graphs run as these (SW-31). Like ggml CPU
   (`GGML_GELU_FP16`) they clamp at ±10 and round input and result to binary16. The tanh-form GELU serves
-  PyTorch.
+  PyTorch (SW-98).
 - RoPE angles follow the recurrence of ggml-cpu: θ_0 = f32(p), θ_(i+1) = θ_i × TS, with
   TS = `powf(freq_base, -2/n_dims)` of the host libm passed in an s register, so with ext_factor = 0 the
   angles are bit-identical to the CPU's. Only YaRN (ext_factor ≠ 0) uses a table A_i folded by the host. The
@@ -936,17 +936,21 @@ split structure). Verification hooks: `test-backend-ops` registers the Tesseract
 the CPU; `TSR_DEVICE=sim|xrt|mock|vkernel` and `TSR_TRACE=<directory>` choose the device and dump traces
 ([xrt-host.md](xrt-host.md), [platform-u200.md](platform-u200.md)).
 
-PyTorch backend: `torch.compile(model, backend="tesseract")` of `sw/torch` runs only the weight matrix
-multiplications of a PyTorch model on Tesseract (`mm`, `addmm`, `linear`, `matmul` and `mv` where one operand
-is a parameter, buffer or graph constant); the rest runs eagerly on the CPU. It is for inference only. The
+PyTorch backend: `torch.compile(model, backend="tesseract")` of `sw/torch` runs a PyTorch model on Tesseract in
+one of the two execution modes. In full mode, the default, the aten graph is partitioned into regions of ops that
+lower to op list kinds (the weight matmuls, RMSNorm, RoPE, attention, activations and residual adds), and a
+region runs as one op list; the rest runs eagerly on the CPU. In matmul mode only the weight matrix
+multiplications go to the device (`mm`, `addmm`, `linear`, `matmul` and `mv` where one operand is a parameter,
+buffer or graph constant). It is for inference only. The
 device is reached through the same `tsr_transport`, and the numeric rules are those of the llama.cpp path:
 float32, float16 and bfloat16 weights become Q8_0 with `quantize_row_q8_0_ref` at upload (byte-identical to
-llama.cpp's load-time conversion), the activations are quantized on the device with QACT A32, the products are
-f32, and bias and scale factors are applied on the CPU in f32. Below it, the runtime `tsr_rt` (`sw/rt`)
-provides weight upload and `y = x·Wᵀ` without a ggml graph (one `graph` launch per IO tile, SW §9.4) and shares
-the op-list builder, the allocator, the weight layout (`tsr_lower`) and the load-time conversion with
-`ggml-tesseract`. At model level the KL is examined against a reference (cpu-q8) that computes the same 8-bit
-operands with a torch f32 GEMM ([torch-backend.md](torch-backend.md)).
+llama.cpp's load-time conversion), the activations are quantized on the device with QACT A32, and the products
+are f32. In matmul mode bias and scale factors are applied on the CPU in f32. Below it, the runtime `tsr_rt`
+(`sw/rt`) provides weight upload, `y = x·Wᵀ` and the run of a region program without a ggml graph (one `graph`
+launch per list, SW §9.4) and shares the op-list builder, the allocator, the weight layout (`tsr_lower`) and the
+load-time conversion with `ggml-tesseract`. The oracle of a region is the reference executor, the op list run on
+the host with the per-kind references. At model level the KL is examined against a reference (cpu-q8) that
+computes the same 8-bit operands with a torch f32 GEMM ([torch-backend.md](torch-backend.md)).
 
 ## 13. MoE support
 
@@ -1354,7 +1358,7 @@ tesseract/
 │   ├── sim/                 # simulator and references: tsr_ref*.c, CSR and queue model, VU and AT units, RV32 interpreter, scheduler, race detector, trace format, debug models
 │   ├── ctrl/                # firmware SDK: header library tsr/*.hpp, runtime, graph executor, kernels, host build, tsr-elf
 │   ├── transport/           # tsr_transport: protocol layer and the kdevs sim, mock, vkernel, xrt
-│   ├── rt/                  # tsr_rt: runtime without ggml (weight upload, linear), shares tsr_lower
+│   ├── rt/                  # tsr_rt: runtime without ggml (weight upload, linear, graph API), shares tsr_lower
 │   ├── torch/               # PyTorch backend: torch.compile backend "tesseract", extension module, tests
 │   ├── tools/               # klcheck, numcheck, tsr-selftest, tsr-log, trace tools (gen, replay), tsr_bw, tsr-dbg, tsr-prof
 │   └── xrt-driver/          # patches that build the XRT drivers for current Linux kernels

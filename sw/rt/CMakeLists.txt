@@ -1,7 +1,8 @@
 # sw/rt — tsr_rt: the ggml-free Tesseract runtime (weight upload, linear y = x W^T), the host stack
 # of the PyTorch backend. See tsr_rt.h.
 #
-#   tsr_rt         static, PIC: tsr_rt.cpp + the ggml backend's load-time conversion
+#   tsr_rt         static, PIC: tsr_rt.cpp (weights, linear) + tsr_rt_graph.cpp (whole-graph lowering: constants, KV planes,
+#                  planner, run, reference run; the reference executor is tsr_opl_ref, sw/ctrl/ref) + the ggml backend's load-time conversion
 #                  (sw/ggml-tesseract/tsr-weights.cpp: f32 / f16 / bf16 -> quantize_row_q8_0_ref);
 #                  links tsr_lower (lowering, allocator, weight layout: shared with ggml-tesseract),
 #                  tsr_transport and ggml-base (pinned llama.cpp: quantize_row_q8_0_ref, to_float)
@@ -21,6 +22,7 @@ find_package(Threads REQUIRED)
 
 set(TSR_RT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/tsr_rt.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tsr_rt_graph.cpp
     ${TESSERACT_ROOT}/sw/ggml-tesseract/tsr-weights.cpp)
 
 function(tsr_rt_target tgt)
@@ -31,7 +33,7 @@ function(tsr_rt_target tgt)
     target_include_directories(${tgt}
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
         PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)   # ggml-quants.h (quantize_row_q8_0_ref)
-    target_link_libraries(${tgt} PUBLIC tsr_ref PRIVATE tsr_lower tsr_transport ggml-base Threads::Threads)
+    target_link_libraries(${tgt} PUBLIC tsr_ref PRIVATE tsr_lower tsr_opl_ref tsr_transport ggml-base Threads::Threads)
     # DB §4.1, §9.5: tsr_rt is an owning process's library: TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
     # service (the OBJECT library registers it before main)
     # (a static library hands the object file to its consumers' link lines: an archive member with only a
@@ -89,6 +91,28 @@ set_tests_properties(rt_mock PROPERTIES ENVIRONMENT
 add_test(NAME rt_mock_tmax8 COMMAND test-tsr-rt)
 set_tests_properties(rt_mock_tmax8 PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+
+# ---------------------------------------------------------------------------
+# Graph tests (rt_graph_*): graph_run against graph_run_ref (the op lists executed on the host with tsr_opl_ref), against the
+# per-kind references called directly, and against linear_ref; decoder layers, N / K parts, masks, limits, threads, negative
+# controls. See tests/test_tsr_rt_graph.cpp.
+# ---------------------------------------------------------------------------
+add_executable(test-tsr-rt-graph tests/test_tsr_rt_graph.cpp)
+set_target_properties(test-tsr-rt-graph PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+target_compile_options(test-tsr-rt-graph PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+target_include_directories(test-tsr-rt-graph PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
+target_link_libraries(test-tsr-rt-graph PRIVATE tsr_rt tsr_lower tsr_opl_ref tsr_ref ggml-base Threads::Threads)
+
+add_test(NAME rt_graph_sim COMMAND test-tsr-rt-graph)
+set_tests_properties(rt_graph_sim PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+add_test(NAME rt_graph_sim_tmax4 COMMAND test-tsr-rt-graph)
+set_tests_properties(rt_graph_sim_tmax4 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=4;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+add_test(NAME rt_graph_sim_tmax8 COMMAND test-tsr-rt-graph)
+set_tests_properties(rt_graph_sim_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+add_test(NAME rt_graph_mock COMMAND test-tsr-rt-graph)
+set_tests_properties(rt_graph_mock PROPERTIES ENVIRONMENT
+    "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
 
 # The image rules of tsr_rt (SW §6.9, as the ggml backend's): an image of an older Tesseract Basis
 # (fw_basis_old, 0.0.5: the production image linked as such) and an image without the MUL_MAT kind

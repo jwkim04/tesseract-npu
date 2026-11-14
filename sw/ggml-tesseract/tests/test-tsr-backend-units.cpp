@@ -45,6 +45,7 @@
 #include <string>
 #include "ggml.h"
 #include "tsr-build.h"
+#include "tsr-kinds.h"
 #include "tsr/plan.hpp"
 #endif
 
@@ -2364,6 +2365,257 @@ static void test_gdn_snapshots() {
     (void) why;
 }
 
+// ---- drift guard between the two encoders (SW-102) ----
+// The ggml backend lowers a node with tsr_lower_m7; the graph runtime (PyTorch) encodes the same op from handles and shapes
+// with tsr_k_* (tsr-kinds.cpp). Both must write the same kind and argument words, and the same preload entries. Each case
+// builds the ggml node on fake addresses, lowers it, builds the tsr_kd_* descriptor from the same handles and shapes, encodes
+// it and compares. Two forms differ by design and are compared where they coincide: ROPE with the ATAB table (the runtime's
+// form; the ggml path uses the angle recurrence, TS) is compared in the recurrence form; MUL_MAT is not lowered by
+// tsr_lower_m7 (the backend tiles it with tsr-lower and the builder), so its words are not compared here.
+static tsr_kenv kenv_of(const tsr_build_env & env) {
+    tsr_kenv k;
+    k.cfg = env.cfg;
+    k.pl = env.pl;
+    k.num_ch = env.num_ch;
+    return k;
+}
+
+static bool same_record(const char * what, const tsr_rec & a, const tsr_rec & b) {
+    bool ok = a.kind == b.kind && a.n_args == b.n_args && a.pre.size() == b.pre.size() && a.kv_plane == b.kv_plane &&
+              a.kv_idx_src == b.kv_idx_src && a.kv_idx_n == b.kv_idx_n && a.more.size() == b.more.size();
+    for (uint32_t i = 0; ok && i < a.n_args; ++i) {
+        if (a.args[i] != b.args[i]) {
+            fprintf(stderr, "  %s: word %u: ggml %u (0x%x), kinds %u (0x%x)\n", what, i, a.args[i], a.args[i], b.args[i], b.args[i]);
+            ok = false;
+        }
+    }
+    for (size_t i = 0; ok && i < a.pre.size(); ++i) {
+        if (a.pre[i].word != b.pre[i].word || a.pre[i].src != b.pre[i].src || a.pre[i].bytes != b.pre[i].bytes) {
+            fprintf(stderr, "  %s: preload entry %zu differs\n", what, i);
+            ok = false;
+        }
+    }
+    if (!ok) {
+        fprintf(stderr, "  %s: kind %u / %u, %u / %u words, %zu / %zu preload entries\n", what, a.kind, b.kind, a.n_args, b.n_args,
+                a.pre.size(), b.pre.size());
+    }
+    return ok;
+}
+
+static tsr_k_rows rows_at(uint64_t off, uint32_t stride_lines) {
+    return { tsr_dram_handle(1, off), stride_lines };
+}
+
+static void test_encoders_agree() {
+    fake_kv kv;
+    kv.add("cache_k_l0", TSR_KV_K, 128, 256, 0x40000000);
+    kv.add("cache_v_l0", TSR_KV_V, 128, 256, 0x40100000);
+    const tsr_build_env env = fake_env(&kv);
+    const tsr_kenv ke = kenv_of(env);
+    std::string why;
+    tsr_rec g, k;
+    const int64_t n = 256, rows = 3;
+    const uint32_t L = tsr_k_lines((uint64_t) n);
+    auto lower = [&](ggml_tensor * node, ggml_tensor * fused = nullptr) {
+        CHECK(tsr_lower_m7(env, false, node, fused, &g, &why));
+    };
+    // ADD / MUL: b is one row for every row; b with its own rows (period 3)
+    for (int mul = 0; mul < 2; ++mul) {
+        for (int64_t bp : { 1, 3 }) {
+            gctx c;
+            ggml_tensor * a = c.f32(n, rows, 0x100000, "a");
+            ggml_tensor * b = c.f32(n, bp, 0x110000, "b");
+            ggml_tensor * y = mul ? ggml_mul(c.ctx, a, b) : ggml_add(c.ctx, a, b);
+            y->data = fake_at(0x120000);
+            lower(y);
+            tsr_kd_ew d;
+            d.kind = mul ? opl::K_MUL : opl::K_ADD;
+            d.dst = rows_at(0x120000, L);
+            d.a = rows_at(0x100000, L);
+            d.b = rows_at(0x110000, L);
+            d.n = (uint32_t) n;
+            d.rows = (uint32_t) rows;
+            d.b_period = (uint32_t) bp;
+            CHECK(tsr_k_add(ke, d, &k, &why));
+            CHECK(same_record(mul ? "MUL" : "ADD", g, k));
+        }
+    }
+    {   // SCALE, without and with a bias
+        for (float bias : { 0.0f, 0.25f }) {
+            gctx c;
+            ggml_tensor * x = c.f32(n, rows, 0x100000, "x");
+            ggml_tensor * y = ggml_scale_bias(c.ctx, x, 0.5f, bias);
+            y->data = fake_at(0x120000);
+            lower(y);
+            tsr_kd_scale d;
+            d.dst = rows_at(0x120000, L);
+            d.src = rows_at(0x100000, L);
+            d.n = (uint32_t) n;
+            d.rows = (uint32_t) rows;
+            d.s = 0.5f;
+            d.b = bias;
+            CHECK(tsr_k_scale(ke, d, &k, &why));
+            CHECK(same_record("SCALE", g, k));
+        }
+    }
+    {   // RMS_NORM alone and with the weight multiplication folded in
+        for (int w = 0; w < 2; ++w) {
+            gctx c;
+            ggml_tensor * x = c.f32(n, rows, 0x100000, "x");
+            ggml_tensor * y = ggml_rms_norm(c.ctx, x, 1e-5f);
+            y->data = fake_at(0x120000);
+            ggml_tensor * wt = c.f32(n, 1, 0x130000, "w");
+            ggml_tensor * ym = ggml_mul(c.ctx, y, wt);
+            ym->data = fake_at(0x140000);
+            lower(y, w ? ym : nullptr);
+            tsr_kd_rms d;
+            d.dst = rows_at(w ? 0x140000 : 0x120000, L);
+            d.src = rows_at(0x100000, L);
+            d.n = (uint32_t) n;
+            d.rows = (uint32_t) rows;
+            d.eps = 1e-5f;
+            d.weight = w ? tsr_dram_handle(1, 0x130000) : opl::HANDLE_NONE;
+            d.w_period = 1;
+            CHECK(tsr_k_rms_norm(ke, d, &k, &why));
+            CHECK(same_record(w ? "RMS_NORM * w" : "RMS_NORM", g, k));
+        }
+    }
+    {   // GLU: both variants
+        for (int geglu = 0; geglu < 2; ++geglu) {
+            gctx c;
+            ggml_tensor * gate = c.f32(n, rows, 0x100000, "gate");
+            ggml_tensor * up = c.f32(n, rows, 0x110000, "up");
+            ggml_tensor * y = ggml_glu_split(c.ctx, gate, up, geglu ? GGML_GLU_OP_GEGLU : GGML_GLU_OP_SWIGLU);
+            y->data = fake_at(0x120000);
+            lower(y);
+            tsr_kd_glu d;
+            d.dst = rows_at(0x120000, L);
+            d.gate = rows_at(0x100000, L);
+            d.up = rows_at(0x110000, L);
+            d.n = (uint32_t) n;
+            d.rows = (uint32_t) rows;
+            d.variant = geglu ? opl::glu::GEGLU16 : opl::glu::SWIGLU;
+            CHECK(tsr_k_glu(ke, d, &k, &why));
+            CHECK(same_record("GLU", g, k));
+        }
+    }
+    {   // UNARY
+        const std::pair<ggml_unary_op, uint32_t> fns[] = { { GGML_UNARY_OP_SILU, opl::unary::SILU },
+                                                           { GGML_UNARY_OP_TANH, opl::unary::TANH },
+                                                           { GGML_UNARY_OP_SIGMOID, opl::unary::SIGMOID },
+                                                           { GGML_UNARY_OP_GELU, opl::unary::GELU16 } };
+        for (const auto & f : fns) {
+            gctx c;
+            ggml_tensor * x = c.f32(n, rows, 0x100000, "x");
+            ggml_tensor * y = ggml_unary(c.ctx, x, f.first);
+            y->data = fake_at(0x120000);
+            lower(y);
+            tsr_kd_unary d;
+            d.dst = rows_at(0x120000, L);
+            d.src = rows_at(0x100000, L);
+            d.n = (uint32_t) n;
+            d.rows = (uint32_t) rows;
+            d.func = f.second;
+            CHECK(tsr_k_unary(ke, d, &k, &why));
+            CHECK(same_record("UNARY", g, k));
+        }
+    }
+    {   // ROPE, NEOX, the angle recurrence (no table)
+        gctx c;
+        const int64_t D = 64, H = 4, T = 3;
+        ggml_tensor * x = c.f32(D, H, 0x100000, "x", T);
+        ggml_tensor * pos = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, T);
+        pos->data = fake_at(0x200000);
+        ggml_tensor * y = ggml_rope_ext(c.ctx, x, pos, nullptr, (int) D, GGML_ROPE_TYPE_NEOX, 32768, 1e6f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+        y->data = fake_at(0x300000);
+        lower(y);
+        tsr_kd_rope d;
+        d.dst = rows_at(0x300000, (uint32_t) (H * D / 16));
+        d.src = rows_at(0x100000, (uint32_t) (H * D / 16));
+        d.n_heads = (uint32_t) H;
+        d.head_dim = d.n_dims = (uint32_t) D;
+        d.T = (uint32_t) T;
+        d.pos_src = tsr_dram_handle(1, 0x200000);
+        d.neox = true;
+        d.freq_base = 1e6f;
+        CHECK(tsr_k_rope(ke, d, &k, &why));
+        CHECK(same_record("ROPE", g, k));
+    }
+    {   // CPY, f32 to f32
+        gctx c;
+        ggml_tensor * x = c.f32(n, rows, 0x100000, "x");
+        ggml_tensor * dst = c.f32(n, rows, 0x120000, "dst");
+        ggml_tensor * y = ggml_cpy(c.ctx, x, dst);
+        y->data = dst->data;
+        lower(y);
+        tsr_kd_cpy d;
+        d.dst = rows_at(0x120000, L);
+        d.src = rows_at(0x100000, L);
+        d.row_lines = L;
+        d.rows = (uint32_t) rows;
+        CHECK(tsr_k_cpy(ke, d, &k, &why));
+        CHECK(same_record("CPY", g, k));
+    }
+    {   // SET_ROWS into the K and the V plane, then FLASH_ATTN over them
+        gctx c;
+        const int64_t T = 2, D = 64, E = 128;
+        tsr_k_kv geom;
+        CHECK(tsr_k_kv_geom((uint32_t) E, 256, 4, &geom, &why));
+        ggml_tensor * ck = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 256, 1);
+        ggml_set_name(ck, "cache_k_l0");
+        ck->data = fake_at(0x1000000);
+        ggml_tensor * cv = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 256, 1);
+        ggml_set_name(cv, "cache_v_l0");
+        cv->data = fake_at(0x1100000);
+        ggml_tensor * ksrc = c.f32(E, T, 0x400000, "kcur");
+        ggml_tensor * vsrc = c.f32(E, T, 0x410000, "vcur");
+        ggml_tensor * kidx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, T);
+        kidx->data = fake_at(0x500000);
+        ggml_tensor * vidx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, T);
+        vidx->data = fake_at(0x500100);
+        for (int v = 0; v < 2; ++v) {
+            ggml_tensor * sr = ggml_set_rows(c.ctx, v ? cv : ck, v ? vsrc : ksrc, v ? vidx : kidx);
+            lower(sr);
+            tsr_kd_set_rows d;
+            d.src = rows_at(v ? 0x410000 : 0x400000, tsr_k_lines((uint64_t) E));
+            d.n_rows = (uint32_t) T;
+            d.kv = geom;
+            d.which = v ? opl::setrows::WHICH_V : opl::setrows::WHICH_K;
+            d.plane = (uint32_t) ((v ? 0x40100000u : 0x40000000u) / 64);
+            d.idx_src = tsr_dram_handle(1, v ? 0x500100 : 0x500000);
+            CHECK(tsr_k_set_rows_kv(ke, d, &k, &why));
+            CHECK(same_record(v ? "SET_ROWS V" : "SET_ROWS K", g, k));
+        }
+        ggml_tensor * q = c.f32(D, 4, 0x600000, "q", T);
+        const size_t rs = ggml_row_size(GGML_TYPE_Q8_0, D), es = ggml_row_size(GGML_TYPE_Q8_0, E);
+        ggml_tensor * kview = ggml_view_4d(c.ctx, ck, D, 2, 256, 1, rs, es, es * 256, 0);
+        ggml_tensor * vview = ggml_view_4d(c.ctx, cv, D, 2, 256, 1, rs, es, es * 256, 0);
+        ggml_tensor * mask = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, 256, T);
+        ggml_set_name(mask, "attn_inp_kq_mask");
+        mask->data = fake_at(0x700000);
+        ggml_tensor * fa = ggml_flash_attn_ext(c.ctx, ggml_permute(c.ctx, q, 0, 2, 1, 3), ggml_permute(c.ctx, kview, 0, 2, 1, 3),
+                                               ggml_permute(c.ctx, vview, 0, 2, 1, 3), mask, 0.125f, 0.0f, 0.0f);
+        fa->data = fake_at(0x800000);
+        lower(fa);
+        tsr_kd_flash_attn d;
+        d.dst = rows_at(0x800000, (uint32_t) (4 * D / 16));
+        d.q = rows_at(0x600000, (uint32_t) (4 * D / 16));
+        d.n_kv = 256;
+        d.D = (uint32_t) D;
+        d.n_head = 4;
+        d.n_head_kv = 2;
+        d.T = (uint32_t) T;
+        d.scale = 0.125f;
+        d.kv = geom;
+        d.k_plane = 0x40000000u / 64;
+        d.v_plane = 0x40100000u / 64;
+        d.msum_h = tsr_dram_handle(1, 0x3F000000);       // what fake_env's fa_mask names
+        d.mask_h = tsr_dram_handle(1, 0x3E000000);
+        CHECK(tsr_k_flash_attn(ke, d, &k, &why));
+        CHECK(same_record("FLASH_ATTN", g, k));
+    }
+}
+
 // TSR_KINDS (tsr_kinds_parse): m6, all, additions and removals from left to right, NOP and JOIN always
 // kept, and the words it refuses.
 static void test_kinds_parse() {
@@ -2422,6 +2674,7 @@ int main() {
     test_gdn_lowering();
     test_gdn_state_cell();
     test_gdn_snapshots();
+    test_encoders_agree();
     test_kinds_parse();
 #else
     printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");

@@ -154,9 +154,12 @@ LLAMA_ATTN_ROT_DISABLE=1 build/xrt/bin/llama-cli -m MODEL -md MTP --spec-type dr
 
 ## Run a PyTorch model
 
-`torch.compile(model, backend="tesseract")` runs the weight matmuls of a PyTorch model on the device and
-everything else eagerly on the CPU (`import tesseract_torch` registers the backend). It uses the same
-transport and numerics as the llama.cpp path.
+`torch.compile(model, backend="tesseract")` runs a PyTorch model on the device (`import tesseract_torch`
+registers the backend). It uses the same transport as the llama.cpp path and has the two execution modes. In full
+mode, the default, the aten graph is cut into regions of ops that the firmware has kinds for (the weight matmuls,
+norms, RoPE, attention, activations, residual adds), and each region is one launch; the ops that match no pattern
+run eagerly on the CPU. `tt.compile(model, mode="matmul")` or `TSR_TORCH_MODE=matmul` selects matmul mode, where
+only the weight matmuls run on the device.
 
 ```sh
 cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_TORCH=ON
@@ -164,10 +167,39 @@ cmake --build build/dev -j8 --target tesseract_torch_ext
 export PYTHONPATH=$PWD/sw/torch:$PWD/build/dev/python
 build/tools/torchvenv/bin/python -m pytest -q sw/torch/tests
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct
+build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --full-mode --tokens 16
 ```
 
+A Hugging Face causal LM runs on the simulator with a few lines (the model directory holds safetensors files from the
+Hub; `TSR_DEVICE` picks another transport):
+
+```python
+import torch, tesseract_torch as tt
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+path = "models/hf/Qwen2.5-0.5B-Instruct"
+tok = AutoTokenizer.from_pretrained(path)
+model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32).eval()
+
+# Full mode: the decoder forward runs on the device as one region, in one launch.
+# tt.compile(model, mode="matmul") keeps only the weight matmuls on the device;
+# tt.compile(model, attention="cpu") keeps attention in float32.
+model = torch.compile(model, backend="tesseract")
+ids = tok("The capital of France is", return_tensors="pt").input_ids
+with torch.no_grad():
+    logits = model(ids, use_cache=False).logits
+print(tok.decode(logits[0, -1].argmax()))        # " Paris"
+```
+
+On the device, attention quantizes Q, K and V as q8_0, as the llama.cpp path does, so full mode differs from eager
+float32 more than matmul mode does. `attention="cpu"` (`TSR_TORCH_ATTENTION=cpu`) runs attention in float32 on the CPU
+and ends the regions at each attention.
+
 `-DTSR_TORCH_PYTHON=<interpreter>` selects the Python with torch. `hf_check.py` compares a Hugging Face model
-through the backend with eager PyTorch (`--download Qwen/Qwen2.5-0.5B-Instruct` fills the model directory).
+through the backend in matmul mode with eager PyTorch (`--download Qwen/Qwen2.5-0.5B-Instruct` fills the model
+directory). With `--full-mode` it checks a full-mode forward: one region and one launch, equal to the reference
+executor bit for bit, and compared with eager statistically; `--attention cpu` runs it with attention on the CPU, and
+every region must then run on the device. `sw/torch/tools/fuzz_full.py` is a differential fuzzer of full mode.
 See [`docs/torch-backend.md`](torch-backend.md), [`sw/torch/README.md`](../sw/torch/README.md) and
 [`sw/rt/README.md`](../sw/rt/README.md).
 

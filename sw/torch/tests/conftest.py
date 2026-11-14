@@ -19,6 +19,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))           # tesseract_torch (if not on PYTHONPATH)
 sys.path.insert(0, str(HERE))                  # spec_model
 os.environ.setdefault("TSR_SIM_THREADS", "4")
+# The existing suites test matmul mode (one launch per weight matmul); test_graph.py asks for full mode itself.
+os.environ.setdefault("TSR_TORCH_MODE", "matmul")
 
 import torch  # noqa: E402
 
