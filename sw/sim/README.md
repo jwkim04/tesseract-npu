@@ -61,7 +61,17 @@ beat per cycle and channel). With `CAPS.MVM_DUAL` (bit 16: the core has two weig
 the rest, and the weight phase is `max_c ceil(rows_c / 2) * ROW_BEATS`. `TSR_SIM_MEM_RATE=<r>` bounds the memory: a
 channel delivers at most `r` weight beats per cycle, so its weight phase is at least `beats_c / r` (unset: unbounded,
 which is the ideal memory of the first formula). Attention ops and `T > T_MAX / 2` keep one stream. Results never depend
-on any of it. `TSR_SIM_CARD=k4dual` (`sw/transport`) is the card image with the dual weight stream.
+on any of it. `TSR_SIM_CARD=k4dual` (`sw/transport`) is the card configuration with the dual weight stream.
+
+## QACT cycle model and the scale pipeline
+
+A QACT op of T tokens of K elements takes `17 * T * (K / 256) + 72` cycles for A256 and `16 * T * (K / 32) + 44` for A32: the
+A32 block scales come from two serial dividers, 16 cycles a block. With `CAPS.QACT_PIPE` (bit 17: the core computes the A32 block
+scales in a pipeline, `docs/rtl-core.md` §8.1) an A32 op takes `T * (2 * b + 2 * ceil(b / 16)) + 53` cycles for `b = K / 32`
+blocks per token: 2 cycles a block, 2 more for every D line (16 blocks, and the end of a token) and the fill. The formula is the
+unit's run time on the RTL for K from 32 to 32768 and T up to 8 (`tb/qact`). A256 does not depend on the bit.
+Results never depend on it. `tsr_sim_caps_implemented()` does not include the bit, so a simulator that takes every implemented
+capability keeps the divider timing. `TSR_SIM_CARD=k4qpipe` (`sw/transport`) is the card image: `k4dual` with the bit.
 
 ## Environment
 
@@ -72,7 +82,8 @@ the ctests that run firmware or queue programs set `fatal`). `TSR_SIM_RV_CORE=ma
 one line per retired RISC-V instruction and with `w,` the eight words of every push (`TSR_SIM_LOG=rv,stderr` is the
 quickest way to see what the firmware does). `TSR_SIM_VU_TIMING=u200|k4|F,E,B,P` sets the VU lanes of the cycle model
 (16 / 16 / 8 and no lane pipe by default, `k4` is the release image's 8 / 8 / 4 behind two lane-pipe stages; timing
-only, SW-80). `TSR_MVM_DUAL=0|1` and `TSR_SIM_MEM_RATE=<beats>` are the dual weight stream of the cycle model (below).
+only, SW-80). `TSR_MVM_DUAL=0|1` and `TSR_SIM_MEM_RATE=<beats>` are the dual weight stream of the cycle model (below), and the
+`CAPS` bit `QACT_PIPE` selects the A32 model of QACT.
 `TSR_TRACE=<dir>` dumps one trace per launch. `TSR_SIM_THREADS` (1 to 64) sets the MVM worker threads:
 the library default is 1, the `sim` and `mock` transport kinds default to `min(online CPUs, 8)`, `tsr-numcheck` to 4,
 and results do not depend on it. `TSR_REF_MATH_FULL=1` enables the exhaustive `ref_math_*_full` tests. The variables

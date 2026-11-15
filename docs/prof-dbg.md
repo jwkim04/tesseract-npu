@@ -218,7 +218,7 @@ a record or an output bit.
    `TSR_OPL_PROF=1 TSR_OPL_KINDS=run.kinds` (the graph kernel pushes a `NODE_BEGIN` marker before every record, and
    the backend writes the kind of every record of every launch to `run.kinds`), then `tsr-dbg --device xrt --attach
    -ex "trw dump run.json run.raw" -ex "trw stop"`.
-2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4dual TSR_SIM_GDN=1 TSR_SIM_LOG=w,sim.log`
+2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4qpipe TSR_SIM_GDN=1 TSR_SIM_LOG=w,sim.log`
    (the release image's configuration; the prefix `w,` also writes the eight words of every push).
 3. `sw/tools/trw_vs_sim.py kinds --trw run.raw --sim sim.log --kinds run.kinds --launch 2` gives, per record kind, the
    cycles the record adds to the launch on both sides. `units`, `gaps` and `record` give the same by op class and for

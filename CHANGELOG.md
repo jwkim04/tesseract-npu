@@ -6,6 +6,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- The simulator models `CAPS` bit 17 `QACT_PIPE` (QACT computes the A32 block scales in a pipeline, `docs/rtl-core.md`
+  §8.1): an A32 op of T tokens of b = K / 32 blocks takes `T * (2 * b + 2 * ceil(b / 16)) + 53` cycles instead of
+  `16 * T * b + 44`. A256 does not depend on the bit. The bit is not in `tsr_sim_caps_implemented()`, so a configuration that
+  takes every implemented capability keeps the divider timing. Results do not change.
+- `TSR_SIM_QACT_PIPE=0|1` sets or clears `CAPS` bit 17 of the `sim` transport, after `TSR_SIM_CARD`. `TSR_SIM_CARD=k4qpipe` is
+  `k4dual` with the bit: the configuration of the image `tsr_u200_k4`. `k4full` and `k4dual` do not set it, and
+  `TSR_SIM_VU=0` keeps it as it keeps bit 16.
+- `tsr_versions_str` prints `QACT_PIPE` among the `CAPS` names (`Tesseract Core 1.0 (VU ATT GDN MVM_DUAL QACT_PIPE)` for
+  the image of `tsr_u200_k4`), and so do `tsr-selftest` and the llama.cpp device list.
+- Tesseract Pivot reads `CAPS` bit 17 into `tsr_pivot_dev.qact_pipe`. With it the QACT cost of a Q8_0 weight MUL_MAT is
+  `2 * (K / 32) + 2 * ceil(K / 512) + 53`, without it `16 * (K / 32) + 44`; Q4_K is `17 * (K / 256) + 72` either way. The
+  device is part of the key of the memo, so a device with another QACT model does not share an order.
+- Tests: the cycle model with and without the bit (`sim_mvm`), the cost table and the `CAPS` mapping of Pivot, the `CAPS`
+  names and the `TSR_SIM_CARD` and `TSR_SIM_QACT_PIPE` settings in `tsr-selftest` with `TSR_SIM_VU=0`, and trace replay of
+  traces captured with and without the bit.
+
+### Changed
+
+- Matching a launch trace to a device ignores `CAPS` bit 17 as it ignores bit 16, since both change timing only
+  (`tsr-trace-replay --device`, `tsr-selftest --traces`).
+- `sw/tools/prof/capture_sim.sh` runs the simulator as the image of `tsr_u200_k4` by default: `TSR_SIM_CARD=k4qpipe`
+  (was `k4dual`). `sw/tools/prof/make_report.sh` warns when the card run and the simulator run differ in `CAPS` bit 16 or 17.
+  The text of `sw/tools/trw_vs_sim.py` names `k4qpipe`.
+
 ## [1.4.0] - 2026-11-14
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).

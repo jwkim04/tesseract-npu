@@ -35,7 +35,7 @@ checks are CC §11.1. The request and its checks are in §8.3.
 | Kernel | `NUM_CH` | `T_MAX` | Role |
 |---|---|---|---|
 | `tsr_u200_k1` | 1 | 1 | one-channel image, whole core in SLR1 |
-| `tsr_u200_k4` | 4 | 4 | the release image: four channels, prefill up to 4 tokens, with the dual weight stream (`MVM_DUAL` 1) |
+| `tsr_u200_k4` | 4 | 4 | the release image: four channels, prefill up to 4 tokens, with the dual weight stream (`MVM_DUAL` 1) and the QACT scale pipeline (`QACT_PIPE` 1) |
 
 Both use the U200 parameters of [rtl-mvm.md](rtl-mvm.md) §14.2 (SPM 4 MiB with `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
 `MVM_MAC_LAT` 9, `RST_PIPE` 3), `CH_BYTES` 16 GiB (the design's limit per channel, §11), the other `tsr_core` parameters at the U200 defaults (`tsr_pkg::TSR_DEF_*`),
@@ -291,7 +291,7 @@ build.
 | `pblock_tsr_ctrl_plane`, child of SLR0 | the control core (Ibex, TCMs, debug module, bus, control window, every clock-domain crossing), the RV debug logic, the RV-side link ends, `u_issue` with its two checker classes (VU and AT), `u_csr`, the core side of the DB block, the issue and LCQ link ends |
 | SLR2 platform Pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge, the read-only bridge of channel 3, the DDR3 arbiter |
 | `pblock_tsr_vu`, child of SLR2 | the whole vector unit: front end and both lane banks |
-| SLR1 platform Pblock | SPM, the RISC-V SPM bridge and the SPM end of its link, DMA with KVST, QACT, the arbiters of channels 1 and 2, the DDR1 and DDR2 bridges, the read-only bridges of channels 1 and 2, the central gather receiver (the receivers of the two pair links, the row-maximum emitter, the 16 accumulate adders) |
+| SLR1 platform Pblock | SPM, the RISC-V SPM bridge and the SPM end of its link, DMA with KVST, QACT (with its scale pipeline `tsr_qact_scale`), the arbiters of channels 1 and 2, the DDR1 and DDR2 bridges, the read-only bridges of channels 1 and 2, the central gather receiver (the receivers of the two pair links, the row-maximum emitter, the 16 accumulate adders) |
 | unassigned | the issue slice, pipes and line registers of the central gather receiver, the request and response stages of the second weight stream in the core's data path, the DMA-side DDR boundary slices of channels 0 and 3, the `XSLR_REG` glue, the adapter's control logic |
 
 The control Pblock is `CLOCKREGION_X0Y3:CLOCKREGION_X1Y4`, `CLOCKREGION_X2Y4` and `CLOCKREGION_X3Y3:CLOCKREGION_X5Y4`. It has
@@ -459,11 +459,11 @@ opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything
 
 | Group | Parameters |
 |---|---|
-| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_DUAL` 1 ([rtl-mvm.md](rtl-mvm.md) §15), `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
+| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_DUAL` 1 ([rtl-mvm.md](rtl-mvm.md) §15), `QACT_PIPE` 1 ([rtl-core.md](rtl-core.md) §8.1), `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
 | Vector unit | `VU_FRONT_LANES` 8, `VU_EXP_LANES` 8, `VU_BACK_LANES` 4, `VU_LANE_PIPE` 2, `HAS_GDN` 1 (§8.9) |
 | U200 common | `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3, `AXI_SLICES` 2, `RST_STAGES` 3 |
 | Left at their defaults | `HAS_VU` 1, `HAS_ATT` 1 (KVST, ATTQK, ATTPV), `HAS_TRW` 1, `HIST_DEPTH` 512, `HAS_TOPK` 0, `HAS_DQROW` 0 |
-| Left out | `LOCAL_INTERMEDIATES`, `LOCAL_SCALE`, `LOCAL_SOFTCAP` 0: no local score or P banks, no local SCALE or softcap epilogues. `CAPS` reads 0x10121 and the host keeps the legacy attention and epilogue paths |
+| Left out | `LOCAL_INTERMEDIATES`, `LOCAL_SCALE`, `LOCAL_SOFTCAP` 0: no local score or P banks, no local SCALE or softcap epilogues. `CAPS` reads 0x30121 and the host keeps the legacy attention and epilogue paths |
 
 `LOCAL_SCALE` and `LOCAL_SOFTCAP` stay off. They send each pair source's results through the vector unit's lane banks and back,
 which saves central traffic only when the bank sits in the cluster's SLR, and the whole VU is in SLR2.
@@ -516,7 +516,7 @@ The tests of this elaboration are `test_core_k4full`, `test_dbg_trw_xslr`, `test
 ### 8.9 The Gated DeltaNet op
 
 The vector unit has the fused Gated DeltaNet op (`HAS_GDN` 1 in `gen_tops.py`, [VU](design/02-vector-unit.md) §7.12). `CAPS` reads
-0x10121 (VU, ATT, GDN, MVM_DUAL). The engine is inside `g_vu.u_vu`, so `k4_major_blocks.tcl` puts it in `pblock_tsr_vu` and nothing
+0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE). The engine is inside `g_vu.u_vu`, so `k4_major_blocks.tcl` puts it in `pblock_tsr_vu` and nothing
 goes to SLR1.
 
 | `tsr_vu` out of context, K4 configuration, after route | `HAS_GDN` 0 | `HAS_GDN` 1 |
@@ -741,7 +741,7 @@ validate, CMC, SC firmware 4.6.21), the XRT 2.18.179 deb (`build/xrt-driver/deb-
    (cold, then a second boot that must be warm), the `PING` round trip and rate, the `selftest`
    kernel against the shadow simulator, trace replays through the `replay` kernel and the DMI smoke (`--debug`). On failures try
    `TSR_XRT_DMA=staged` and `TSR_XRT_DMA_ALIGN=64` for DMA alignment ([xrt-host.md](xrt-host.md) §8). The release image reads
-   `CAPS` 0x10121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
+   `CAPS` 0x30121, `NUM_CH` 4, `T_MAX` 4, `RV_FREQ` ratio 0.5 and `ADAPTER_VERSION` 0x00010004.
 10. Backend. `TSR_DEVICE=xrt TSR_XCLBIN=... test-ggml-tesseract` and `test-backend-ops test -o MUL_MAT -b Tesseract0`. Pass: every
     case OK.
 11. Model check, matmul mode. Run `klcheck run --device sim --tokens <file> --out sim.klc` and the same with `--device xrt --out

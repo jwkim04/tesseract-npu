@@ -732,16 +732,18 @@ sets it to +0.0.
   configuration of that minor (an opcode or unit, a CSR field, a control-core ISA extension the
   compiler may target). An optional per-configuration feature is a `CAPS` bit, never a minor; the
   `CFG0`–`CFG3` parameters are configuration, not capability. It is shown as "Tesseract Core 1.0
-  (VU ATT GDN MVM_DUAL)".
+  (VU ATT GDN MVM_DUAL QACT_PIPE)".
 - `CAPS`: bit0 VU (VOP, RED, ROPE, SOP present), bit1 0, bit2 retired, bit3 TOPK, bit4 retired, bit5
   ATT (the seven AT ops are present), bit6 DQROW, bit7 VMASK, bit8 GDN (the fused state update of
   VU §7.12; the RTL builds with `HAS_GDN`), bits 9–11 reserved for VU, bits 12–15 reserved for AT,
   bit 16 MVM_DUAL (the core reads two weight streams per channel when an MVM has T ≤ T_MAX / 2; the RTL
   builds with `MVM_DUAL`; information for cycle models and tools, results never depend on it, and the
-  adapter's run-time enable, `ADAPTER_CTRL.DUAL_DIS`, does not change it), bits 17–31 0. Retired bits are
-  never set and never reused. The simulator reports what its
+  adapter's run-time enable, `ADAPTER_CTRL.DUAL_DIS`, does not change it), bit 17 QACT_PIPE (QACT
+  computes the A32 block scales in a pipeline, about 2 cycles per 32-block instead of 16; the RTL builds
+  with `QACT_PIPE`; information for cycle models and tools, results never depend on it), bits 18–31 0.
+  Retired bits are never set and never reused. The simulator reports what its
   configuration implements, so a simulator may set bits that a bitstream does not. The release image
-  reads 0x10121 (bits 0, 5, 8 and 16).
+  reads 0x30121 (bits 0, 5, 8, 16 and 17).
 - `CFG3`: [4:0] VU front lanes with an EXP core, [9:5] VU back lanes, [15:10] 0 (VU §5.10); [31:16]
   PCAP / 16 (AT §5.10). The VU fields are information for cycle models only. PCAP is a configuration
   parameter like T_MAX: it enters AT's checks and chunk policy (AT §5.8, §6.6), so results are defined

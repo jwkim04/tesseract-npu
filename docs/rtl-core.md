@@ -41,7 +41,7 @@ verification infrastructure. The MVM unit has its own document, [rtl-mvm.md](rtl
 - Parameters. `tsr_core` takes the spec table (`NUM_CH BEAT_BITS LANES T_MAX K_MAX SPM_BYTES VL NSREG RD_OUTSTANDING CH_BYTES
   ADDR_BEAT_W`, defaults in `tsr_pkg::TSR_DEF_*`: 4 channels of 16 GiB, a 4 MiB SPM, `K_MAX` 32768, `VL` 16, `NSREG` 16 and
   `T_MAX` 1) and implementation parameters. These are `HAS_MVM` (default 1), `SPM_RD_LAT` (default 2, the U200 images use 4, §12),
-  the `MVM_*` latencies and pipe depths ([rtl-mvm.md](rtl-mvm.md) §1) and `RST_PIPE` (§11). `CH_BYTES` is `longint unsigned`.
+  the `MVM_*` latencies and pipe depths ([rtl-mvm.md](rtl-mvm.md) §1), `QACT_PIPE` (default 0, §8.1) and `RST_PIPE` (§11). `CH_BYTES` is `longint unsigned`.
   Elaboration checks (`$fatal`) mirror `tsr_sim_create`: `BEAT_BITS == 512`, `NUM_CH` 1 to 16, `T_MAX` 1 to 8, `K_MAX` a multiple
   of 256 in [256, 65280], `SPM_BYTES` a positive multiple of 64, `NSREG` 1 to 16, `VL` 1 to 255, `LANES` 1 to 4095, `CH_BYTES` a
   positive multiple of 64, `ADDR_BEAT_W` 1 to 40 and `RD_OUTSTANDING` at least 1. With `HAS_MVM` 1, `LANES` must be 128,
@@ -63,7 +63,7 @@ The figure shows `tsr_core`. The netlist is `tsr_core.sv` with the data path in 
 | (b) memory | `tsr_dma.sv`, `tsr_mem_arb.sv` (with `tsr_rslice`), `tsr_rpipe.sv`, `tsr_vpipe.sv`, `tb/dma/` | §3.2, §4 |
 | (c) fp library | `tsr_fp_pkg.sv`, `tsr_fp_mul.sv`, `tsr_fp_div.sv`, `tsr_fp_add.sv`, `tb/fp/` | §8.2 |
 | (d) SPM | `tsr_spm.sv`, `tsr_spm_cport.sv`, `tsr_spm_bridge.sv`, `rtl/tech/{generic,xilinx}/tsr_sram_1r1w.sv`, `tb/spm/` | §5 |
-| (e) QACT | `tsr_qact.sv`, `tb/qact/` | §3.3, §8.1 |
+| (e) QACT | `tsr_qact.sv`, `tsr_qact_scale.sv`, `tb/qact/` | §3.3, §8.1 |
 | MVM unit | `tsr_mvm*.sv`, `rtl/tech/*/tsr_mac_lane.sv`, `tb/mvm*/` | [rtl-mvm.md](rtl-mvm.md) |
 | (f) top | `tsr_core.sv`, `tsr_core_dp.sv` | §1, §2, §9, §12 |
 | infra | `tsr_pkg.sv`, `tsr_tables_pkg.sv`, filelists, `rtl/lint.sh`, `tb/common/`, `tb/conftest.py`, `tb/pytest.ini`, `tb/run_all.sh` | all |
@@ -250,6 +250,24 @@ each region are 0.
   maps NaN to 0, rounds and saturates to [-128, 127] (A32 half away from zero, A256 half to even). The special-value consequences
   (for example A32 `amax = Inf` gives `D = Inf` and q = 0) follow from these rules, with no special cases in hardware.
 - The throughput target is at least one source line per about 2 cycles outside the per-block divides.
+- Scales of A32. The `tsr_qact` parameter `A32_PIPE` (set by the `QACT_PIPE` parameter of `tsr_core`, `tsr_core_dp` and the
+  kernel; default 0) chooses how an A32 command gets its two scales per block. Results are the same bit for bit, and `CAPS` bit 17
+  `QACT_PIPE` reports the build. With `A32_PIPE` 0 the two serial `tsr_fp_div` of the unit compute them and a block takes 16
+  cycles. With `A32_PIPE` 1 `tsr_qact_scale` computes them in a pipeline that takes one block per cycle, never stalls and has a
+  fixed latency of `5 + TSR_VU_RCP_LAT + 1` cycles, and the unit has no divider on the A32 path. A256 commands use the dividers
+  in both builds.
+  - `d = fdiv(amax, 127)` is the multiply of the 24-bit significand of `amax` by the constant `ceil(2^39 / 127)` on two DSP48E2
+    products, the sum of the products and the normal rounding. A division by 127 has no rounding tie, so the guard bit alone
+    decides the increment.
+  - `id = fdiv(1, d)` is `tsr_vu_rcp`, the reciprocal core of the vector unit, which is correctly rounded and bit-identical to
+    `tsr_frecip` ([design/02-vector-unit.md](design/02-vector-unit.md)). `fdiv(1, d)` and `frecip(d)` are the same function. The
+    result is `+0` for `d == +-0`. `f32_to_fp16(d)` and the flags `d == 0` and `amax == 0` wait beside it in a delay line of the
+    same length.
+  - The scale queue `SQ` (`SQ_DEPTH` entries, default 32) holds the results in order until the quantizer loads them. The reader
+    reserves an `SQ` entry with the first line of a block, so the queue never overflows and the pipeline needs no stall.
+  - `tb/qact/test_qact_scale.py` compares `tsr_qact_scale` with `tsr_fdiv`, `tsr_frecip` and `tsr_f32_to_fp16` of `libtsr_ref`
+    for every `amax` a block can have, 0 to `0x7F800000` (opt-in full run: `TSR_QACT_SLOW=1`; the default run covers every
+    mantissa at fourteen exponents).
 
 ### 8.2 fp library (`tsr_fp_*`)
 
@@ -314,7 +332,9 @@ where the adapter's reset chain in front of the core resets the AXI bridges with
 `tsr_core.sv` has simulation-only integration checks (`ifndef SYNTHESIS`, armed by the first reset edge): a unit's `done` only
 with an op in flight, SPM and weight-stream traffic only while the unit holds an op, the MVM's SPM read accounting and, per
 channel, its weight-stream accounting ([rtl-mvm.md](rtl-mvm.md) §13.1). LD and ST move one beat per cycle, one channel at a time.
-QACT A256 takes about one cycle per source line, and A32 is bound by the per-block divide.
+QACT A256 takes about one cycle per source line. A32 is bound by the per-block divide, or with `A32_PIPE` 1 by the source lines:
+2 cycles per 32-block plus 2 for every D line (16 blocks and the end of a token), and the unit takes
+`T * (2 * b + 2 * ceil(b / 16)) + 41 + SPM_RD_LAT + MUL_LAT` cycles from accept to done for T tokens of b blocks.
 
 Critical structures at the U200 core clock, in order:
 

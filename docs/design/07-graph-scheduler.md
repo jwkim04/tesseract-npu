@@ -24,8 +24,8 @@ predict a time.
   view of each split after it has split the graph and before ggml-alloc allocates it. The backend may permute
   `cgraph->nodes` and nothing else. The hook runs once for each graph the scheduler splits, outside the device
   mutex. It searches the first graph of a structure; a later graph of that structure gets the same order from a
-  memo (§6.6). It reads no tensor data and nothing from the device but what the device open fixed (the channel count
-  and the dual weight stream).
+  memo (§6.6). It reads no tensor data and nothing from the device but what the device open fixed (the channel count,
+  the dual weight stream and the QACT scale pipeline).
 - Pivot has two parts. The core (`sw/ggml-tesseract/tsr-pivot.{h,cpp}`, in `tsr_lower`) knows nothing of ggml: it
   takes units with predecessors and costs and returns an order (§2 to §5). The adapter
   (`sw/ggml-tesseract/tsr-pivot-graph.{h,cpp}`) turns the nodes of a split into units, applies the order and
@@ -170,7 +170,7 @@ A BLOCK or MVM_ID unit has `issue` 0: its control-core time is in its own costs.
 |---|---|---|---|
 | MVM | `mvm` | beats per channel × 100 / rate, at least 1. Beats per channel = ⌈N / channels⌉ × row beats of one row of K elements in the weight's device format. Rate 141 with the dual weight stream (`CAPS` bit 16), 100 without | `cyc_mvm` in `sw/sim/tsr_sim.c`; weight beats of `plan.hpp`; the rate of a decode MVM with two weight streams per channel ([rtl-mvm.md](../rtl-mvm.md) §15) |
 | MVM | `ld` | 64 + K / 16 | `cyc_ldst` |
-| MVM | `qact` | 16 · (K / 32) + 44 for Q8_0 and every format that is converted to it; 17 · (K / 256) + 72 for Q4_K | `cyc_qact` (SW-80) |
+| MVM | `qact` | 16 · (K / 32) + 44 for Q8_0 and every format that is converted to it, or 2 · (K / 32) + 2 · ⌈K / 512⌉ + 53 with the QACT scale pipeline (`CAPS` bit 17); 17 · (K / 256) + 72 for Q4_K, with or without it | `cyc_qact` (SW-80) |
 | MVM | `back` | 110 + N / 16 | `cyc_st` |
 | MVM | `defer` | set unless a SCALE or softcap partner fuses with the product | the builder defers a plain MUL_MAT only (SW §9.3) |
 | MVM_ID | `mvm` | N_USED × the time of one expert's tiles at the MVM rule above | `cyc_mvm` |
@@ -365,8 +365,8 @@ The class of a unit is the first rule that matches one of its compute nodes:
    plumbing are not records. A CONCAT along dimension 0 of a transposed source takes its
    second dimension as the first dimension of the cost, because its first dimension grows with the token count.
 
-The costs come from weight shapes, expert counts, the head size and the device (channels and the dual weight
-stream), never from the number of tokens (PV-8).
+The costs come from weight shapes, expert counts, the head size and the device (channels, the dual weight
+stream and the QACT scale pipeline), never from the number of tokens (PV-8).
 
 `defer` is set whatever the number of tokens. The builder does not split a product of more than one T-tile; the
 model does not know the tile count, which would make the permutation depend on the batch (§7.2).
@@ -402,7 +402,7 @@ name. These are the things that change with the batch: llama.cpp keeps the topol
 links and its use counts, the same for every batch, and the weights are the same for every batch.
 
 The memo. `tsr_pivot_memo` maps a key to a node order; an empty order means that the original order stays. The key of
-the map mixes the structure key with the device (the channel count and the dual weight stream) and the search
+the map mixes the structure key with the device (the channel count, the dual weight stream and the QACT scale pipeline) and the search
 parameters. The memo holds at most 256 entries. The backend keeps one memo in each backend instance. One backend
 instance belongs to one llama.cpp context, which has its own scheduler and its own ggml-alloc plan, so the memo
 covers exactly the graphs that share a plan. The scheduler calls the hook from one thread, so the memo needs no
@@ -490,7 +490,7 @@ permutation is a function of the structure, so the identity of a graph is stable
 `TSR_PIVOT` is read once when a device opens. `0` turns the pass off; any other value, or none, leaves it on.
 The pass also does nothing when `TSR_MM_DEFER` is `0`, or when the booted image (narrowed by `TSR_KINDS`) lacks
 MUL_MAT_BEGIN or MUL_MAT_END: without the split a reorder gains nothing in the model. The parameters are the
-defaults of §5.1. The device fixes two inputs at open: the number of DDR channels and the dual weight stream.
+defaults of §5.1. The device fixes three inputs at open: the number of DDR channels, the dual weight stream (`CAPS` bit 16) and the QACT scale pipeline (`CAPS` bit 17).
 
 ### 8.2 Log
 

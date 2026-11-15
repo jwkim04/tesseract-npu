@@ -34,7 +34,7 @@ The capability is the number in the `VERSION` register. Bits 15:8 are the major,
 at least n. It does not run on another major.
 
 The `CAPS` register (0x014) lists the optional features of a configuration: `VU`, `TOPK`, `ATT`, `DQROW`, `VMASK`,
-`GDN`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`, `MVM_DUAL`. An optional feature is a `CAPS` bit, never a
+`GDN`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`, `MVM_DUAL`, `QACT_PIPE`. An optional feature is a `CAPS` bit, never a
 minor. The sizes of a configuration (channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3` and are not part of
 the capability. Results are defined per configuration. The number is set in `sw/tables/tsr_tables.py`, and the table
 generator writes it into the C, C++, SystemVerilog and Python headers. It changes in the same change that alters the
@@ -46,7 +46,7 @@ RTL and the simulator.
 - Minor: a backward-compatible addition that every configuration of that minor has: a new opcode or unit, a new CSR
   field, a control-core ISA extension the compiler may target.
 
-It is shown as `Tesseract Core 1.0 (VU ATT GDN MVM_DUAL)`: the capability, then the `CAPS` features.
+It is shown as `Tesseract Core 1.0 (VU ATT GDN MVM_DUAL QACT_PIPE)`: the capability, then the `CAPS` features.
 
 ## Tesseract Core release
 

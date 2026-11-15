@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- The QACT scale pipeline (`QACT_PIPE`, [docs/rtl-core.md](../docs/rtl-core.md) §8.1). The A32 block scales of QACT
+  (`d = amax / 127` and `id = 1 / d`) come from the new `tsr_qact_scale` instead of the two serial dividers: a multiply by
+  a constant on two DSP48E2 and the normal rounding for `d`, the reciprocal core of the vector unit (`tsr_vu_rcp`) for `id`.
+  The pipeline takes one block per cycle, has a fixed latency of 27 cycles and never stalls, because the reader reserves an
+  entry of a scale queue (`SQ_DEPTH`, 32) before it reads a block. Results do not change by one bit. A256 commands keep the
+  dividers.
+- `QACT_PIPE` is a parameter of `tsr_core_dp`, `tsr_core` and `tsr_xrt_kernel` (`A32_PIPE` of `tsr_qact`) and a knob of
+  `gen_tops.py`. `tsr_u200_k4` sets it to 1, so the image reads `CAPS` 0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE).
+  `core_ooc.sh` has the preset `k4qpipe`.
+- `CAPS` bit 17 `QACT_PIPE`. It is information for cycle models and tools: no result depends on it. A Tesseract Basis that
+  does not know the bit still runs models on the image: it prints no name for the bit and charges QACT at the divider cost
+  in Tesseract Pivot. Its tools that build a simulator from the core's configuration refuse the bit: the shadow of
+  `tsr-selftest` (`--no-shadow` runs without it), `tsr-trace-replay` and `tsr-trace-conv`.
+- Timing of an A32 op with the pipeline: 2 cycles per 32-block plus 2 for every D line (16 blocks, and the end of a token),
+  where the dividers take 16 cycles per block. For a vector of 1,536 elements that is 151 cycles from accept to done
+  instead of 808.
+- Logic of the QACT unit out of context (`xcu200-fsgd2104-2-e`, 300 MHz): 442 LUT, 525 FF, 10 DSP48E2 and 1 RAMB18
+  more than without the pipeline.
+- Benches: `tb/qact` runs every configuration with the pipeline as well (the tight queue, T_MAX 8, the timing of the K4
+  image, the real SPM), `tb/qact/test_qact_scale.py` compares `tsr_qact_scale` with `tsr_fdiv`, `tsr_frecip` and
+  `tsr_f32_to_fp16` for every possible `amax` (0 mismatches over 2,139,095,041 patterns), and `tb/core` and `tb/platform`
+  run the K4 core and kernel with `QACT_PIPE` 1 against the simulator and read bit 17.
+
 ## [1.1.0] - 2026-11-12
 
 Core capability 1.0. The image is `tsr_u200_k4.xclbin` for the platform `xilinx_u200_gen3x16_xdma_2_202110_1`,
