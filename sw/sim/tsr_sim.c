@@ -25,7 +25,8 @@
 // Cycle model (unit busy time, the handlers' cycles(); deterministic, informational — not part of
 // the bit-exact contract):
 //   LD / ST                 64 (DMA latency) + n_lines
-//   QACT                    T * (ceil(K / VL) + QA_LINES(kind, K))
+//   QACT                    A32: 16 per 32-block + 44; with CAPS.QACT_PIPE T * (2 b + 2 ceil(b / 16)) + 53, b = K / 32
+//                           blocks per token. A256: 17 per 256-block + 72 (cyc_qact, SW-80)
 //   MVM                     CYC_MVM_FILL (pipeline fill/drain) + T * QA_LINES (activation broadcast)
 //                           + max over channels of rows_c * ROW_BEATS (1 weight beat/cycle); with CAPS.MVM_DUAL, the
 //                           run-time enable and T <= T_MAX / 2 the dual weight stream: ceil(rows_c / 2) * ROW_BEATS;
@@ -500,7 +501,8 @@ static const char * cfg_problem(const tsr_config * c) {
         return "ATT_LOCAL requires CAPS.ATT";
     if ((c->caps & (TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP)) && !(c->caps & TSR_CAPS_VU))
         return "local MVM epilogues require CAPS.VU";
-    if (c->caps & ~(tsr_sim_caps_implemented() | TSR_CAPS_MVM_DUAL)) return "caps requests features this simulator does not implement";
+    if (c->caps & ~(tsr_sim_caps_implemented() | TSR_CAPS_MVM_DUAL | TSR_CAPS_QACT_PIPE))
+        return "caps requests features this simulator does not implement";
     return NULL;
 }
 
@@ -1521,9 +1523,15 @@ static void ex_qact(tsr_sim * sim, const uint32_t w[8]) {
 // SW-80: tsr_qact.sv is divider bound for A32 (one 32-block per 16 cycles, 8 per source line) and nearly line bound
 // for A256 (one 256-block per 17 cycles, tb/qact qact_timing); accept to done adds the pipeline fill (44 and 72 cycles
 // in the unit's run time as the trace writer reports it on the card). The tokens of one op run back to back.
+// With CAPS.QACT_PIPE the A32 scales come from a pipeline (tsr_qact_scale.sv) and the unit is line bound: 2 cycles per
+// 32-block, 2 more for every D line (16 blocks, and the end of a token), and 53 cycles of fill (tb/qact qact_timing,
+// configuration k4_pipe: exact for every K and T). A256 does not depend on the bit.
 static uint64_t cyc_qact(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     const uint32_t kind = tsr_w0_sub(w[0]), K = w[3], T = w[4];
+    if (kind == TSR_QA_A32 && (sim->cfg.caps & TSR_CAPS_QACT_PIPE)) {
+        const uint64_t b = K / 32u;
+        return (uint64_t)T * (2u * b + 2u * ((b + 15u) / 16u)) + 53u;
+    }
     const uint64_t blocks = (uint64_t)T * (K / tsr_qa_block_size(kind));
     return kind == TSR_QA_A32 ? 16u * blocks + 44u : 17u * blocks + 72u;
 }

@@ -590,6 +590,9 @@ extern "C" {
 #define TSR_CAPS_MVM_DUAL              0x00010000u  // [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
 #define TSR_CAPS_MVM_DUAL_LSB          16u
 #define TSR_CAPS_MVM_DUAL_W            1u
+#define TSR_CAPS_QACT_PIPE             0x00020000u  // [17] QACT computes the A32 block scales in a pipeline: about 2 cycles per 32-block instead of 16 (information for cycle models and tools; results never depend on it)
+#define TSR_CAPS_QACT_PIPE_LSB         17u
+#define TSR_CAPS_QACT_PIPE_W           1u
 // bit 2 retired (RLD / MULI / LOOP), never set, never reused
 // bit 4 retired (WAITM / JUMP), never set, never reused
 // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT

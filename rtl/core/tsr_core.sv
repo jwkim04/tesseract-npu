@@ -20,6 +20,8 @@
 //     port above, driven from registers; the dual weight stream of the MVM unit, docs/rtl-mvm.md §15), and the input
 //     cfg_dual_en (run the MVMs with T <= T_MAX / 2 as two weight streams; sampled per MVM at its accept; the platform
 //     sets it). MVM_DUAL = 0: mb_rd_* are tied off (valid 0, ready 0) and cfg_dual_en is ignored.
+//   - QACT_PIPE = 1: the QACT unit takes its A32 block scales from a pipeline instead of its dividers (tsr_qact
+//     A32_PIPE, tsr_qact_scale.sv): about 2 cycles per 32-block instead of 16, the same results. CAPS bit 17 says so.
 //   - plat_err_i (the platform's error level, STATUS.PLAT_ERR) and host_irq_o = CTRL.IRQ_EN ∧
 //     (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200).
 // Units: DMA (LD / ST; KVST with HAS_ATT), QACT and, with HAS_MVM = 1 (default: the U200 configuration),
@@ -53,6 +55,7 @@ module tsr_core
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
   parameter bit              MVM_DUAL       = 1'b0,      // dual weight stream per MVM cluster (docs/rtl-mvm.md §15); needs HAS_MVM, T_MAX even >= 2
+  parameter bit              QACT_PIPE      = 1'b0,      // QACT computes the A32 block scales in a pipeline (tsr_qact A32_PIPE; CAPS bit 17)
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-mvm.md §1)
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
@@ -182,7 +185,8 @@ module tsr_core
                                      (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                      (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
                                      (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0) |
-                                     (MVM_DUAL ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0);
+                                     (MVM_DUAL ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0) |
+                                     (QACT_PIPE ? tsr_tables_pkg::TSR_CAPS_QACT_PIPE : 32'd0);
   localparam int unsigned QD_MVM_E = HAS_MVM ? QD_MVM : 0;
   localparam int unsigned QD_VU_E  = HAS_VU ? QD_VU : 0;
   localparam logic [5:0][4:0] Q_DEPTH = {5'(QD_SYNC), 5'd0, 5'(QD_VU_E), 5'(QD_MVM_E), 5'(QD_QACT), 5'(QD_DMA)};
@@ -411,7 +415,7 @@ module tsr_core
   tsr_core_dp #(
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG), .RD_OUTSTANDING(RD_OUTSTANDING),
-    .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .SPM_RD_LAT(SPM_RD_LAT),
+    .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .QACT_PIPE(QACT_PIPE), .SPM_RD_LAT(SPM_RD_LAT),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),

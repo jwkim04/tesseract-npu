@@ -759,6 +759,9 @@ CAPS_AT_RSVD_W             = 1
 CAPS_MVM_DUAL              = 0x10000  # [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
 CAPS_MVM_DUAL_LSB          = 16
 CAPS_MVM_DUAL_W            = 1
+CAPS_QACT_PIPE             = 0x20000  # [17] QACT computes the A32 block scales in a pipeline: about 2 cycles per 32-block instead of 16 (information for cycle models and tools; results never depend on it)
+CAPS_QACT_PIPE_LSB         = 17
+CAPS_QACT_PIPE_W           = 1
 # bit 2 retired (RLD / MULI / LOOP), never set, never reused
 # bit 4 retired (WAITM / JUMP), never set, never reused
 # CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
@@ -3293,7 +3296,7 @@ LAYOUTS = {   # layout -> field -> (lsb, width)
     'VERSION': {'MINOR': (0, 8), 'MAJOR': (8, 8)},
     'CFG0': {'NUM_CH': (0, 8), 'LANES': (8, 12), 'T_MAX': (20, 4)},
     'CFG2': {'VL': (0, 8), 'NSREG': (8, 8), 'K_MAX_256': (16, 16)},
-    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'GDN': (8, 1), 'VU_RSVD': (9, 3), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1), 'MVM_DUAL': (16, 1)},
+    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'GDN': (8, 1), 'VU_RSVD': (9, 3), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1), 'MVM_DUAL': (16, 1), 'QACT_PIPE': (17, 1)},
     'CFG3': {'VU_FRONT': (0, 5), 'VU_BACK': (5, 5), 'PCAP16': (16, 16)},
     'CTL_ID': {'VERSION': (0, 8), 'DM': (8, 1), 'REC': (9, 1), 'BRIDGE': (10, 1), 'LOG': (11, 1), 'WDOG': (12, 1), 'SBA': (13, 1), 'SPM_LB': (14, 1)},
     'CTRL': {'RV_RUN': (0, 1), 'HOST_HOLD': (1, 1), 'HOLD_ON_HALT': (2, 1), 'IRQ_EN': (3, 1), 'QABORT': (8, 1), 'QCLEAR': (9, 1), 'SOFT_RESET': (10, 1)},

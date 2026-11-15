@@ -89,6 +89,7 @@ lint tsr_spm -GSPM_BYTES=262144 -GRD_LAT=1
 lint tsr_spm -GSPM_BYTES=4096 -GRD_LAT=3
 lint tsr_qact
 lint tsr_qact -GSPM_RD_LAT=4
+lint tsr_qact -GA32_PIPE=1 -GSPM_RD_LAT=4
 lint tsr_mvm_ws -GFIFO_BEATS=64 -GADDR_BEAT_W=22
 lint tsr_mvm_ws -GFIFO_BEATS=1024 -GADDR_BEAT_W=40 -GRD_LAT=4
 lint tsr_mvm_actbuf -GK_MAX=256 -GT_MAX=8 -GRD_LAT=1

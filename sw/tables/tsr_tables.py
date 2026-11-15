@@ -180,6 +180,7 @@ LAYOUTS = {
         ("14",    "MVM_LOCAL_SOFTCAP", "owner-local FP32 scale, TANH, scale after MVM"),
         ("15",    "AT_RSVD", "reserved for AT, 0"),
         ("16",    "MVM_DUAL", "dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)"),
+        ("17",    "QACT_PIPE", "QACT computes the A32 block scales in a pipeline: about 2 cycles per 32-block instead of 16 (information for cycle models and tools; results never depend on it)"),
     ], retired=[
         (2, "RLD_LOOP",   "RLD / MULI / LOOP"),
         (4, "WAITM_JUMP", "WAITM / JUMP"),

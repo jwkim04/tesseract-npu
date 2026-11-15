@@ -46,6 +46,10 @@ nothing else when the MVMs run as two streams (TB_CORE_DUAL_EN=0 drives cfg_dual
 test_core_k4full_dual, test_core_k4_fast_dual, test_core_k4min_dual, test_core_m6_k4min_dual and test_core_m7_dual run the
 streams of the single-stream tests of the same name on those builds against the same simulator oracle; the *_off tests run
 them with the run-time enable low.
+QACT scale pipeline (QACT_PIPE 1, rtl/core/tsr_qact_scale.sv): TB_CORE_QPIPE=1 makes the bench build the core with it, set
+CAPS bit 17 in the expected identification registers and check that the A32 scales of the stream's QACT ops came out of the
+pipeline (attach_qpipe / check_qpipe). test_core_k4_fast_qpipe is test_core_k4_fast_dual on that build: the parameters of
+the card image tsr_u200_k4, the same simulator oracle (results never depend on the bit).
 Mutations (opt-in, TSR_CORE_MUTANTS=1, -m slow or -k mutants): test_core_mutants rebuilds the bench
 with one wiring mutant of rtl/core/tsr_core.sv / tsr_core_dp.sv at a time (8); each must fail core_smoke.
 
@@ -145,6 +149,31 @@ if cocotb is not None:
         memb.start()
         return memb
 
+    def attach_qpipe(dut):
+        """QACT_PIPE builds (TB_CORE_QPIPE=1): count the bursts of block scales that leave tsr_qact_scale for the scale
+        queue of the QACT unit. Returns the counter (a one-element list), or None for a core without the pipeline."""
+        if os.environ.get("TB_CORE_QPIPE", "0") != "1":
+            return None
+        q = dut.u_dp.u_qact
+        assert q.g_pipe.u_scale is not None, "QACT_PIPE 1 but the QACT unit has no tsr_qact_scale"
+        n = [0]
+
+        async def watch():
+            while True:
+                await RisingEdge(q.sq_push)
+                n[0] += 1
+
+        cocotb.start_soon(watch())
+        return n
+
+    def check_qpipe(dut, qp, errs, expect_blocks=True):
+        """With the pipeline the A32 QACT ops of the stream must have taken their scales from it."""
+        if qp is None:
+            return
+        dut._log.info("QACT scale pipeline: %d bursts of block scales", qp[0])
+        if expect_blocks and qp[0] == 0:
+            errs.append("QACT_PIPE 1 but no A32 block scale came out of tsr_qact_scale")
+
     def check_port_b(dut, memb, num_ch, errs, expect_traffic):
         """The port B model saw no protocol violation and no traffic in flight at the end; its weight beats are present
         (expect_traffic True) or absent (False: the run-time enable was low); None: no assertion."""
@@ -193,6 +222,7 @@ if cocotb is not None:
         dut.rst_rv_n.value = 1
         dut.rst_n.value = 1
         await ClockCycles(dut.clk, 40)
+        qp = attach_qpipe(dut)
         host = Host(dut)
         errs = []
 
@@ -270,6 +300,7 @@ if cocotb is not None:
         mem.check(idle=True)
         # the MUL_MAT stream has T = 2: two weight streams when 2 <= T_MAX / 2 and the run-time enable is on
         check_port_b(dut, memb, C.CFG["num_ch"], errs, C.TMAX >= 4 and os.environ.get("TB_CORE_DUAL_EN", "1") == "1")
+        check_qpipe(dut, qp, errs)
         dut._log.info("RTL: firmware DONE %.1f us after RV_RUN (~%d core cycles); simulator: %d instructions, "
                       "%d core cycles to DONE + idle; RT_INFO %#x, LCQ_WR %d, LOG_WR %d, Q_DONE %s",
                       t_run, cyc, sim["instret"], sim["cycles"], regs[TT.CSR_RT_INFO], regs[TT.CSR_LCQ_WR],
@@ -310,6 +341,7 @@ if cocotb is not None:
         dut.rst_rv_n.value = 1
         dut.rst_n.value = 1
         await ClockCycles(dut.clk, 40)
+        qp = attach_qpipe(dut)
         rtl = await C.db_prog(Host(dut, mem), sc, elf)
         errs = []
         C.compare_db(rtl, sim, errs)
@@ -329,6 +361,7 @@ if cocotb is not None:
             dut._log.info("K4 locality read beats per channel/source: %s", beats)
         mem.check(idle=True)
         check_port_b(dut, memb, C.CFG["num_ch"], errs, C.TMAX >= 4 and os.environ.get("TB_CORE_DUAL_EN", "1") == "1")
+        check_qpipe(dut, qp, errs)
         dut._log.info("DB: %d history entries, %d trace records, stops at pidx %s, TBP hits %s",
                       len(rtl["hist"]), len(rtl["trw"]), [x[TT.CSR_DBG_STOP_PIDX] for x in rtl["stops"]],
                       rtl["db_final"][TT.CSR_DBG_TBP_HITS(0)])
@@ -1005,7 +1038,7 @@ def test_core_k4min():
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "8", "TB_CORE_NOVU": "1"}, timescale=("1ps", "1ps"))
 
 
-def _run_k4_dual(name, dual_en=True, fast=False, k4min=False, seed=None):
+def _run_k4_dual(name, dual_en=True, fast=False, k4min=False, seed=None, qpipe=False):
     from common.runner import run
     elf = C.build_fw(FW_OUT)
     if k4min:
@@ -1024,6 +1057,9 @@ def _run_k4_dual(name, dual_en=True, fast=False, k4min=False, seed=None):
     params["MVM_DUAL"] = 1
     env.update(TB_CORE_ELF=str(elf), TB_CORE_RV_PS="6000", TB_CORE_PS="4000", TB_CORE_DUAL="1",
                TB_CORE_DUAL_EN="1" if dual_en else "0")
+    if qpipe:
+        params["QACT_PIPE"] = 1
+        env["TB_CORE_QPIPE"] = "1"
     run("tsr_core", __name__, parameters=params, sources=_sources(), name=name,
         seed=seed if seed is not None else int(os.environ.get("TSR_SEED", "1"), 0), testcase=tests, extra_env=env,
         timescale=("1ps", "1ps"))
@@ -1047,6 +1083,13 @@ def test_core_k4full_dual_off():
 def test_core_k4_fast_dual():
     """test_core_k4full_dual with FAST_CLK 1 (the 250 MHz stages of the card image)."""
     _run_k4_dual("core_k4fast_dual", fast=True)
+
+
+def test_core_k4_fast_qpipe():
+    """test_core_k4_fast_dual with QACT_PIPE 1: the core parameters of the card image tsr_u200_k4 with the A32 scale pipeline
+    of QACT. core_smoke and core_db equal the simulator as before (CAPS bit 17 set in the identification registers), and
+    the A32 QACT ops of both streams take their block scales from tsr_qact_scale."""
+    _run_k4_dual("core_k4fast_qpipe", fast=True, qpipe=True)
 
 
 def test_core_k4min_dual():

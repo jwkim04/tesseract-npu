@@ -536,6 +536,9 @@ package tsr_tables_pkg;
   localparam logic [31:0] TSR_CAPS_MVM_DUAL              = 32'h0001_0000;  // [16] dual weight stream: a decode MVM reads two weight streams per channel (information for cycle models and tools; results never depend on it)
   localparam int unsigned TSR_CAPS_MVM_DUAL_LSB          = 16;
   localparam int unsigned TSR_CAPS_MVM_DUAL_W            = 1;
+  localparam logic [31:0] TSR_CAPS_QACT_PIPE             = 32'h0002_0000;  // [17] QACT computes the A32 block scales in a pipeline: about 2 cycles per 32-block instead of 16 (information for cycle models and tools; results never depend on it)
+  localparam int unsigned TSR_CAPS_QACT_PIPE_LSB         = 17;
+  localparam int unsigned TSR_CAPS_QACT_PIPE_W           = 1;
   // bit 2 retired (RLD / MULI / LOOP), never set, never reused
   // bit 4 retired (WAITM / JUMP), never set, never reused
   // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT

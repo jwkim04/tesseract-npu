@@ -56,11 +56,12 @@ KERNELS = {
     # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
     # control core in SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1: the registered unit done
     # strobes, the DB memory taps and the cluster reset copies). The local-intermediate banks and the local
-    # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x10121 (VU,
-    # ATT, GDN, MVM_DUAL), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused Gated
-    # DeltaNet state update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). MVM_DUAL 1 adds
-    # the second weight stream of every cluster with its read-only port m_axi_chb<c> (docs/rtl-mvm.md §15). The
-    # place_design hook is hw/u200/k4_major_blocks.tcl.
+    # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x30121 (VU,
+    # ATT, GDN, MVM_DUAL, QACT_PIPE), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused
+    # Gated DeltaNet state update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). MVM_DUAL 1 adds
+    # the second weight stream of every cluster with its read-only port m_axi_chb<c> (docs/rtl-mvm.md §15). QACT_PIPE 1
+    # makes QACT compute its A32 block scales in a pipeline instead of its dividers (rtl/core/tsr_qact_scale.sv, inside
+    # u_qact). The place_design hook is hw/u200/k4_major_blocks.tcl.
     # FAST_CLK 1 (docs/platform-u200.md §8.10) selects the 250 MHz form: the PERF counters, the row-vector emitters, the PV convert pipeline,
     # the KVST placer and the slice pointer copies in their registered forms. Remove it for the netlist of the 200 MHz images.
     # Two other elaborations of tsr_u200_k4, as kernel entries:
@@ -71,7 +72,7 @@ KERNELS = {
     #    needs the lane banks beside their owner clusters in the hook:
     #      add LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1 to the entry below
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
-    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_DUAL=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_DUAL=1, QACT_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
                        DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
                        VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1),
 }
@@ -134,7 +135,7 @@ def gen_top(name: str, k: dict) -> str:
         if knob in k:
             params[knob] = k[knob]
     params.update(COMMON)
-    for knob in ("MVM_DUAL", "HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
+    for knob in ("MVM_DUAL", "QACT_PIPE", "HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
                  "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG", "FAST_CLK",
                  "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:

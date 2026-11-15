@@ -63,6 +63,7 @@ module tsr_xrt_kernel
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
   parameter bit              MVM_DUAL       = 1'b0,   // dual weight stream: the read-only port m_axib_* per channel (header)
+  parameter bit              QACT_PIPE      = 1'b0,   // QACT computes the A32 block scales in a pipeline (tsr_core; CAPS bit 17)
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
@@ -305,7 +306,7 @@ module tsr_xrt_kernel
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
-    .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .SPM_RD_LAT(SPM_RD_LAT),
+    .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .QACT_PIPE(QACT_PIPE), .SPM_RD_LAT(SPM_RD_LAT),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_GDN(HAS_GDN), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),

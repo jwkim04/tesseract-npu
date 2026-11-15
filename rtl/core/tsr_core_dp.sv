@@ -61,6 +61,7 @@ module tsr_core_dp
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
   parameter bit              MVM_DUAL       = 1'b0,      // dual weight stream per MVM cluster (docs/rtl-mvm.md §15): T_MAX even and >= 2
+  parameter bit              QACT_PIPE      = 1'b0,      // QACT computes the A32 block scales in a pipeline (tsr_qact A32_PIPE; CAPS bit 17)
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
@@ -361,7 +362,8 @@ module tsr_core_dp
                                       (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                       (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
                                      (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0) |
-                                      (MVM_DUAL  ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0);
+                                      (MVM_DUAL  ? tsr_tables_pkg::TSR_CAPS_MVM_DUAL : 32'd0) |
+                                      (QACT_PIPE ? tsr_tables_pkg::TSR_CAPS_QACT_PIPE : 32'd0);
   // CFG3 (EX §7.5, VU §5.10, AT §5.10): the VU's lane counts (information), PCAP / 16 with attention
   localparam logic [31:0] CFG3      = (HAS_VU  ? ((32'(VU_EXP_LANES) & 32'h1F) | ((32'(VU_BACK_LANES) & 32'h1F) << 5)) : 32'd0) |
                                       (HAS_ATT ? (tsr_qa_lines(1'b1, 32'(K_MAX)) << 16) : 32'd0);
@@ -853,7 +855,7 @@ module tsr_core_dp
   );
 
   tsr_qact #(
-    .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT)
+    .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .A32_PIPE(QACT_PIPE)
   ) u_qact (
     .clk, .rst_n(rst_b_n[RB_QACT]),
     .cmd_valid(qact_cmd_valid), .cmd_ready(qact_cmd_ready), .cmd(qact_cmd), .done(qact_done),

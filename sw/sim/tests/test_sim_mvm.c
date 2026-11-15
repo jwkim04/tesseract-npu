@@ -6,6 +6,7 @@
 // tails, untouched stride gaps, per-channel beat counters, MVM cycle model, and bit-identical
 // results for 1 vs 4 threads.
 #include "test_sim_util.h"
+#include "tsr_sim_int.h"
 
 typedef struct {
     uint32_t num_ch;
@@ -403,9 +404,62 @@ static void test_dual_cycles(void) {
     CHECK((tsr_sim_caps_implemented() & TSR_CAPS_MVM_DUAL) == 0, "CAPS.MVM_DUAL is not an implemented-by-default capability");
 }
 
+// CAPS.QACT_PIPE (the A32 block scales of QACT from a pipeline, rtl/core/tsr_qact_scale.sv) changes the cycle model only.
+// One QACT on a configuration: the run time of its handler (what the queue model charges QACT_CYCLES), and a hash of the QA
+// image (the results).
+static uint64_t qpipe_run(const tsr_config * cfg, uint32_t kind, uint32_t K, uint32_t T, uint64_t * cyc) {
+    tsr_sim * s = tsr_sim_create(cfg, NULL);
+    CHECK(s != NULL, "qact pipe: create");
+    rng_t r = { 1234 + kind * 7 + K + T };
+    const uint32_t xl = K * 4 / 64, ql = tsr_qa_lines(kind, K);
+    const uint32_t src = 10, dst = src + T * xl + 5;
+    float * x = (float *)malloc(sizeof(float) * K);
+    for (uint32_t t = 0; t < T; ++t) {
+        gen_x(&r, x, K, 0);
+        put_f32_le(tsr_sim_spm(s) + (size_t)(src + t * xl) * 64, x, K);
+    }
+    free(x);
+    const tsr_insn op = tsr_enc_qact(kind, dst, src, K, T, 0);
+    CHECK(op_ok(s, op), "qact pipe: qact");
+    *cyc = tsr_sim_op_handler(TSR_OP_QACT)->cycles(s, op.w);
+    const uint64_t h = fnv64(tsr_sim_spm(s) + (size_t)dst * 64, (size_t)T * ql * 64);
+    tsr_sim_destroy(s);
+    return h;
+}
+
+static void test_qact_pipe_cycles(void) {
+    const uint32_t shapes[][3] = {          // kind, K, T: odd and even block counts, one block, the largest K
+        { TSR_QA_A32, 32, 1 },   { TSR_QA_A32, 96, 1 },   { TSR_QA_A32, 512, 1 },   { TSR_QA_A32, 544, 3 },  { TSR_QA_A32, 1536, 1 },
+        { TSR_QA_A32, 2816, 4 }, { TSR_QA_A32, 8192, 4 }, { TSR_QA_A256, 256, 1 },  { TSR_QA_A256, 2816, 2 }, { TSR_QA_A256, 8192, 4 },
+    };
+    for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); ++i) {
+        const uint32_t kind = shapes[i][0], K = shapes[i][1], T = shapes[i][2];
+        tsr_config cfg = cfg_u200(4);
+        tsr_config pipe = cfg;
+        pipe.caps |= TSR_CAPS_QACT_PIPE;
+        uint64_t c_div, c_pipe;
+        const uint64_t h0 = qpipe_run(&cfg, kind, K, T, &c_div);
+        const uint64_t h1 = qpipe_run(&pipe, kind, K, T, &c_pipe);
+        CHECK(h0 == h1, "qact pipe shape %zu: the results differ with the cycle model", i);
+        if (kind == TSR_QA_A32) {
+            const uint64_t b = K / 32;
+            CHECK(c_div == 16 * T * b + 44, "qact pipe shape %zu: divider cycles %llu", i, (unsigned long long)c_div);
+            CHECK(c_pipe == T * (2 * b + 2 * ((b + 15) / 16)) + 53, "qact pipe shape %zu: pipeline cycles %llu, expected %llu", i,
+                  (unsigned long long)c_pipe, (unsigned long long)(T * (2 * b + 2 * ((b + 15) / 16)) + 53));
+            CHECK(c_pipe < c_div, "qact pipe shape %zu: the pipeline is not faster", i);
+        } else {
+            CHECK(c_div == 17 * (uint64_t)T * (K / 256) + 72, "qact pipe shape %zu: A256 cycles %llu", i, (unsigned long long)c_div);
+            CHECK(c_pipe == c_div, "qact pipe shape %zu: CAPS.QACT_PIPE changes the A256 cycles", i);
+        }
+    }
+    // a configuration that takes every implemented capability models the QACT with the dividers
+    CHECK((tsr_sim_caps_implemented() & TSR_CAPS_QACT_PIPE) == 0, "CAPS.QACT_PIPE is not an implemented-by-default capability");
+}
+
 int main(int argc, char ** argv) {
     const int n_random = argc > 1 ? atoi(argv[1]) : 150;
     test_dual_cycles();
+    test_qact_pipe_cycles();
     test_qact_only();
     test_directed();
     test_n_zero_and_chain();

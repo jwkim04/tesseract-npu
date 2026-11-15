@@ -544,6 +544,7 @@ module tsr_u200_k4 (
     .AXI_SLICES(2),
     .RST_STAGES(3),
     .MVM_DUAL(1),
+    .QACT_PIPE(1),
     .HAS_GDN(1),
     .MVM_GATHER_PAIR(1),
     .MVM_GATHER_FLITS(2),

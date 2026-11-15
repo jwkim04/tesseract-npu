@@ -399,6 +399,10 @@ async def adapter_kernel(dut):
     br = int(dut.u_ctrl.ch_base.value) & ((1 << 64) - 1)
     if v != 1 or br != 0x2_0004_0000:
         bad.append("MEM_EN %#x, latched base %#x" % (v, br))
+    # QACT_PIPE reaches the core through the kernel: CAPS bit 17 is set with it (TSR_KQPIPE=1) and clear without it
+    cp, _ = await m.read(0x1000 + T.CSR_CAPS)
+    if bool(cp & T.CAPS_QACT_PIPE) != (os.environ.get("TSR_KQPIPE") == "1"):
+        bad.append("CAPS %#x: QACT_PIPE differs from the kernel's parameter" % cp)
     if dual:
         # the dual weight stream (MVM_DUAL 1): CAPS bit 16, the run-time enable ADAPTER_CTRL.DUAL_DIS reaches the core
         # (dual_en: reset 1, a write of bit 1 clears it, a write without it sets it again), and the read-only
@@ -966,15 +970,16 @@ def test_adapter_mutants(m):
 
 
 def test_adapter_kernel_dual():
-    """tsr_xrt_kernel with MVM_DUAL 1 (2 channels, T_MAX 2, the MVM unit in): the read-only ports m_axib_*, CAPS bit 16,
-    ADAPTER_CTRL.DUAL_DIS to the core's cfg_dual_en, the chb<c> args without registers."""
+    """tsr_xrt_kernel with MVM_DUAL 1 and QACT_PIPE 1 (2 channels, T_MAX 2, the MVM unit in): the read-only ports m_axib_*,
+    CAPS bits 16 and 17, ADAPTER_CTRL.DUAL_DIS to the core's cfg_dual_en, the chb<c> args without registers. The other
+    kernel test has neither parameter and checks that bit 17 reads 0."""
     root = _src_root()
     from common.runner import parse_filelist
     srcs = parse_filelist(root / "rtl/filelist.f")[0] + parse_filelist(root / "rtl/platform/alveo_xrt/filelist.f")[0]
-    params = dict(HAS_MVM=1, MVM_DUAL=1, NUM_CH=2, T_MAX=2, SPM_BYTES=65536, CH_BYTES="64'd1073741824", K_MAX=4096,
-                  ADDR_BEAT_W=22, XSLR_REG=1)
+    params = dict(HAS_MVM=1, MVM_DUAL=1, QACT_PIPE=1, NUM_CH=2, T_MAX=2, SPM_BYTES=65536, CH_BYTES="64'd1073741824",
+                  K_MAX=4096, ADDR_BEAT_W=22, XSLR_REG=1)
     run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_kernel_dual",
-        extra_env={"TSR_KCH": "2", "TSR_KDUAL": "1"}, testcase=["adapter_kernel"])
+        extra_env={"TSR_KCH": "2", "TSR_KDUAL": "1", "TSR_KQPIPE": "1"}, testcase=["adapter_kernel"])
 
 
 def test_adapter_portb():

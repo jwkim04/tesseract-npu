@@ -36,8 +36,9 @@ typedef struct tsr_sim tsr_sim;
 // CAPS bits this simulator implements: computed from the registered op handlers (TSR_CAPS_VU when
 // VOP, RED, ROPE and SOP are present, TSR_CAPS_ATT when all seven AT ops are, TOPK, DQROW, VMASK).
 // A config whose caps field asks for more is rejected by tsr_sim_create. TSR_CAPS_MVM_DUAL (the dual weight stream of
-// the image, a cycle-model property with no effect on results) is accepted in a config but is not in this set: a
-// config that takes every implemented capability models the single weight stream.
+// the image) and TSR_CAPS_QACT_PIPE (its QACT computes the A32 block scales in a pipeline) are cycle-model properties with
+// no effect on results: they are accepted in a config but are not in this set, so a config that takes every implemented
+// capability models the single weight stream and the QACT with the dividers.
 uint32_t tsr_sim_caps_implemented(void);
 #define TSR_SIM_CAPS_IMPLEMENTED tsr_sim_caps_implemented()
 
