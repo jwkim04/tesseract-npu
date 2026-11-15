@@ -182,8 +182,9 @@ def final_regs():
 
 
 def expected_id(off: int, simulator_value: int) -> int:
-    # The simulator keeps the default timing model. Hardware lane-count fields
-    # describe the selected implementation; all other identity bits still match.
+    # core_smoke and core_db give their simulator the same CAPS (CFG), timing bits included, so the ORs only keep the expectation
+    # explicit there. The scenarios of core_m7 come from the simulator-side test, whose CAPS has no timing bits: the ORs add them.
+    # Hardware lane-count fields describe the selected implementation; all other identity bits still match.
     if off == TT.CSR_CAPS:
         return simulator_value | (CAPS_DUAL if DUAL else 0) | (CAPS_QPIPE if QPIPE else 0)
     if off == TT.CSR_CFG3 and "TB_CORE_VU_FRONT" in os.environ:

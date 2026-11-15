@@ -537,8 +537,7 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         const char * pe = getenv("TSR_PIVOT");
         d->pivot = (pe == nullptr || pe[0] == '\0' || atoi(pe) != 0) && tsr_mm_defer() &&
                    tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_BEGIN) && tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT_END);
-        d->pivot_dev.num_ch = c->num_ch;
-        d->pivot_dev.dual = (c->caps & TSR_CAPS_MVM_DUAL) != 0;
+        d->pivot_dev = tsr_pivot_dev_of(c->num_ch, c->caps);
         TSR_DBG(1, "Tesseract Pivot (graph_optimize): %s\n", d->pivot ? "on" : "off");
     }
     if (getenv("TSR_KINDS") != nullptr) {

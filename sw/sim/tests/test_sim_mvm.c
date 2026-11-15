@@ -452,6 +452,17 @@ static void test_qact_pipe_cycles(void) {
             CHECK(c_pipe == c_div, "qact pipe shape %zu: CAPS.QACT_PIPE changes the A256 cycles", i);
         }
     }
+    // the unit's measured times (tb/qact qact_timing, k4_pipe) plus the 4 cycles of the core's done path, as literal values
+    const struct { uint32_t K, T; uint64_t cycles; } pinned[] = { { 32, 1, 57 }, { 1536, 1, 155 }, { 2816, 1, 241 }, { 2816, 4, 805 },
+                                                               { 8192, 1, 597 }, { 8192, 4, 2229 } };
+    for (size_t i = 0; i < sizeof(pinned) / sizeof(pinned[0]); ++i) {
+        tsr_config pipe = cfg_u200(4);
+        pipe.caps |= TSR_CAPS_QACT_PIPE;
+        uint64_t c;
+        qpipe_run(&pipe, TSR_QA_A32, pinned[i].K, pinned[i].T, &c);
+        CHECK(c == pinned[i].cycles, "qact pipe K %u T %u: %llu cycles, expected %llu", pinned[i].K, pinned[i].T, (unsigned long long)c,
+              (unsigned long long)pinned[i].cycles);
+    }
     // a configuration that takes every implemented capability models the QACT with the dividers
     CHECK((tsr_sim_caps_implemented() & TSR_CAPS_QACT_PIPE) == 0, "CAPS.QACT_PIPE is not an implemented-by-default capability");
 }

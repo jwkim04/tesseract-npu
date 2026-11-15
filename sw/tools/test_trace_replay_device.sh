@@ -11,6 +11,8 @@
 #      the shadow (the capture's synthesized image loads the same words as IMAGE, tsr_devrun.h);
 #   5. the same launch traces across CAPS.MVM_DUAL (timing only, so a trace means the same with or without it): captured
 #      with TSR_SIM_MVM_DUAL=1 and replayed on mock (no bit 16), and captured without it and replayed on sim with it.
+#   6. the same across CAPS.QACT_PIPE (bit 17, timing only): captured with TSR_SIM_QACT_PIPE=1 and replayed on mock (no bit 17), and
+#      the traces of step 4 replayed on sim with it.
 set -u
 GEN=$1
 REPLAY=$2
@@ -71,5 +73,26 @@ if [ -n "$ST" ]; then
     grep -q " $nl traces on sim (+ shadow): $nl passed, 0 failed, 0 skipped" "$OUT/launch_dual_sim.log" ||
         { tail -5 "$OUT/launch_dual_sim.log"; fail "launch traces made without MVM_DUAL: not every trace ran on sim with it"; }
     echo "test_trace_replay_device: launch traces across CAPS.MVM_DUAL: $nd on mock, $nl on sim"
+    TSR_SIM_QACT_PIPE=1 TSR_TRACE="$OUT/cap_qpipe" "$ST" --device sim --image "$IMG" --no-mem --rate-n 0 --no-shadow --ids 1,2,3,7,9 \
+        > "$OUT/cap_qpipe.log" 2>&1 || { tail -20 "$OUT/cap_qpipe.log"; fail "tsr-selftest with TSR_TRACE and TSR_SIM_QACT_PIPE=1"; }
+    nq=$(find "$OUT/cap_qpipe" -name meta.json | wc -l)
+    [ "$nq" -ge 6 ] || fail "only $nq launch traces captured with QACT_PIPE"
+    # the capture must carry bit 17 (TSR_SIM_QACT_PIPE reached the simulator), and the traces of step 4 must not
+    caps_of() { grep -o '"caps": [0-9]*' "$1" | head -1 | grep -o '[0-9]*$'; }
+    for m in "$OUT"/cap_qpipe/*/meta.json; do
+        [ $(( $(caps_of "$m") & 0x20000 )) -ne 0 ] || fail "$m: launch trace captured with TSR_SIM_QACT_PIPE=1 has no CAPS bit 17"
+    done
+    for m in "$OUT"/cap/*/meta.json; do
+        [ $(( $(caps_of "$m") & 0x20000 )) -eq 0 ] || fail "$m: launch trace captured without TSR_SIM_QACT_PIPE has CAPS bit 17"
+    done
+    "$REPLAY" -q --device mock --shadow --replay-image "$IMG" "$OUT/cap_qpipe" > "$OUT/launch_qpipe_mock.log" 2>&1 ||
+        { tail -20 "$OUT/launch_qpipe_mock.log"; fail "launch traces made with QACT_PIPE through mock"; }
+    grep -q " $nq traces on mock (+ shadow): $nq passed, 0 failed, 0 skipped" "$OUT/launch_qpipe_mock.log" ||
+        { tail -5 "$OUT/launch_qpipe_mock.log"; fail "launch traces made with QACT_PIPE: not every trace ran on mock"; }
+    TSR_SIM_QACT_PIPE=1 "$REPLAY" -q --device sim --shadow --replay-image "$IMG" "$OUT/cap" > "$OUT/launch_qpipe_sim.log" 2>&1 ||
+        { tail -20 "$OUT/launch_qpipe_sim.log"; fail "launch traces made without QACT_PIPE through sim with it"; }
+    grep -q " $nl traces on sim (+ shadow): $nl passed, 0 failed, 0 skipped" "$OUT/launch_qpipe_sim.log" ||
+        { tail -5 "$OUT/launch_qpipe_sim.log"; fail "launch traces made without QACT_PIPE: not every trace ran on sim with it"; }
+    echo "test_trace_replay_device: launch traces across CAPS.QACT_PIPE: $nq on mock, $nl on sim"
 fi
 echo "test_trace_replay_device: PASS"

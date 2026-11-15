@@ -29,7 +29,8 @@ pytest functions:
                         (T_MAX 3, 32 KiB SPM, SPM_RD_LAT 4, MUL_LAT 1, minimum buffer / queues:
                         BUF_LINES 16, AQ_DEPTH 2, PQ_DEPTH 2), k65280 (K_MAX 65280, T_MAX 2,
                         1 MiB SPM, SPM_RD_LAT 3, MUL_LAT 3). u200_pipe, t8_pipe, tight_pipe (with
-                        SQ_DEPTH 2) and k4_pipe are u200, t8, tight and k4 with A32_PIPE = 1 (the A32
+                        SQ_DEPTH 2) and k4_pipe are u200, t8, tight and k4 with A32_PIPE = 1, and k4t8_pipe is
+                        k4_pipe with T_MAX 8 (the A32
                         scales from tsr_qact_scale, rtl/core/tsr_qact_scale.sv; the exhaustive check
                         of that block is tb/qact/test_qact_scale.py); qact_throughput and qact_timing
                         take their A32 bounds by mode (a32_model)
@@ -101,6 +102,8 @@ CFGS = {
     "t8_pipe":    (dict(T8, A32_PIPE=1), T8_TESTS, 150),
     "tight_pipe": (dict(TIGHT, A32_PIPE=1, SQ_DEPTH=2), ALL_TESTS, 300),
     "k4_pipe":    (dict(K4, A32_PIPE=1), ["qact_timing"], 1),
+    # the same timing table for T up to 8
+    "k4t8_pipe":  (dict(K4, T_MAX=8, A32_PIPE=1), ["qact_timing"], 1),
     "k65280": (dict(K_MAX=65280, T_MAX=2, SPM_BYTES=1 * MIB, SPM_RD_LAT=3, MUL_LAT=3),
                ["qact_kmax", "qact_random"], 16),
 }
@@ -408,9 +411,12 @@ async def qact_timing(dut):
     rows = []
     for kind in (QA_A32, QA_A256):
         for T in range(1, cfg["T_MAX"] + 1):
-            # odd block counts, single blocks and the widths of the supported models besides the powers of two
-            for K in (32, 64, 96, 160, 256, 512, 704, 1024, 1536, 2048, 2560, 2816, 3840, 4096, 5120, 6144, 8192):
+            # odd block counts, single blocks and the widths of the supported models besides the powers of two, up to K_MAX
+            for K in (32, 64, 96, 160, 256, 512, 704, 1024, 1536, 2048, 2560, 2816, 3840, 4096, 5120, 6144, 8192, 15360,
+                      16384, 32768):
                 if K % block_size(kind) or K > _kfit(cfg, kind, T):
+                    continue
+                if kind == QA_A256 and (K > 8192 or T > 4):   # the A256 model below is pinned for K up to 8192 and T up to 4
                     continue
                 xs = [gen_vector(rnd, kind, K, "normal") for _ in range(T)]
                 src, dst, stride = drv.place(kind, K, T)

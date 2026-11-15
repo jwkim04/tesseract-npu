@@ -56,7 +56,11 @@
 struct tsr_pivot_dev {
     uint32_t num_ch = 4;       // DDR channels (each weight is spread over all of them)
     bool     dual  = false;    // CAPS_MVM_DUAL: a decode MVM reads two weight streams per channel
+    bool     qact_pipe = false;   // CAPS_QACT_PIPE: QACT computes the A32 block scales in a pipeline
 };
+
+// The device facts of a core that has num_ch DDR channels and reads caps in its identification register CAPS.
+tsr_pivot_dev tsr_pivot_dev_of(uint32_t num_ch, uint32_t caps);
 
 // The cost table, in core cycles. The values are coarse: they rank the alternatives, they do not predict a time. Where they come from:
 // LD, QACT, MVM and ST of a weight MUL_MAT follow the simulator's cycle functions (cyc_ldst, cyc_qact, cyc_mvm, cyc_st in
@@ -73,6 +77,9 @@ namespace tsr_pivot_costs {
     constexpr int64_t LD_BASE         = 64;      // LD of x: 64 + K / 16
     constexpr int64_t QACT_Q8_BASE    = 44;      // QACT of Q8_0: 16 K / 32 + 44
     constexpr int64_t QACT_Q8_PER_32  = 16;
+    constexpr int64_t QACT_Q8P_BASE   = 53;      // QACT of Q8_0 with CAPS_QACT_PIPE: 2 K / 32 + 2 ceil(K / 512) + 53
+    constexpr int64_t QACT_Q8P_PER_32 = 2;
+    constexpr int64_t QACT_Q8P_PER_D  = 2;       // per line of 16 blocks (the D lines of the scales)
     constexpr int64_t QACT_Q4_BASE    = 72;      // QACT of Q4_K: 17 K / 256 + 72
     constexpr int64_t QACT_Q4_PER_256 = 17;
     constexpr int64_t BACK_BASE       = 110;     // ST of y: 110 + N / 16

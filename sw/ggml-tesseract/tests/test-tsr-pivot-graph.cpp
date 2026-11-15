@@ -1315,6 +1315,13 @@ static void test_memo() {
         tsr_pivot_optimize(b.g.gf, single, tsr_pivot_params(), &rb, nullptr, &memo);
         tsr_pivot_optimize(c.g.gf, card_dev(), wide, &rc, nullptr, &memo);
         CHECK(!ra.memo_hit && !rb.memo_hit && !rc.memo_hit && rb.ran && rc.ran && rb.key == ra.key && rc.key == ra.key);
+        tsr_pivot_dev qpipe = card_dev();
+        qpipe.qact_pipe = true;
+        gemma_graph d;
+        build_gemma(d, 3, 1);
+        tsr_pivot_report rd;
+        tsr_pivot_optimize(d.g.gf, qpipe, tsr_pivot_params(), &rd, nullptr, &memo);
+        CHECK(!rd.memo_hit && rd.ran && rd.key == ra.key);
     }
 }
 
@@ -1379,6 +1386,46 @@ static void test_costs_follow_the_device() {
     CHECK(c.units[(size_t) u].mvm > 1.9 * a.units[(size_t) u].mvm);
 }
 
+// The QACT of a weight MUL_MAT of one token (cyc_qact in sw/sim/tsr_sim.c): Q8_0 on the dividers 16 K / 32 + 44, with CAPS_QACT_PIPE
+// 2 K / 32 + 2 ceil(K / 512) + 53 (blocks of an odd and an even count, K that is not a multiple of 512); Q4_K 17 K / 256 + 72 either way.
+static void test_qact_cost_follows_the_device() {
+    tsr_pivot_dev plain = card_dev(), qpipe = card_dev();
+    plain.qact_pipe = false;
+    qpipe.qact_pipe = true;
+    auto qact = [](ggml_type type, int64_t K, const tsr_pivot_dev & dev) -> int64_t {
+        gctx g;
+        ggml_tensor * x = g.f32(K, 1, "x");
+        ggml_tensor * y = ggml_mul_mat(g.ctx, g.w(type, K, 64, "w"), x);
+        g.expand(y);
+        tsr_pivot_graph pg;
+        CHECK(tsr_pivot_analyze(g.gf, dev, &pg));
+        const std::vector<ggml_tensor *> orig = nodes_of(g.gf);
+        const int u = unit_of(pg, orig, y);
+        CHECK(u >= 0 && pg.units[(size_t) u].cls == TSR_PIVOT_MVM);
+        return u >= 0 ? pg.units[(size_t) u].qact : -1;
+    };
+    for (int64_t K : { 32, 480, 512, 544, 1536, 2816, 2848, 8192 }) {
+        const int64_t b = K / 32;
+        CHECK(qact(GGML_TYPE_Q8_0, K, plain) == 16 * b + 44);
+        CHECK(qact(GGML_TYPE_Q8_0, K, qpipe) == 2 * b + 2 * ((K + 511) / 512) + 53);
+    }
+    CHECK(qact(GGML_TYPE_Q8_0, 2816, qpipe) == 241 && qact(GGML_TYPE_Q8_0, 1536, qpipe) == 155 && qact(GGML_TYPE_Q8_0, 8192, qpipe) == 597);
+    for (int64_t K : { 256, 768, 2816 }) {
+        CHECK(qact(GGML_TYPE_Q4_K, K, plain) == 17 * (K / 256) + 72);
+        CHECK(qact(GGML_TYPE_Q4_K, K, qpipe) == 17 * (K / 256) + 72);
+    }
+}
+
+// The device facts come from CAPS: bit 16 is the dual weight stream, bit 17 the pipelined QACT scales (the backend uses this function).
+static void test_dev_of_caps() {
+    const tsr_pivot_dev none = tsr_pivot_dev_of(4, 0), dual = tsr_pivot_dev_of(4, TSR_CAPS_MVM_DUAL),
+                        pipe = tsr_pivot_dev_of(2, TSR_CAPS_QACT_PIPE), both = tsr_pivot_dev_of(4, 0x00030121u);
+    CHECK(none.num_ch == 4 && !none.dual && !none.qact_pipe);
+    CHECK(dual.dual && !dual.qact_pipe);
+    CHECK(pipe.num_ch == 2 && !pipe.dual && pipe.qact_pipe);
+    CHECK(both.dual && both.qact_pipe);
+}
+
 int main(int argc, char ** argv) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-v") == 0) g_verbose = true;
@@ -1398,6 +1445,8 @@ int main(int argc, char ** argv) {
     test_memo();
     test_conflict_stops();
     test_costs_follow_the_device();
+    test_qact_cost_follows_the_device();
+    test_dev_of_caps();
     if (g_fail != 0) {
         fprintf(stderr, "test-tsr-pivot-graph: %d check(s) failed\n", g_fail);
         return 1;

@@ -1525,7 +1525,7 @@ static void ex_qact(tsr_sim * sim, const uint32_t w[8]) {
 // in the unit's run time as the trace writer reports it on the card). The tokens of one op run back to back.
 // With CAPS.QACT_PIPE the A32 scales come from a pipeline (tsr_qact_scale.sv) and the unit is line bound: 2 cycles per
 // 32-block, 2 more for every D line (16 blocks, and the end of a token), and 53 cycles of fill (tb/qact qact_timing,
-// configuration k4_pipe: exact for every K and T). A256 does not depend on the bit.
+// configurations k4_pipe and k4t8_pipe: exact for K 32 to 32768 and T 1 to 8). A256 does not depend on the bit.
 static uint64_t cyc_qact(const tsr_sim * sim, const uint32_t w[8]) {
     const uint32_t kind = tsr_w0_sub(w[0]), K = w[3], T = w[4];
     if (kind == TSR_QA_A32 && (sim->cfg.caps & TSR_CAPS_QACT_PIPE)) {

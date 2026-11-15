@@ -24,13 +24,16 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     // core clock. The image has no GDN op (HAS_GDN 0): CAPS bit 8 is clear, TSR_SIM_GDN=1 sets it for the release image
     // (k4f250: HAS_GDN 1; SW-78). TSR_SIM_CARD=k4dual is k4full with the dual weight stream (CAPS bit 16, docs/rtl-mvm.md §15):
     // the MVM's cycle model reads two weight streams per channel for T <= T_MAX / 2 (TSR_MVM_DUAL=0 turns the run-time enable
-    // off, TSR_SIM_MEM_RATE bounds the memory rate). The variables below still override what they name (SW-80).
+    // off, TSR_SIM_MEM_RATE bounds the memory rate). TSR_SIM_CARD=k4qpipe is k4dual with the pipelined A32 scales of QACT (CAPS
+    // bit 17: about 2 cycles per 32-block instead of 16): the image of tsr_u200_k4. The variables below still override what they
+    // name (SW-80).
     if (const char * card = getenv("TSR_SIM_CARD"); card != nullptr && card[0] != '\0') {
-        if (strcmp(card, "k4full") != 0 && strcmp(card, "k4dual") != 0) {
-            fprintf(stderr, "%s: TSR_SIM_CARD=\"%s\": expected k4full or k4dual\n", who, card);
+        if (strcmp(card, "k4full") != 0 && strcmp(card, "k4dual") != 0 && strcmp(card, "k4qpipe") != 0) {
+            fprintf(stderr, "%s: TSR_SIM_CARD=\"%s\": expected k4full, k4dual or k4qpipe\n", who, card);
             return false;
         }
-        if (strcmp(card, "k4dual") == 0) cfg.caps |= TSR_CAPS_MVM_DUAL;
+        if (strcmp(card, "k4dual") == 0 || strcmp(card, "k4qpipe") == 0) cfg.caps |= TSR_CAPS_MVM_DUAL;
+        if (strcmp(card, "k4qpipe") == 0) cfg.caps |= TSR_CAPS_QACT_PIPE;
         cfg.t_max = 4;
         cfg.caps &= ~(TSR_CAPS_ATT_LOCAL | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP | TSR_CAPS_GDN);
         const char * rr = getenv("TSR_SIM_RV_RATIO"), * vt = getenv("TSR_SIM_VU_TIMING");
@@ -49,9 +52,13 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if ((r = env_u64(who, "TSR_SIM_MVM_DUAL", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_DUAL;   // a build without the dual weight stream
     if (r && v == 1) cfg.caps |= TSR_CAPS_MVM_DUAL;    // a build with it (the image of tsr_u200_k4 with MVM_DUAL 1)
+    if ((r = env_u64(who, "TSR_SIM_QACT_PIPE", 0, 1, &v)) < 0) return false;
+    if (r && v == 0) cfg.caps &= ~TSR_CAPS_QACT_PIPE;   // a build with the divider scales of QACT
+    if (r && v == 1) cfg.caps |= TSR_CAPS_QACT_PIPE;    // a build with the pipelined scales (the image of tsr_u200_k4 with QACT_PIPE 1)
     if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
     if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
-        cfg.caps &= TSR_CAPS_MVM_DUAL;   // the dual weight stream belongs to the MVM unit: it stays as TSR_SIM_CARD / TSR_SIM_MVM_DUAL set it
+        cfg.caps &= TSR_CAPS_MVM_DUAL | TSR_CAPS_QACT_PIPE;   // the dual weight stream belongs to the MVM unit and the pipelined scales to QACT: they stay as
+                                                              // TSR_SIM_CARD / TSR_SIM_MVM_DUAL / TSR_SIM_QACT_PIPE set them
         o->no_vu = true;
     }
     if ((r = env_u64(who, "TSR_SIM_TMAX", 1, TSR_T_MAX_ARCH, &v)) < 0) return false;

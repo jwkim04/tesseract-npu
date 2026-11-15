@@ -102,6 +102,14 @@ bool weight_beats(const ggml_tensor * w, uint32_t num_ch, int64_t * beats) {
     return true;
 }
 
+// QACT of a weight MUL_MAT of one token (cyc_qact in sw/sim/tsr_sim.c): Q4_K quantizes in blocks of 256, Q8_0 in blocks of 32, with the
+// block scales on dividers (16 cycles a block) or, with CAPS_QACT_PIPE, in a pipeline.
+int64_t qact_cycles(const ggml_tensor * w, int64_t K, const tsr_pivot_dev & dev) {
+    if (tsr_dev_fmt_for_type(w->type) == tsr::plan::FMT_Q4_K) return C::QACT_Q4_PER_256 * (K / 256) + C::QACT_Q4_BASE;
+    if (dev.qact_pipe) return C::QACT_Q8P_PER_32 * (K / 32) + C::QACT_Q8P_PER_D * ((K / 32 + 15) / 16) + C::QACT_Q8P_BASE;
+    return C::QACT_Q8_PER_32 * (K / 32) + C::QACT_Q8_BASE;
+}
+
 int64_t mvm_cycles(int64_t beats, const tsr_pivot_dev & dev) {
     const int64_t rate = dev.dual ? C::RATE_PCT_DUAL : C::RATE_PCT_SINGLE;
     return std::max<int64_t>(1, beats * 100 / rate);
@@ -131,7 +139,7 @@ struct key_hash {
 uint64_t memo_key(uint64_t structure, const tsr_pivot_dev & dev, const tsr_pivot_params & p) {
     key_hash k;
     k.add(structure);
-    k.add(((uint64_t) dev.num_ch << 1) | (dev.dual ? 1 : 0));
+    k.add(((uint64_t) dev.num_ch << 2) | (dev.qact_pipe ? 2 : 0) | (dev.dual ? 1 : 0));
     k.add(p.window);
     k.add(p.max_moved);
     k.add((uint64_t) p.threshold);
@@ -157,6 +165,14 @@ std::string unit_name(const std::vector<ggml_tensor *> & nodes, const std::vecto
 }
 
 }   // namespace
+
+tsr_pivot_dev tsr_pivot_dev_of(uint32_t num_ch, uint32_t caps) {
+    tsr_pivot_dev dev;
+    dev.num_ch = num_ch;
+    dev.dual = (caps & TSR_CAPS_MVM_DUAL) != 0;
+    dev.qact_pipe = (caps & TSR_CAPS_QACT_PIPE) != 0;
+    return dev;
+}
 
 bool tsr_pivot_analyze(const ggml_cgraph * cg, const tsr_pivot_dev & dev, tsr_pivot_graph * g) {
     *g = tsr_pivot_graph();
@@ -378,8 +394,7 @@ bool tsr_pivot_analyze(const ggml_cgraph * cg, const tsr_pivot_dev & dev, tsr_pi
             const int64_t K = mm->src[0]->ne[0], N = mm->src[0]->ne[1];
             x.cls = TSR_PIVOT_MVM;
             x.ld = C::LD_BASE + K / 16;
-            x.qact = tsr_dev_fmt_for_type(mm->src[0]->type) == tsr::plan::FMT_Q4_K ? C::QACT_Q4_PER_256 * (K / 256) + C::QACT_Q4_BASE
-                                                                                   : C::QACT_Q8_PER_32 * (K / 32) + C::QACT_Q8_BASE;
+            x.qact = qact_cycles(mm->src[0], K, dev);
             x.mvm = mvm_cycles(beats, dev);
             x.back = C::BACK_BASE + N / 16;
             x.defer = epilogue[mm_node] == 0;

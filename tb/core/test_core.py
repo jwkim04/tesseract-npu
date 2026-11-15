@@ -49,7 +49,8 @@ them with the run-time enable low.
 QACT scale pipeline (QACT_PIPE 1, rtl/core/tsr_qact_scale.sv): TB_CORE_QPIPE=1 makes the bench build the core with it, set
 CAPS bit 17 in the expected identification registers and check that the A32 scales of the stream's QACT ops came out of the
 pipeline (attach_qpipe / check_qpipe). test_core_k4_fast_qpipe is test_core_k4_fast_dual on that build: the parameters of
-the card image tsr_u200_k4, the same simulator oracle (results never depend on the bit).
+the card image tsr_u200_k4, the same simulator oracle (results never depend on the bit). test_core_k4min_qpipe is the
+reduced card image with it (T_MAX 8, no vector unit), and test_core_m7_qpipe runs production decode and prefill on it.
 Mutations (opt-in, TSR_CORE_MUTANTS=1, -m slow or -k mutants): test_core_mutants rebuilds the bench
 with one wiring mutant of rtl/core/tsr_core.sv / tsr_core_dp.sv at a time (8); each must fail core_smoke.
 
@@ -682,7 +683,7 @@ def test_core(cfg):
 
 
 def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False,
-            dual=False, dual_en=True):
+            dual=False, dual_en=True, qpipe=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -710,10 +711,13 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
     if half_vu:
         params.update(VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4)
         env.update(TB_CORE_VU_FRONT="8", TB_CORE_VU_BACK="4")
+    if qpipe:
+        params["QACT_PIPE"] = 1
+        env["TB_CORE_QPIPE"] = "1"
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_dual%d" % dual_en if dual else "core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+        name=("core_m7_qpipe" if qpipe else "core_m7_dual%d" % dual_en if dual else "core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
               ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
@@ -760,6 +764,13 @@ def test_core_m7_dual(m7case):
     as two streams: port B carries weight beats and nothing else."""
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, lane_pipe=2, ddr_pipe=1, half_vu=True,
             dual=True)
+
+
+def test_core_m7_qpipe(m7case):
+    """test_core_m7_dual with QACT_PIPE 1: production decode / prefill with the A32 scale pipeline of QACT on the packaged
+    control plane. Every comparison of core_m7 unchanged, the identification registers with CAPS bits 16 and 17."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, lane_pipe=2, ddr_pipe=1, half_vu=True,
+            dual=True, qpipe=True)
 
 
 def test_core_m7_dual_off(m7case):
@@ -915,6 +926,7 @@ if pytest is not None:
     test_core_m6_k4min_dual_off = pytest.mark.parametrize("m6case", list(C.M6_CASES))(test_core_m6_k4min_dual_off)
     test_core_m7_dual = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_dual)
     test_core_m7_dual_off = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_dual_off)
+    test_core_m7_qpipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_qpipe)
     test_core_m7 = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7)
     test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
@@ -1090,6 +1102,12 @@ def test_core_k4_fast_qpipe():
     of QACT. core_smoke and core_db equal the simulator as before (CAPS bit 17 set in the identification registers), and
     the A32 QACT ops of both streams take their block scales from tsr_qact_scale."""
     _run_k4_dual("core_k4fast_qpipe", fast=True, qpipe=True)
+
+
+def test_core_k4min_qpipe():
+    """test_core_k4min_dual with QACT_PIPE 1 (the reduced card image): core_smoke equals the simulator and the A32 QACT ops
+    take their block scales from tsr_qact_scale."""
+    _run_k4_dual("core_k4min_qpipe", k4min=True, qpipe=True)
 
 
 def test_core_k4min_dual():
