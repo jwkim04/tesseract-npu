@@ -30,6 +30,7 @@ core/tsr_rpipe.sv
 // the DMA's KVST engine (AT §8.3), instantiated by tsr_dma
 core/tsr_dma_kvst.sv
 core/tsr_dma.sv
+core/tsr_qact_scale.sv
 core/tsr_qact.sv
 core/tsr_mvm_ws.sv
 core/tsr_mvm_front.sv

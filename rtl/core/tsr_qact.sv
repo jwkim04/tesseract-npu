@@ -7,7 +7,7 @@
 //   resolved; qa_lines = QA_LINES(kind, K)). `done` is a registered 1-cycle pulse in the cycle after
 //   the edge at which tsr_spm accepted the last QA line write of the instruction (never in the
 //   accepting cycle). At that point the unit is quiescent: every SPM read has returned, every
-//   internal queue is empty, both dividers are idle.
+//   internal queue is empty, both dividers are idle and the A32 scale pipeline holds no block.
 // Semantics: bit-exact tsr_qact() (sw/sim/tsr_ref.c) per token t = 0..T-1, as tsr_sim.c ex_qact:
 //   source f32 x[0..K-1] at SPM line src_line + t*src_stride (16 f32 per line, little-endian);
 //   destination QA image at dst_line + t*qa_lines: QS (ceil(K/64) lines, int8), then D
@@ -49,7 +49,17 @@
 //                 DA works on block i+1 while DB works on block i: one block per 16 cycles (the
 //                 15-cycle divide + the handover). f32_to_fp16(d) (A32) is a free-running register
 //                 behind slot Y (y_h16), settled long before DB finishes.
-//   S3 quantizer  per block: {scale, d, zero} is loaded from DB / slot Y (cur_*), then the block's
+//   S2P scales    A32_PIPE = 1, A32 commands: the dividers are not used. The amax of a block goes
+//                 into tsr_qact_scale (a fixed-latency pipeline, one block per cycle: d = amax / 127
+//                 as a multiply by a constant, id = 1 / d on the vector unit's reciprocal core;
+//                 bit-exact with the dividers) instead of the AQ, and its result {id, f32_to_fp16(d),
+//                 zero} goes into the scale queue SQ (SQ_DEPTH entries, in order). The reader
+//                 reserves an SQ entry at the first line of a block (sq_res: requested and not yet
+//                 loaded by S3) instead of an AQ entry, so the pipeline never stalls and the SQ never
+//                 overflows. A256 commands use S2 as above. With A32_PIPE = 0 the pipeline and the
+//                 SQ do not exist.
+//   S3 quantizer  per block: {scale, d, zero} is loaded (cur_*) from DB / slot Y, or from the SQ head
+//                 with A32_PIPE, then the block's
 //                 lines are read from the line buffer, one per cycle, while a processed-line queue
 //                 credit is free (pq_cred: PQ_DEPTH minus lines in flight or queued). Fixed-latency
 //                 pipeline, never stalled (16 x tsr_fp_mul with ce = 1):
@@ -72,6 +82,14 @@
 //   amax -> DA -> DB -> quantize latency of a block); A32 16.0 cycles per 32-block (= 8 per line,
 //   divider bound; K 32768: 16422 cycles). Accept -> done for one block: A256 83, A32 54 cycles.
 //   docs/rtl-core.md §8.1 asks for ~2 cycles per line outside the per-block divides.
+//   A32 with A32_PIPE = 1 (SQ_DEPTH 32): 2 cycles per 32-block (one line per cycle, two lines per
+//   block), plus 2 cycles for every D line (16 blocks, and the end of a token), where a QS line and
+//   a D line become pending in the same cycle: 2.125 per block (K 32768: 2223 cycles). Accept ->
+//   done for one block: 45 + SPM_RD_LAT + MUL_LAT cycles (51 at the defaults). For T tokens of b blocks:
+//   T * (2 b + 2 ceil(b / 16)) + 41 + SPM_RD_LAT + MUL_LAT cycles (49 with SPM_RD_LAT 4 and MUL_LAT 4;
+//   exact, tb/qact qact_timing and qact_throughput). With fewer SQ entries the blocks
+//   in flight bound the rate: about 36 + SPM_RD_LAT cycles from the reservation of an entry to its
+//   load (40 with SPM_RD_LAT 4), so SQ_DEPTH 2 gives about 20 cycles per block.
 // Timing (300 MHz): every SPM-facing output is a flop; the dispatch fields and the response bus
 //   are registered before any logic; one amax merge level per stage; the multiplier inputs come
 //   straight from the buffer's read register and a scale register; f32_to_q8 is one stage between
@@ -84,8 +102,15 @@
 //     routing only). Deepest logic: y_keep -> y_h16 (f32_to_fp16), 9-10 levels, +0.66 ns.
 //   Utilization: 5522 LUT (147 as LUTRAM: AQ, PQ), 6416 FF, 32 DSP48E2, 8 RAMB36 (line buffer;
 //   64 deep is too shallow for URAM).
-// Room for T_MAX 8 (M7): A32 throughput is set by the single divider pair; more pairs (round robin,
-//   in order) would scale it if QACT ever matters next to MVM.
+//   With A32_PIPE = 1 (the same run with -generic A32_PIPE=1): WNS +0.193 ns, WHS +0.037 ns, the same
+//     worst path. The pipeline's own worst paths: tsr_qact_scale's d register -> the delay line
+//     (f32_to_fp16, 10 levels, +0.58 ns) and the SQ read pointer -> cur_dval (LUT RAM read and
+//     fp16_to_f32, 7 levels, +0.83 ns).
+//   Utilization: 5964 LUT (158 as LUTRAM: AQ, PQ, SQ; 162 as shift registers), 6941 FF, 42 DSP48E2,
+//   8 RAMB36, 1 RAMB18 (the seed table of tsr_vu_rcp): 442 LUT, 525 FF, 10 DSP48E2 and the RAMB18
+//   more than without it. tsr_qact_scale is 620 LUT, 526 FF, 10 DSP48E2 of that.
+// Room for T_MAX 8 (M7): without A32_PIPE the A32 throughput is set by the single divider pair;
+//   A32_PIPE = 1 removes that bound (the A256 scales stay on the dividers: one block per 17 cycles).
 
 module tsr_qact
   import tsr_pkg::*;
@@ -99,6 +124,8 @@ module tsr_qact
   parameter  int unsigned BUF_LINES  = 64,   // source line buffer: power of two >= 16 (one A256 block)
   parameter  int unsigned AQ_DEPTH   = 4,    // amax queue entries: power of two >= 2
   parameter  int unsigned PQ_DEPTH   = 16,   // processed-line queue entries: power of two >= 2
+  parameter  bit          A32_PIPE   = 1'b0, // A32 scales from the fixed-latency pipeline (tsr_qact_scale)
+  parameter  int unsigned SQ_DEPTH   = 32,   // scale queue entries (A32_PIPE): power of two >= 2
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -135,6 +162,8 @@ module tsr_qact
   localparam int unsigned AQ_CW  = AQ_AW + 1;
   localparam int unsigned PQ_AW  = $clog2(PQ_DEPTH);
   localparam int unsigned PQ_CW  = PQ_AW + 1;
+  localparam int unsigned SQ_AW  = $clog2(SQ_DEPTH);
+  localparam int unsigned SQ_CW  = SQ_AW + 1;
   localparam int unsigned PQ_W   = 128 + 16 + 32;           // {q[16] int8, BS int16, d f32}
 
   if (K_MAX < 256 || K_MAX > 65280 || (K_MAX % 256) != 0) begin : g_chk_kmax
@@ -155,6 +184,9 @@ module tsr_qact
   if (AQ_DEPTH < 2 || (AQ_DEPTH & (AQ_DEPTH - 1)) != 0 ||
       PQ_DEPTH < 2 || (PQ_DEPTH & (PQ_DEPTH - 1)) != 0) begin : g_chk_q
     $fatal(1, "tsr_qact: AQ_DEPTH and PQ_DEPTH must be powers of two >= 2");
+  end
+  if (SQ_DEPTH < 2 || (SQ_DEPTH & (SQ_DEPTH - 1)) != 0) begin : g_chk_sq
+    $fatal(1, "tsr_qact: SQ_DEPTH must be a power of two >= 2");
   end
 
   // Sum of four int8 (as 10-bit two's complement) and of four such sums (as int16).
@@ -232,11 +264,13 @@ module tsr_qact
   logic [AQ_CW-1:0]  aq_res;      // AQ entries reserved (blocks requested, not yet popped by DA)
   logic              q_issue;     // S3 reads one buffered line (frees its slot)
   logic              aq_pop;      // DA takes the AQ head
+  wire               pipe     = A32_PIPE && !c_kind;   // the command takes its A32 scales from tsr_qact_scale
+  logic              sq_rfull;    // every SQ entry is reserved (A32_PIPE)
 
   wire               r_first  = c_kind ? (r_g[3:0] == 4'd0) : !r_g[0];
   wire               r_lastln = (r_g == c_nlm1);
   wire               r_can    = r_act && (buf_res != BUF_CW'(BUF_LINES)) &&
-                                (!r_first || (aq_res != AQ_CW'(AQ_DEPTH)));
+                                (!r_first || (pipe ? !sq_rfull : (aq_res != AQ_CW'(AQ_DEPTH))));
   wire               r_load   = r_can && (!rd_v || spm_rd_req_ready);
   wire [SPM_AW-1:0]  r_nbase  = r_base + c_stride;
 
@@ -272,7 +306,7 @@ module tsr_qact
       if (r_load)                rd_v <= 1'b1;
       else if (spm_rd_req_ready) rd_v <= 1'b0;
       buf_res <= buf_res + BUF_CW'(r_load) - BUF_CW'(q_issue);
-      aq_res  <= aq_res + AQ_CW'(r_load && r_first) - AQ_CW'(aq_pop);
+      aq_res  <= aq_res + AQ_CW'(r_load && r_first && !pipe) - AQ_CW'(aq_pop);
     end
   end
 
@@ -371,7 +405,7 @@ module tsr_qact
   logic [AQ_CW-1:0] aq_cnt;
   tsr_f32_amax_t aq_head;
 
-  assign aq_push = a4_v && a4_l;
+  assign aq_push = a4_v && a4_l && !pipe;
   assign aq_head = aq_mem[aq_rp];
 
   always_ff @(posedge clk) begin
@@ -450,6 +484,74 @@ module tsr_qact
   end
 
   // -------------------------------------------------------------------------------------------
+  // S2P (A32_PIPE): the A32 scales of a block without the dividers. The amax of a block goes into
+  // tsr_qact_scale (one block per cycle, fixed latency), the result {scale, h16, zero} into the scale
+  // queue SQ (in order). An SQ entry is reserved when the reader requests the first line of a block
+  // and released when S3 loads the block (sq_res), so the pipeline never stalls and the SQ never
+  // overflows. A256 commands do not use it.
+  // -------------------------------------------------------------------------------------------
+  logic        sq_avail;                  // the SQ holds a block
+  logic        sq_zero;                   // SQ head
+  logic [15:0] sq_h16;
+  logic [31:0] sq_scale;
+  logic        sc_in;                     // a block enters the pipeline
+  logic        sq_push;                   // a block leaves it
+  logic [SQ_CW-1:0] sq_cnt, sq_res;       // SQ entries held; entries reserved (held, in flight, requested)
+
+  if (A32_PIPE) begin : g_pipe
+    logic        sc_v, sc_zero;
+    logic [15:0] sc_h16;
+    logic [31:0] sc_scale;
+    logic [SQ_AW-1:0] sq_wp, sq_rp;
+    logic [48:0] sq_mem [SQ_DEPTH];
+    logic [48:0] sq_head;
+    wire         sq_pop = blk_load && pipe;
+
+    assign sc_in    = a4_v && a4_l && pipe;
+    assign sq_push  = sc_v;
+    assign sq_avail = (sq_cnt != '0);
+    assign sq_rfull = (sq_res == SQ_CW'(SQ_DEPTH));
+    assign {sq_zero, sq_h16, sq_scale} = sq_head;
+    assign sq_head  = sq_mem[sq_rp];
+
+    tsr_qact_scale u_scale (
+      .clk, .rst_n, .in_valid(sc_in), .amag(acc_n.mag),
+      .out_valid(sc_v), .scale(sc_scale), .h16(sc_h16), .zero(sc_zero)
+    );
+
+    always_ff @(posedge clk) begin
+      if (sq_push) sq_mem[sq_wp] <= {sc_zero, sc_h16, sc_scale};
+    end
+
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        sq_wp  <= '0;
+        sq_rp  <= '0;
+        sq_cnt <= '0;
+        sq_res <= '0;
+      end else begin
+        if (sq_push) sq_wp <= sq_wp + SQ_AW'(1);
+        if (sq_pop)  sq_rp <= sq_rp + SQ_AW'(1);
+        sq_cnt <= sq_cnt + SQ_CW'(sq_push) - SQ_CW'(sq_pop);
+        sq_res <= sq_res + SQ_CW'(r_load && r_first && pipe) - SQ_CW'(sq_pop);
+      end
+    end
+  end else begin : g_nopipe
+    assign sc_in    = 1'b0;
+    assign sq_push  = 1'b0;
+    assign sq_avail = 1'b0;
+    assign sq_rfull = 1'b0;
+    assign sq_zero  = 1'b0;
+    assign sq_h16   = '0;
+    assign sq_scale = '0;
+    assign sq_cnt   = '0;
+    assign sq_res   = '0;
+
+    // read by the simulation checks only
+    wire unused_ok = &{1'b0, sc_in, sq_push, sq_cnt, sq_res};
+  end
+
+  // -------------------------------------------------------------------------------------------
   // S3: quantizer (block register, line issue, fixed-latency pipeline)
   // -------------------------------------------------------------------------------------------
   logic             cur_v, cur_zero;
@@ -461,8 +563,8 @@ module tsr_qact
 
   assign q_issue  = cur_v && (pq_cred != '0);
   wire   cur_last = (cur_left == 5'd1);
-  assign blk_load = db_out_valid && (!cur_v || (q_issue && cur_last));
-  assign db_out_ready = blk_load;
+  assign blk_load = (pipe ? sq_avail : db_out_valid) && (!cur_v || (q_issue && cur_last));
+  assign db_out_ready = blk_load && !pipe;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -485,9 +587,15 @@ module tsr_qact
 
   always_ff @(posedge clk) begin
     if (blk_load) begin
-      cur_zero  <= y_zero;
-      cur_scale <= c_kind ? y_keep : (y_dz ? 32'd0 : db_y);
-      cur_dval  <= c_kind ? (y_zero ? 32'd0 : db_y) : tsr_fp16_to_f32(y_h16);
+      if (pipe) begin
+        cur_zero  <= sq_zero;
+        cur_scale <= sq_scale;
+        cur_dval  <= tsr_fp16_to_f32(sq_h16);
+      end else begin
+        cur_zero  <= y_zero;
+        cur_scale <= c_kind ? y_keep : (y_dz ? 32'd0 : db_y);
+        cur_dval  <= c_kind ? (y_zero ? 32'd0 : db_y) : tsr_fp16_to_f32(y_h16);
+      end
     end
   end
 
@@ -746,6 +854,13 @@ module tsr_qact
     end
   end
 
+  // Blocks inside tsr_qact_scale (A32_PIPE): entered and not yet pushed into the SQ.
+  logic [31:0] sc_fly;
+  always_ff @(posedge clk) begin
+    if (!rst_n) sc_fly <= '0;
+    else        sc_fly <= sc_fly + 32'(sc_in) - 32'(sq_push);
+  end
+
   // Accepted command: the guarantees of docs/rtl-core.md §3.3.
   function automatic logic cmd_legal(tsr_qact_cmd_t c);
     longint unsigned lim, bs, dst_end, src_end;
@@ -776,6 +891,9 @@ module tsr_qact
       assert (!(q_issue && buf_res == '0)) else $error("tsr_qact: buffer read of an unreserved line");
       assert (aq_cnt <= aq_res && aq_res <= AQ_CW'(AQ_DEPTH)) else $error("tsr_qact: AQ accounting");
       assert (!(aq_push && aq_cnt == AQ_CW'(AQ_DEPTH))) else $error("tsr_qact: AQ overflow");
+      assert (sq_cnt <= sq_res && sq_res <= SQ_CW'(SQ_DEPTH)) else $error("tsr_qact: SQ accounting");
+      assert (!(sq_push && sq_cnt == SQ_CW'(SQ_DEPTH))) else $error("tsr_qact: SQ overflow");
+      assert (32'(sq_cnt) + sc_fly <= 32'(sq_res)) else $error("tsr_qact: SQ reservation");
       assert (pq_cnt + pq_cred <= PQ_CW'(PQ_DEPTH)) else $error("tsr_qact: PQ accounting");
       assert (!(pq_push && pq_cnt == PQ_CW'(PQ_DEPTH))) else $error("tsr_qact: PQ overflow");
       assert (!(da_out_valid && !x_v)) else $error("tsr_qact: DA result without slot X");
@@ -783,11 +901,13 @@ module tsr_qact
       assert (!(blk_load && y_fresh)) else $error("tsr_qact: slot Y loaded before y_h16 settled");
       assert (!(db_out_valid && !y_v)) else $error("tsr_qact: DB result without slot Y");
       assert (!(st == S_IDLE && (rd_v || r_act || rs_v || a1_v || a4_v || aq_cnt != '0 || x_v || y_v ||
+                                 sc_fly != '0 || sq_cnt != '0 ||
                                  cur_v || p1_v || q2_v || q3_v || pq_cnt != '0 || out_v ||
                                  p_qs || p_bs || p_d)))
         else $error("tsr_qact: activity while idle");
       if (done) begin
-        assert (buf_res == '0 && aq_res == '0 && pq_cred == PQ_CW'(PQ_DEPTH) && rd_out == 32'd0 &&
+        assert (buf_res == '0 && aq_res == '0 && sq_res == '0 && sc_fly == '0 && sq_cnt == '0 &&
+                pq_cred == PQ_CW'(PQ_DEPTH) && rd_out == 32'd0 &&
                 buf_wp == buf_rp && !da_out_valid && !db_out_valid && da_in_ready && db_in_ready)
           else $error("tsr_qact: done while not quiescent");
       end

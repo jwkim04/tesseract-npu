@@ -28,12 +28,16 @@ pytest functions:
                         t8 (T_MAX 8, K_MAX 4096, 256 KiB SPM, SPM_RD_LAT 1, MUL_LAT 5), tight
                         (T_MAX 3, 32 KiB SPM, SPM_RD_LAT 4, MUL_LAT 1, minimum buffer / queues:
                         BUF_LINES 16, AQ_DEPTH 2, PQ_DEPTH 2), k65280 (K_MAX 65280, T_MAX 2,
-                        1 MiB SPM, SPM_RD_LAT 3, MUL_LAT 3)
-  test_qact_rtl_spm     tb/qact/hdl/tsr_tb_qact.sv: tsr_qact on client 1 of the real tsr_spm, the
+                        1 MiB SPM, SPM_RD_LAT 3, MUL_LAT 3). u200_pipe, t8_pipe, tight_pipe (with
+                        SQ_DEPTH 2) and k4_pipe are u200, t8, tight and k4 with A32_PIPE = 1 (the A32
+                        scales from tsr_qact_scale, rtl/core/tsr_qact_scale.sv; the exhaustive check
+                        of that block is tb/qact/test_qact_scale.py); qact_throughput and qact_timing
+                        take their A32 bounds by mode (a32_model)
+  test_qact_rtl_spm[pipe]  tb/qact/hdl/tsr_tb_qact.sv: tsr_qact on client 1 of the real tsr_spm, the
                         testbench on client 0 (preload, contention traffic that takes the read and
                         write grants away from QACT, readback); the SPM's own R2 / range
                         assertions and tsr_qact's response-latency assertion are live
-  test_qact_time0_edge[build-div]  Verilator's first evaluation may clock submodules with rst_n
+  test_qact_time0_edge[build-div]  (builds u200, tight, rtl_spm and the same with A32_PIPE = 1) Verilator's first evaluation may clock submodules with rst_n
                         and all state random (see "First evaluation" below), so every simulation
                         check must be armed by a reset edge. qact_time0_edge / rtl_spm_time0_edge,
                         each alone in a fresh simulation, force the worst case deterministically
@@ -41,14 +45,14 @@ pytest functions:
                         state in tsr_qact / tsr_spm / tsr_fp_div), then reset and run normally.
                         div=busy (tsr_fp_div in_ready high while busy; the 0 ns failure
                         at seeds 5 / 10 that arming tsr_fp_div.sv's assertion with a reset
-                        edge fixed); builds u200, tight, rtl_spm (the latter also clocks tsr_qact
-                        and tsr_spm themselves through their clk copies)
+                        edge fixed); the rtl_spm builds also clock tsr_qact and tsr_spm themselves
+                        through their clk copies
   test_qact_lint        verilator --lint-only -Wall of tsr_qact (simulation and SYNTHESIS views)
                         in edge configurations, and of the testbench wrapper
   test_qact_ooc_timing  opt-in (Vivado): out-of-context place & route at 300 MHz on xcu200-2,
-                        WNS / WHS >= 0 (TSR_QACT_VIVADO=1 or -k ooc)
-Seeded-bug check: TSR_QACT_RTL=<modified tsr_qact.sv> runs the bench on another source (the
-bench must fail on it).
+                        WNS / WHS >= 0 (TSR_QACT_VIVADO=1 or -k ooc), without and with A32_PIPE
+Seeded-bug check: TSR_QACT_RTL=<modified tsr_qact.sv> and TSR_QACT_SCALE_RTL=<modified tsr_qact_scale.sv>
+run the bench on another source (the bench must fail on it).
 """
 from __future__ import annotations
 
@@ -78,17 +82,25 @@ MIB = 1024 * 1024
 TB_SV = REPO / "tb" / "qact" / "hdl" / "tsr_tb_qact.sv"
 
 DEFAULTS = dict(K_MAX=32768, T_MAX=1, SPM_BYTES=4 * MIB, SPM_RD_LAT=2, MUL_LAT=4, BUF_LINES=64,
-                AQ_DEPTH=4, PQ_DEPTH=16)
+                AQ_DEPTH=4, PQ_DEPTH=16, A32_PIPE=0, SQ_DEPTH=32)
 ALL_TESTS = ["qact_directed", "qact_random", "qact_kmax", "qact_throughput", "qact_reset",
              "qact_comb_probe"]
+T8_TESTS = ["qact_directed", "qact_random", "qact_kmax", "qact_throughput", "qact_reset"]
+T8 = dict(K_MAX=4096, T_MAX=8, SPM_BYTES=256 * 1024, SPM_RD_LAT=1, MUL_LAT=5)
+TIGHT = dict(K_MAX=2048, T_MAX=3, SPM_BYTES=32 * 1024, SPM_RD_LAT=4, MUL_LAT=1, BUF_LINES=16,
+             AQ_DEPTH=2, PQ_DEPTH=2)
+K4 = dict(T_MAX=4, SPM_RD_LAT=4)
 CFGS = {
     "u200":   (dict(), ALL_TESTS, 250),
-    "t8":     (dict(K_MAX=4096, T_MAX=8, SPM_BYTES=256 * 1024, SPM_RD_LAT=1, MUL_LAT=5),
-               ["qact_directed", "qact_random", "qact_kmax", "qact_throughput", "qact_reset"], 150),
-    "tight":  (dict(K_MAX=2048, T_MAX=3, SPM_BYTES=32 * 1024, SPM_RD_LAT=4, MUL_LAT=1, BUF_LINES=16,
-                    AQ_DEPTH=2, PQ_DEPTH=2), ALL_TESTS, 300),
+    "t8":     (T8, T8_TESTS, 150),
+    "tight":  (TIGHT, ALL_TESTS, 300),
     # the card image of the fourth link: T_MAX 4, SPM_RD_LAT 4 (tb/qact qact_timing)
-    "k4":     (dict(T_MAX=4, SPM_RD_LAT=4), ["qact_timing"], 1),
+    "k4":     (K4, ["qact_timing"], 1),
+    # the same with A32_PIPE = 1 (the A32 scales from tsr_qact_scale); the tight one has the minimum SQ
+    "u200_pipe":  (dict(A32_PIPE=1), ALL_TESTS, 250),
+    "t8_pipe":    (dict(T8, A32_PIPE=1), T8_TESTS, 150),
+    "tight_pipe": (dict(TIGHT, A32_PIPE=1, SQ_DEPTH=2), ALL_TESTS, 300),
+    "k4_pipe":    (dict(K4, A32_PIPE=1), ["qact_timing"], 1),
     "k65280": (dict(K_MAX=65280, T_MAX=2, SPM_BYTES=1 * MIB, SPM_RD_LAT=3, MUL_LAT=3),
                ["qact_kmax", "qact_random"], 16),
 }
@@ -101,16 +113,17 @@ def full_config(over: dict) -> dict:
     return cfg
 
 
-def qact_sources(names=("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
-                         "tsr_fp_div.sv", "tsr_qact.sv")):
-    """The files tsr_qact needs, in filelist order. $TSR_QACT_RTL replaces rtl/core/tsr_qact.sv
-    (used to check that the bench catches seeded bugs)."""
+QACT_NAMES = ("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_vu_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
+              "tsr_fp_div.sv", "tsr_qact_scale.sv", "tsr_qact.sv", "tsr_vu_rcp.sv")
+
+
+def qact_sources(names=QACT_NAMES):
+    """The files tsr_qact needs, in filelist order. $TSR_QACT_RTL replaces rtl/core/tsr_qact.sv and
+    $TSR_QACT_SCALE_RTL rtl/core/tsr_qact_scale.sv (used to check that the bench catches seeded bugs)."""
     srcs = [s for s in rtl_sources() if s.name in names]
     assert [s.name for s in srcs] == list(names), srcs
-    alt = os.environ.get("TSR_QACT_RTL")
-    if alt:
-        srcs = [Path(alt).resolve() if s.name == "tsr_qact.sv" else s for s in srcs]
-    return srcs
+    alt = {"tsr_qact.sv": os.environ.get("TSR_QACT_RTL"), "tsr_qact_scale.sv": os.environ.get("TSR_QACT_SCALE_RTL")}
+    return [Path(alt[s.name]).resolve() if alt.get(s.name) else s for s in srcs]
 
 
 # =============================================================================================
@@ -131,33 +144,37 @@ def test_qact(cfg):
 
 
 RTL_SPM_CFG = dict(K_MAX=2048, T_MAX=4, SPM_BYTES=64 * 1024, SPM_RD_LAT=2, BANK_LINES=256)
+RTL_SPM_NAMES = ("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_vu_pkg.sv", "tsr_sram_1r1w.sv",
+                 "tsr_fp_mul.sv", "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_qact_scale.sv",
+                 "tsr_qact.sv", "tsr_vu_rcp.sv")                                                  # + cport
 
 
-def run_rtl_spm(tests=("qact_rtl_spm",), extra_env: dict | None = None):
-    srcs = qact_sources(("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
-                         "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_qact.sv"))   # + cport
-    full = dict(RTL_SPM_CFG)
+def run_rtl_spm(tests=("qact_rtl_spm",), extra_env: dict | None = None, pipe: int = 0):
+    srcs = qact_sources(RTL_SPM_NAMES)
+    over = dict(RTL_SPM_CFG, A32_PIPE=pipe)
+    full = dict(over)
     full["LINES"] = full["SPM_BYTES"] // 64
-    run("tsr_tb_qact", __name__, parameters=RTL_SPM_CFG, sources=srcs, extra_sources=[TB_SV],
-        name="qact_rtl_spm", testcase=list(tests),
+    run("tsr_tb_qact", __name__, parameters=over, sources=srcs, extra_sources=[TB_SV],
+        name="qact_rtl_spm" + ("_pipe" if pipe else ""), testcase=list(tests),
         extra_env=dict(extra_env or {}, TSR_QACT_CFG=json.dumps(full)))
 
 
-def test_qact_rtl_spm():
-    run_rtl_spm()
+@pytest.mark.parametrize("pipe", [0, 1])
+def test_qact_rtl_spm(pipe):
+    run_rtl_spm(pipe=pipe)
 
 
 # tsr_fp_div.sv's simulation assertion is armed by a reset edge like tsr_spm's / tsr_qact's. Gated
 # with rst_n only it fired at 0 ns (seeds 5 / 10); the 'busy' variant reproduces that case
 # deterministically, so both variants must pass.
 @pytest.mark.parametrize("div", ["idle", "busy"])
-@pytest.mark.parametrize("build", ["u200", "tight", "rtl_spm"])
+@pytest.mark.parametrize("build", ["u200", "tight", "rtl_spm", "u200_pipe", "tight_pipe", "rtl_spm_pipe"])
 def test_qact_time0_edge(build, div):
     """qact_time0_edge / rtl_spm_time0_edge alone in a fresh simulation (they must see the first
     evaluation); reuses the test_qact / test_qact_rtl_spm builds."""
     env = {"TSR_QACT_T0_DIV": div}
-    if build == "rtl_spm":
-        run_rtl_spm(["rtl_spm_time0_edge"], extra_env=env)
+    if build.startswith("rtl_spm"):
+        run_rtl_spm(["rtl_spm_time0_edge"], extra_env=env, pipe=int(build.endswith("_pipe")))
     else:
         run_cfg(build, ["qact_time0_edge"], extra_env=env)
 
@@ -172,6 +189,12 @@ LINT_CONFIGS = [
     {"SPM_BYTES": 128, "K_MAX": 32768},
     {"SPM_BYTES": 64 * 1000, "BUF_LINES": 256, "AQ_DEPTH": 16, "PQ_DEPTH": 64},
     {"SPM_BYTES": 256 * MIB, "SPM_RD_LAT": 7},
+    # A32_PIPE = 1: defaults, the minimum queues, the largest K / T, a one-line SPM, deep SQ
+    {"A32_PIPE": 1},
+    {"A32_PIPE": 1, "MUL_LAT": 1, "BUF_LINES": 16, "AQ_DEPTH": 2, "PQ_DEPTH": 2, "SQ_DEPTH": 2},
+    {"A32_PIPE": 1, "MUL_LAT": 5, "K_MAX": 65280, "T_MAX": 8, "SPM_RD_LAT": 4},
+    {"A32_PIPE": 1, "MUL_LAT": 3, "K_MAX": 256, "SPM_BYTES": 64, "SPM_RD_LAT": 1, "SQ_DEPTH": 4},
+    {"A32_PIPE": 1, "SPM_BYTES": 64 * 1000, "BUF_LINES": 256, "AQ_DEPTH": 16, "PQ_DEPTH": 64, "SQ_DEPTH": 128},
 ]
 
 
@@ -181,6 +204,8 @@ def test_qact_lint():
     runs = [(["--top-module", "tsr_qact"] + ["-G%s=%s" % kv for kv in p.items()], str(p))
             for p in LINT_CONFIGS]
     runs.append((["--top-module", "tsr_tb_qact", str(TB_SV)], "tsr_tb_qact"))
+    runs.append((["--top-module", "tsr_tb_qact", "-GA32_PIPE=1", str(TB_SV)], "tsr_tb_qact A32_PIPE=1"))
+    runs.append((["--top-module", "tsr_qact_scale"], "tsr_qact_scale"))
     for args, name in runs:
         for view in ([], ["-DSYNTHESIS"]):
             cmd = ["verilator", "--lint-only", "-Wall", "-F", str(fl)] + view + args
@@ -193,9 +218,10 @@ def test_qact_lint():
 VIVADO = Path(os.environ.get("TSR_VIVADO", "/tool/Xilinx/Vivado/2024.2/bin/vivado"))
 
 
-def test_qact_ooc_timing(tmp_path, request):
-    """Opt-in (needs Vivado, ~15 min): out-of-context implementation of tsr_qact (U200 defaults)
-    at 300 MHz on xcu200-2 (tb/qact/viv/qact_ooc.tcl); requires WNS >= 0 and WHS >= 0.
+@pytest.mark.parametrize("generic", ["-", "A32_PIPE=1"])
+def test_qact_ooc_timing(tmp_path, request, generic):
+    """Opt-in (needs Vivado, ~15 min): out-of-context implementation of tsr_qact (U200 defaults,
+    and with A32_PIPE = 1) at 300 MHz on xcu200-2 (tb/qact/viv/qact_ooc.tcl); requires WNS >= 0 and WHS >= 0.
     Runs only with TSR_QACT_VIVADO=1 or when selected by -k / node id."""
     selected = os.environ.get("TSR_QACT_VIVADO") == "1" or \
         "ooc" in (request.config.getoption("keyword") or "") or \
@@ -206,7 +232,7 @@ def test_qact_ooc_timing(tmp_path, request):
         pytest.skip("Vivado not found (%s)" % VIVADO)
     tcl = REPO / "tb" / "qact" / "viv" / "qact_ooc.tcl"
     p = subprocess.run([str(VIVADO), "-mode", "batch", "-nojournal", "-nolog", "-source", str(tcl),
-                        "-tclargs", str(REPO), "-", str(tmp_path / "out")],
+                        "-tclargs", str(REPO), generic, str(tmp_path / "out")],
                        cwd=tmp_path, capture_output=True, text=True, timeout=7200)
     lines = [ln for ln in p.stdout.splitlines() if ln.startswith("QOOC")]
     print("\n".join(lines))
@@ -361,6 +387,17 @@ async def qact_kmax(dut):
             dut._log.info("kmax kind %d K %d T %d (%s): %d cycles", kind, K, T, mode, cyc)
 
 
+def a32_model(cfg: dict, T: int, b: int):
+    """(cycles, tolerance) of an A32 command of T tokens of b blocks, SPM always ready, SQ deep enough.
+    Dividers: 16 cycles per block + 40. A32_PIPE: 2 cycles per block, 2 more for every D line (every 16
+    blocks and the end of a token: a QS line and a D line become pending in the same cycle), and
+    41 + SPM_RD_LAT + MUL_LAT for the fill and the drain (49 for K4: SPM_RD_LAT 4, MUL_LAT 4). The pipeline
+    runs in these cycles exactly (tolerance 0)."""
+    if cfg["A32_PIPE"]:
+        return T * (2 * b + 2 * -(-b // 16)) + 41 + cfg["SPM_RD_LAT"] + cfg["MUL_LAT"], 0
+    return 16 * T * b + 40, 1
+
+
 @cocotb.test()
 async def qact_timing(dut):
     """Accept to done of QACT ops with an always-ready SPM, by kind, K and T (the table behind the simulator's cycle model,
@@ -371,7 +408,8 @@ async def qact_timing(dut):
     rows = []
     for kind in (QA_A32, QA_A256):
         for T in range(1, cfg["T_MAX"] + 1):
-            for K in (256, 512, 704, 1024, 2048, 2816, 4096, 6144, 8192):
+            # odd block counts, single blocks and the widths of the supported models besides the powers of two
+            for K in (32, 64, 96, 160, 256, 512, 704, 1024, 1536, 2048, 2560, 2816, 3840, 4096, 5120, 6144, 8192):
                 if K % block_size(kind) or K > _kfit(cfg, kind, T):
                     continue
                 xs = [gen_vector(rnd, kind, K, "normal") for _ in range(T)]
@@ -380,9 +418,10 @@ async def qact_timing(dut):
                 rows.append([kind, K, T, cyc])
                 dut._log.info("qact_timing kind %d K %d T %d: %d cycles", kind, K, T, cyc)
                 # the simulator's model (sw/sim/tsr_sim.c cyc_qact, SW-80) is these plus 4 cycles of the core's done path:
-                # A32 16 cycles per 32-block + 40 (divider bound), A256 17 per 256-block + 68
+                # A32 (dividers) 16 cycles per 32-block + 40 (divider bound), A256 17 per 256-block + 68;
+                # A32 with A32_PIPE: a closed form in a32_model
                 nblk = T * (K // block_size(kind))
-                want, tol = (16 * nblk + 40, 1) if kind == QA_A32 else (17 * nblk + 68, 8)
+                want, tol = a32_model(cfg, T, K // 32) if kind == QA_A32 else (17 * nblk + 68, 8)
                 assert abs(cyc - want) <= tol, "kind %d K %d T %d: %d cycles, the model says %d" % (kind, K, T, cyc, want)
     out = os.environ.get("TSR_QACT_TIMING_OUT")
     if out:
@@ -410,13 +449,30 @@ async def qact_throughput(dut):
     # the minimum one), A32 ~15 cycles / block (divider bound), + pipeline fill.
     per_line = 1.25 if cfg["BUF_LINES"] >= 64 else 4.5
     assert c256 <= per_line * lines256 + 160, "A256 throughput: %d cycles for %d lines" % (c256, lines256)
-    assert c32 <= 16 * blocks32 + 120, "A32 throughput: %d cycles for %d blocks" % (c32, blocks32)
+    # A32: the dividers 16 cycles per block. A32_PIPE with a deep SQ: exactly a32_model (2 per block, 2 more
+    # per 16 blocks). With fewer SQ entries the blocks in flight bound the rate: one SQ entry is busy for
+    # 36 + SPM_RD_LAT cycles from its reservation to its load, so SQ_DEPTH entries give (36 + SPM_RD_LAT) /
+    # SQ_DEPTH cycles per block (20 for SQ_DEPTH 2 at SPM_RD_LAT 4; the measured 20.25 includes the fill).
+    if not cfg["A32_PIPE"]:
+        assert c32 <= 16 * blocks32 + 120, "A32 throughput: %d cycles for %d blocks" % (c32, blocks32)
+    else:
+        rt = 36 + cfg["SPM_RD_LAT"]
+        free = a32_model(cfg, 1, blocks32)[0]
+        if rt <= 2 * cfg["SQ_DEPTH"]:
+            assert c32 == free, "A32_PIPE throughput: %d cycles for %d blocks, the model says %d" % (c32, blocks32, free)
+        else:
+            bound = rt * blocks32 // cfg["SQ_DEPTH"] + 24
+            assert free < c32 <= bound, "A32_PIPE throughput (SQ_DEPTH %d): %d cycles for %d blocks, bound %d" % (
+                cfg["SQ_DEPTH"], c32, blocks32, bound)
     # Latency of a single block (pipeline fill): accept -> done.
     for kind in (QA_A256, QA_A32):
         K = block_size(kind)
         src, dst, stride = drv.place(kind, K, 1)
         lat = await drv.qact(kind, K, 1, [gen_vector(rnd, kind, K, "normal")], src, dst, stride)
         dut._log.info("latency: one %s block: %d cycles", "A256" if kind else "A32", lat)
+        if kind == QA_A32 and cfg["A32_PIPE"]:
+            want = 45 + cfg["SPM_RD_LAT"] + cfg["MUL_LAT"]
+            assert lat == want, "A32_PIPE latency of one block: %d cycles, expected %d" % (lat, want)
     # Back-to-back commands: the next one is offered while the previous one runs, so it is
     # accepted at the edge that ends the previous done cycle.
     await back_to_back(dut, cfg, rnd, spm, drv, 8)
@@ -580,7 +636,8 @@ FP_DIV_S_IDLE, FP_DIV_S_ITER = 0, 2
 
 def _clocked(q) -> list:
     """The clocked instances inside a tsr_qact (each has its own clk copy)."""
-    return [q.u_buf, q.u_da, q.u_db] + [q.g_mul[j].u_mul for j in range(16)]
+    pipe = [q.g_pipe.u_scale, q.g_pipe.u_scale.u_rcp] if _cfg()["A32_PIPE"] else []
+    return [q.u_buf, q.u_da, q.u_db] + [q.g_mul[j].u_mul for j in range(16)] + pipe
 
 
 async def _time0_worst_case(dut, q, others=()):
@@ -592,6 +649,10 @@ async def _time0_worst_case(dut, q, others=()):
         inst.clk.value = Immediate(0)
     # tsr_qact: buf_res above BUF_LINES ("line buffer over-reserved").
     q.buf_res.value = Immediate((1 << len(q.buf_res)) - 1)
+    # A32_PIPE: sq_res above SQ_DEPTH ("SQ accounting"), blocks counted inside the pipeline.
+    if _cfg()["A32_PIPE"]:
+        q.sq_res.value = Immediate((1 << len(q.sq_res)) - 1)
+        q.sc_fly.value = Immediate(3)
     # tsr_fp_div: 'busy' = in_ready high in S_ITER ("in_ready while busy"), the power-up state of
     # the seed-5 / seed-10 failures; 'idle' = a consistent state (tests the rest of the hierarchy).
     for d in (q.u_da, q.u_db):

@@ -13,6 +13,7 @@ module tsr_tb_qact
   parameter  int unsigned SPM_BYTES  = 65536,
   parameter  int unsigned SPM_RD_LAT = 2,
   parameter  int unsigned BANK_LINES = 256,
+  parameter  bit          A32_PIPE   = 1'b0,
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -99,7 +100,7 @@ module tsr_tb_qact
 
   // Client 1: QACT.
   tsr_qact #(
-    .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT)
+    .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .A32_PIPE(A32_PIPE)
   ) u_qact (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .done,
