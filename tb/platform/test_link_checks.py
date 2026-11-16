@@ -173,8 +173,22 @@ proc get_clocks {args} {
         }
         return [lsort -unique $out]
     }
+    set i [lsearch $args -filter]
+    if {$i >= 0} {
+        # by name: the clocks of the shell (hw/u200/dma_clk_margin.tcl)
+        set out {}
+        if {[regexp {NAME =~ (\S+)} [lindex $args [expr {$i+1}]] -> glob]} {
+            foreach c $::shell_clocks {
+                if {[string match $glob $c]} {lappend out $c}
+            }
+        }
+        return $out
+    }
     return [lindex $args end]
 }
+set shell_clocks {dma_ip_axi_aclk_1 mmcm_clkout0}
+set uncertainties {}
+proc set_clock_uncertainty {args} {lappend ::uncertainties $args}
 proc get_nets {args} {
     set pin [lindex $args end]
     if {[info exists ::reset_net($pin)]} {return $::reset_net($pin)}
@@ -599,6 +613,9 @@ if {$read_calls != 1} {error "missing post-override CDC XDC restore"}
 if {[llength $max_delays] != 2 || [llength $bus_skews] != 1} {
     error "missing max-delay or bus-skew constraints"
 }
+if {$uncertainties ne {{-setup 0.060 dma_ip_axi_aclk_1}}} {
+    error "missing setup margin on the shell's host data clock: $uncertainties"
+}
 foreach args $max_delays {
     if {[lsearch $args -datapath_only] < 0 || [lindex $args end] != 3.333} {
         error "CDC restore changed datapath-only min-period contract"
@@ -622,6 +639,35 @@ def test_impl_pre_cdc_restore_fails_closed(tmp_path, mutation):
     r = run_tcl(tmp_path, body)
     assert r.returncode != 0, (r.stdout, r.stderr)
     assert "CDCBIND" in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("env, clocks, on", [
+    (None, "dma_ip_axi_aclk_1 mmcm_clkout0", "{-setup 0.060 dma_ip_axi_aclk_1}"),
+    ("0.1", "mmcm_clkout0 dma_ip_axi_aclk dma_ip_axi_aclk_1", "{-setup 0.1 {dma_ip_axi_aclk dma_ip_axi_aclk_1}}"),
+    ("0", "dma_ip_axi_aclk_1", ""),
+    (None, "mmcm_clkout0 clk_kernel_00_unbuffered_net", ""),
+])
+def test_dma_clk_margin(tmp_path, env, clocks, on):
+    """hw/u200/dma_clk_margin.tcl: on asks for the setup margin on the shell's host data clocks and on no other clock,
+    off sets their user uncertainty back to 0, and TSR_DMA_MARGIN_NS=0 or a design without such a clock changes nothing."""
+    body = NET_MOCK + f"\nset shell_clocks {{{clocks}}}\n"
+    body += "unset -nocomplain ::env(TSR_DMA_MARGIN_NS)\n" if env is None else f"set ::env(TSR_DMA_MARGIN_NS) {env}\n"
+    body += f"source {{{REPO / 'hw/u200/dma_clk_margin.tcl'}}}\n"
+    body += 'tsr_dma_margin::on\nputs "ON <$uncertainties>"\nset uncertainties {}\ntsr_dma_margin::off\nputs "OFF <$uncertainties>"\n'
+    r = run_tcl(tmp_path, body)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    off = on.replace("0.060", "0").replace("0.1", "0")
+    assert f"ON <{on}>" in r.stdout and f"OFF <{off}>" in r.stdout, r.stdout
+    assert ("DMAMARGIN on" in r.stdout) == (on != ""), r.stdout
+
+
+def test_margin_hooks_are_called():
+    """The margin is set before opt_design (impl_pre.tcl) and removed after route_design (cdc_check.tcl, before its checks)."""
+    pre = (REPO / "hw/u200/impl_pre.tcl").read_text()
+    post = (REPO / "hw/u200/cdc_check.tcl").read_text()
+    assert "dma_clk_margin.tcl" in pre and "tsr_dma_margin::on" in pre and "tsr_dma_margin::off" not in pre
+    assert "dma_clk_margin.tcl" in post and "tsr_dma_margin::on" not in post
+    assert post.index("tsr_dma_margin::off") < post.index("clock_net_check.tcl")
 
 
 @pytest.mark.parametrize("missing", [False, True])
