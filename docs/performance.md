@@ -156,19 +156,19 @@ at the same ratio.
 
 ## Results
 
-Seven models on one Alveo U200 card with the Tesseract Core 1.1.0 image, in full mode, measured as
+Seven models on one Alveo U200 card with the Tesseract Core 1.2.0 image, in full mode, measured as
 described under Procedure. Prefill and decode rates are the mean ± the standard deviation of three
 repetitions.
 
 | Model | Quantization | File size | Device memory | Prefill tok/s (pp512, -ub 512) | Decode tok/s (tg64) | Decode power (W) | tok/s/W | Device cycles per token |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.8 27B | Q8_0 | 26.6 GiB | 25.8 GiB | 5.589 ± 0.001 | 2.295 ± 0.003 | 60.5 | 0.038 | 86.21 M |
-| Qwen3.5 9B | Q8_0 | 8.9 GiB | 8.1 GiB | 18.435 ± 0.005 | 7.138 ± 0.008 | 59.4 | 0.120 | 27.64 M |
-| Gemma 4 31B | Q4_K_M | 17.1 GiB | 19.1 GiB | 9.298 ± 0.004 | 3.397 ± 0.001 | 62.7 | 0.054 | 58.55 M |
-| Gemma 4 26B-A4B | Q8_0 | 25.0 GiB | 25.6 GiB | 39.310 ± 0.021 | 14.483 ± 0.023 | 58.9 | 0.246 | 13.54 M |
-| Gemma 4 12B | Q8_0 | 11.8 GiB | 12.2 GiB | 15.538 ± 0.004 | 5.220 ± 0.001 | 60.8 | 0.086 | 38.11 M |
-| Gemma 4 E4B | Q8_0 | 7.6 GiB | 4.9 GiB | 39.394 ± 0.021 | 12.493 ± 0.003 | 60.2 | 0.208 | 15.82 M |
-| Gemma 4 E2B | Q8_0 | 4.7 GiB | 2.5 GiB | 76.002 ± 0.029 | 23.545 ± 0.029 | 58.2 | 0.404 | 8.35 M |
+| Qwen3.8 27B | Q8_0 | 26.6 GiB | 25.8 GiB | 5.623 ± 0.000 | 2.324 ± 0.001 | 61.3 | 0.038 | 85.25 M |
+| Qwen3.5 9B | Q8_0 | 8.9 GiB | 8.1 GiB | 18.650 ± 0.001 | 7.246 ± 0.003 | 61.3 | 0.118 | 27.27 M |
+| Gemma 4 31B | Q4_K_M | 17.1 GiB | 19.1 GiB | 9.500 ± 0.002 | 3.440 ± 0.001 | 62.6 | 0.055 | 57.83 M |
+| Gemma 4 26B-A4B | Q8_0 | 25.0 GiB | 25.6 GiB | 40.411 ± 0.020 | 14.833 ± 0.009 | 59.4 | 0.250 | 13.26 M |
+| Gemma 4 12B | Q8_0 | 11.8 GiB | 12.2 GiB | 15.748 ± 0.004 | 5.323 ± 0.002 | 62.5 | 0.085 | 37.36 M |
+| Gemma 4 E4B | Q8_0 | 7.6 GiB | 4.9 GiB | 39.995 ± 0.016 | 12.863 ± 0.002 | 61.2 | 0.210 | 15.38 M |
+| Gemma 4 E2B | Q8_0 | 4.7 GiB | 2.5 GiB | 77.641 ± 0.022 | 24.423 ± 0.016 | 60.4 | 0.404 | 8.06 M |
 
 - Device memory is the largest `mem_used` of the chat run at `-c 4096`. It holds the weights, the KV cache
   and the work buffers. A weight type other than Q8_0 and Q4_K is converted to Q8_0 when the model
@@ -176,22 +176,22 @@ repetitions.
 - Decode power is the mean card board power over the timed `tg64` repetitions. The tok/s/W column is
   the decode rate over it.
 - Device cycles per token are the mean over the 64 decode launches of the chat run, in millions of
-  core cycles. At the 200 MHz core clock the device time of a token is 98.1 to 99.5 percent of the time
+  core cycles. At the 200 MHz core clock the device time of a token is 98.3 to 99.5 percent of the time
   per token of `tg64`.
 - Each chat run was repeated with `TSR_PIVOT=0`, Tesseract Pivot off. The text was identical in every
-  row, the bytes read per token were the same, and the device cycles per token were 1.002 to 1.078
-  times as many: Gemma 4 26B-A4B 1.078, Qwen3.8 27B 1.037, Qwen3.5 9B 1.031, Gemma 4 31B 1.012,
-  Gemma 4 12B 1.012, Gemma 4 E4B 1.009 and Gemma 4 E2B 1.002. The mixture-of-experts model and the two
+  row, the bytes read per token were the same, and the device cycles per token were 1.001 to 1.071
+  times as many: Gemma 4 26B-A4B 1.071, Qwen3.8 27B 1.036, Qwen3.5 9B 1.030, Gemma 4 31B 1.011,
+  Gemma 4 12B 1.008, Gemma 4 E4B 1.006 and Gemma 4 E2B 1.001. The mixture-of-experts model and the two
   Qwen models gain most, because their layers have matrix products that depend on nothing nearby (the
   dense FFN beside the router, the products beside the Gated DeltaNet recurrence). The dense Gemma 4
-  models gain 1.2 percent or less.
+  models gain 1.1 percent or less.
 - A third chat run of the five Gemma 4 models set `TSR_HEAD_SPLIT=0`, which lowers the logit soft cap of
   the output head over whole rows and not per row block. The text was identical in every row, and the
   device cycles per token were 1.002 to 1.015 times as many: Gemma 4 E2B 1.015, Gemma 4 26B-A4B 1.009,
   Gemma 4 E4B 1.008, Gemma 4 12B 1.003 and Gemma 4 31B 1.002. The output head is a larger share of a
   token in the models with fewer device cycles per token. The Qwen models have no soft cap.
 - In the decode launches of the chat runs with Tesseract Pivot on, a channel read 17.3 to
-  18.2 GB/s while the MVM unit was busy, and the four channels together 59.3 to 66.8 GB/s over the
+  18.2 GB/s while the MVM unit was busy, and the four channels together 61.4 to 68.2 GB/s over the
   whole token. The dual weight stream is on in every run. The rest of the token is time in which the
   MVM unit reads no weights: vector unit work, waits on results and an empty queue. The figures come
   from `PERF_CH_RD_BEATS`, which counts reads of every kind.
@@ -207,17 +207,17 @@ models, a plain KV removal for Gemma 4, which has no recurrent layers
 
 | Model | Quantization (target / MTP) | Best K | Plain tok/s | MTP tok/s | Speedup | Accepted per step | tok/s/W |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.8 27B | Q4_K_M / Q8_0 (separate file) | 1 | 3.20 | 4.48 | 1.40x | 0.87 | 0.078 |
-| Qwen3.8 2B | Q4_K_M / Q4_K_M (in the file) | 1 | 31.50 | 33.97 | 1.08x | 0.81 | 0.63 |
-| Gemma 4 26B-A4B | Q8_0 / Q8_0 (separate file) | 1 | 14.42 | 17.67 | 1.23x | 0.81 | 0.312 |
+| Qwen3.8 27B | Q4_K_M / Q8_0 (separate file) | 1 | 3.22 | 4.53 | 1.41x | 0.87 | 0.079 |
+| Qwen3.8 2B | Q4_K_M / Q4_K_M (in the file) | 1 | 31.67 | 34.32 | 1.08x | 0.81 | 0.65 |
+| Gemma 4 26B-A4B | Q8_0 / Q8_0 (separate file) | 1 | 14.74 | 18.20 | 1.23x | 0.81 | 0.320 |
 
 Device cycles per generated token, in millions, and the tok/s of each K:
 
 | Model | Plain | K = 1 | K = 2 | K = 3 | K = 4 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.8 27B | 61.87 (3.20) | 43.40 (4.48) | 45.82 (4.23) | 44.20 (4.37) | 63.53 (3.07) |
-| Qwen3.8 2B | 6.19 (31.50) | 5.47 (33.97) | 6.43 (28.79) | 6.94 (26.87) | 9.05 (21.00) |
-| Gemma 4 26B-A4B | 13.55 (14.42) | 11.02 (17.67) | 11.99 (16.23) | 11.87 (16.36) | 14.96 (13.04) |
+| Qwen3.8 27B | 61.53 (3.22) | 42.99 (4.53) | 45.33 (4.28) | 43.63 (4.43) | 62.50 (3.12) |
+| Qwen3.8 2B | 6.15 (31.67) | 5.42 (34.32) | 6.36 (29.16) | 6.86 (27.24) | 8.96 (21.21) |
+| Gemma 4 26B-A4B | 13.27 (14.74) | 10.70 (18.20) | 11.62 (16.75) | 11.46 (16.93) | 14.34 (13.60) |
 
 Command line, with `TSR_DEVICE=xrt`, the release image, `LLAMA_ATTN_ROT_DISABLE=1` and the default
 `tsr-mtp` settings (flash attention, q8_0 KV for target and draft, every layer on the device):
@@ -236,9 +236,9 @@ tsr-mtp -m TARGET.gguf [-md MTP.gguf] --spec-type draft-mtp --mtp-mode all --mtp
   best K, so a step yields that plus one tokens.
 - Power is the mean card board power (`power1_input`, every 0.2 s) of a second run at the best K, over
   the samples in which the card works: those above the midpoint between the idle power and the run's
-  95th percentile. The short prefills between the decode loops are in it. The idle power was 37.6 to
-  39.1 W. The tok/s/W column is the rate of that second run over its power: 4.48 tok/s over 57.2 W for
-  the 27B, 33.98 tok/s over 53.9 W for the 2B and 17.63 tok/s over 56.5 W for Gemma 4.
+  95th percentile. The short prefills between the decode loops are in it. The idle power was 37.4 to
+  38.4 W. The tok/s/W column is the rate of that second run over its power: 4.53 tok/s over 57.7 W for
+  the 27B, 34.22 tok/s over 52.5 W for the 2B and 18.17 tok/s over 56.8 W for Gemma 4.
 - The MTP token stream equals plain greedy decoding in every run: 3 of 3 prompts identical for each K
   of the three models.
 - The best K is 1 for all three models. A verify launch of K = 1 has two tokens, so its MVMs read two
@@ -258,15 +258,15 @@ checkpoint (bfloat16, 494 M parameters) run in float32, and its weights are uplo
 
 | Mode | Device work of a forward | Launches | Host to device | Device to host | Device cycles | Forward time | KL against eager float32 | Top-1 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Matmul mode | 169 matrix products | 169 | 31.6 MB | 58.4 MB | 20.95 M | 0.135 s | 3.6e-3 | 30 of 32 |
-| Full mode, `attention="cpu"` | 25 regions and 23 matrix products | 48 | 5.6 MB | 28.3 MB | 23.17 M | 0.147 s | 3.8e-3 | 31 of 32 |
-| Full mode | 1 region of 314 ops | 1 | 0.1 MB | 19.4 MB | 26.15 M | 0.148 s | 4.4e-2 | 28 of 32 |
+| Matmul mode | 169 matrix products | 169 | 31.6 MB | 58.4 MB | 20.47 M | 0.132 s | 3.6e-3 | 30 of 32 |
+| Full mode, `attention="cpu"` | 25 regions and 23 matrix products | 48 | 5.6 MB | 28.3 MB | 22.84 M | 0.145 s | 3.8e-3 | 31 of 32 |
+| Full mode | 1 region of 314 ops | 1 | 0.1 MB | 19.4 MB | 25.81 M | 0.147 s | 4.4e-2 | 28 of 32 |
 
 - The launches count every launch of a forward (the counter `rt_execs`): with `attention="cpu"` these
   are the 25 region launches that `hf_check.py` reports and the 23 matrix products between the
   regions. The launches, the host traffic and the forward time are those of the second forward of a
   process, which compiles nothing and uploads no weights or constants. Each mode ran in a second process
-  as well, with forward times of 0.135 s, 0.146 s and 0.148 s. The device cycles are the `PERF_CYCLES`
+  as well, with forward times of 0.132 s, 0.146 s and 0.146 s. The device cycles are the `PERF_CYCLES`
   of one forward.
 - In full mode with device attention the activations stay on the device: the host sends the embedded
   rows and reads the logits. The forward is not faster at this size. The norms, the activations, RoPE
@@ -283,7 +283,7 @@ checkpoint (bfloat16, 494 M parameters) run in float32, and its weights are uplo
 - Conditions: torch 2.9.1+cu130, transformers 5.20.2, 8 threads, the model at revision
   `7ae557604adf67be50417f59c2c2f167def9a775` of Qwen/Qwen2.5-0.5B-Instruct, the extension of a build
   with `TSR_WITH_XRT=ON` named by `TSR_TORCH_EXT_DIR`, `TSR_DEVICE=xrt`, the image of Conditions below,
-  and a firmware file of the same commit with the image id of Conditions (`d4a0944a97fac583`).
+  and a firmware file of the same commit with the image id of Conditions (`bf6b5290d341e94c`).
 
 ```
 hf_check.py MODEL_DIR --forward-only --tokens 32                 # matmul mode
@@ -295,23 +295,23 @@ hf_check.py MODEL_DIR --full-mode --tokens 32
 
 - Host: AMD Ryzen 7 9700X (8 cores, 16 threads), 14.7 GiB RAM, Linux 7.0.0-38-generic (Ubuntu 24.04),
   XRT 2.18.179 (2024.2). `-t 8`. The 1-minute load average at the start of the `llama-bench` runs was
-  1.9 to 4.1.
+  2.0 to 4.8.
 - Card: Alveo U200 with the shell `xilinx_u200_gen3x16_xdma_base_2` (platform 202110.1), PCIe Gen3 x16,
   32 GiB of DDR4 in four channels of 8 GiB (measured at open).
 - Image: `tsr_u200_k4.xclbin`, sha256
-  `628559646594efde3dc04e40ef79db01f4bc2659d6c5242d3b80ac1b819eb9cc`, UUID
-  `c2920184-1184-3844-f252-4c1789b48b2a`. Core clock 200 MHz and RISC-V clock 100 MHz (the monitor's
-  fit of the core clock against host time: 199.992 to 199.995 MHz). Tesseract Core 1.1.0 (capability
-  1.0), `CAPS` 0x10121 (VU, ATT, GDN, MVM_DUAL), `NUM_CH` 4, `T_MAX` 4, 128 lanes, `K_MAX` 32768.
-- Firmware: `tsr-fw.elf`, sha256 `fb553f05a75b189edb122dec5fcc38feabf9a67775b60a5d6c147fdebd9d60e9`,
-  Tesseract Basis 1.4.0 (ABI 1), image id `d4a0944a97fac583`, 23 kinds, kind table signature 0x249c.
-- Software: this repository at commit bfefda0, Release build with `TSR_WITH_XRT=ON`, llama.cpp
+  `8e90db3b593edb16e867c5c637916d88dc7aca586048d0eb1a99a5c283685656`, UUID
+  `65e69091-1b5e-4f7f-443f-bf3b4c456199`. Core clock 200 MHz and RISC-V clock 100 MHz (the monitor's
+  fit of the core clock against host time: 199.994 to 200.004 MHz). Tesseract Core 1.2.0 (capability
+  1.0), `CAPS` 0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE), `NUM_CH` 4, `T_MAX` 4, 128 lanes, `K_MAX` 32768.
+- Firmware: `tsr-fw.elf`, sha256 `c097f843a2cc1d417232758514a39058aa5e185b4630312946c059b2ff48e84f`,
+  Tesseract Basis 1.5.0 (ABI 1), image id `bf6b5290d341e94c`, 23 kinds, kind table signature 0x249c.
+- Software: this repository at commit 3f434d8, Release build with `TSR_WITH_XRT=ON`, llama.cpp
   pinned at e3797b184 (b11810) with `third_party/patches/0001-ggml-tesseract.patch`.
 - Mode: full mode (`TSR_KINDS` unset), the dual weight stream on (`TSR_MVM_DUAL` unset), Tesseract Pivot on
   (`TSR_PIVOT` unset), Q8_0 KV cache, flash attention on. The chat run uses greedy sampling.
 - Power: the card board power from the U200 sensors (`power1_input` of the hwmon node of the card's
   user function, 0.2 s interval), not the host's power. Idle power with no process on the card,
-  as the mean of ten readings before each run: 37.6 W (36.8 to 38.3 W over the seven runs).
+  as the mean of ten readings before each run: 37.5 W (36.8 to 38.1 W over the seven runs).
 
 Environment of the runs: `TSR_DEVICE=xrt`, `TSR_XCLBIN=<tsr_u200_k4.xclbin>`,
 `TSR_IMAGE=build/xrt/fw/tsr-fw.elf`, `LLAMA_ATTN_ROT_DISABLE=1`. The chat run adds `TSR_STATS=1` and

@@ -4,8 +4,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
-  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.1.0" src="https://img.shields.io/badge/core-1.1.0-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.4.0" src="https://img.shields.io/badge/basis-1.4.0-green?style=flat"></a>
+  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.2.0" src="https://img.shields.io/badge/core-1.2.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.5.0" src="https://img.shields.io/badge/basis-1.5.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -37,52 +37,51 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 
 ## Latest releases
 
-**Tesseract Basis 1.4.0** (2026-11-14), the firmware SDK and the host side
+**Tesseract Basis 1.5.0** (2026-11-17), the firmware SDK and the host side
 
-- Full mode in the PyTorch backend, and it is the default. `torch.compile(model, backend="tesseract")` lowers the aten
-  graph of a model as regions of norms, projections, RoPE, attention, activations and residuals. A region runs as one op
-  list in one launch, and its values stay on the device. The forward of a Qwen2.5-0.5B decoder is one region and one
-  launch, from 169 device calls, and the host sends 0.1 MB and reads 19.4 MB per forward, from 31.6 MB and 58.4 MB. The
-  forward itself is not faster at this size (0.148 s against 0.135 s).
-- Attention from PyTorch runs on the device with the q8_0 numerics of the llama.cpp path. `attention="cpu"` keeps it in
-  float32.
-- A reference executor checks every region bit for bit (`TSR_TORCH_VERIFY=1`), and a differential fuzzer compares full
-  mode with eager PyTorch and with matmul mode.
-- The logit soft cap behind Gemma's output head runs per row block, under the matrix product of the next block. Gemma 4
-  E2B decodes at 23.55 tok/s, from 23.24, and Gemma 4 26B-A4B at 14.48, from 14.34.
+- Support for the QACT scale pipeline of Tesseract Core 1.2.0, which the core reports as `CAPS` bit `QACT_PIPE`. Every
+  kind keeps its numerics revision, so no output changes, and Basis 1.5.0 also runs on Core 1.1.0 and 1.0.0.
+- The simulator has the cycle model of the pipeline. `TSR_SIM_CARD=k4qpipe` with `TSR_SIM_GDN=1` configures it like the
+  release image, and `TSR_SIM_QACT_PIPE` sets the bit alone.
+- Tesseract Pivot reads the bit and charges QACT at the cost of the pipeline when it orders a graph.
+- `tsr-selftest` and the llama.cpp device list name the bit, and trace replay ignores it when it matches a trace to a
+  device.
 
-**Tesseract Core 1.1.0** (2026-11-12), the RTL and the Alveo U200 image
+**Tesseract Core 1.2.0** (2026-11-17), the RTL and the Alveo U200 image
 
-- The dual weight stream. In decode a cluster reads two weight streams at once, so the DDR4 channel and not the core clock
-  bounds the weight rate. Decode is 1.31 to 1.37 times as fast as on Core 1.0.0, for the seven models of the table below.
-- A read-only second memory port per channel carries the second stream.
-- `CAPS` bit `MVM_DUAL` reports the feature, and `TSR_MVM_DUAL=0` turns it off for a comparison.
+- The QACT scale pipeline. QACT, the unit that quantizes the activations, computes the scales of its 32-element blocks in a
+  pipeline. A quantization takes about 2 cycles per block, where the two serial dividers took 16. No result bit changes.
+- Decode is 1.01 to 1.04 times as fast as on Core 1.1.0 and prefill 1.01 to 1.03 times, for the seven models of the table
+  below. Gemma 4 E2B decodes at 24.42 tok/s, from 23.55, and Gemma 4 26B-A4B at 14.83, from 14.48.
+- QACT is busy for 71 thousand cycles of a Gemma 4 E2B decode token, from 413 thousand.
+- The pipeline adds 442 LUT, 525 FF, 10 DSP and one RAMB18 to the QACT unit, and the image keeps the 200 MHz core clock.
+- `CAPS` bit `QACT_PIPE` reports the feature. The image needs Basis 1.2.0 or later, as Core 1.1.0 does.
 
 All changes are in [CHANGELOG.md](CHANGELOG.md) (Basis) and [rtl/CHANGELOG.md](rtl/CHANGELOG.md) (Core).
 
 ## Performance
 
-Decode and prefill rates on one Alveo U200 card with the Tesseract Core 1.1.0 image, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
+Decode and prefill rates on one Alveo U200 card with the Tesseract Core 1.2.0 image, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
 and decode is 64 tokens, both from `llama-bench`. The last column is the decode rate per watt of card
 board power.
 
 | Model | Quantization | Prefill tok/s | Decode tok/s | tok/s/W |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q8_0 | 5.59 | 2.29 | 0.038 |
-| Qwen3.5 9B | Q8_0 | 18.44 | 7.14 | 0.120 |
-| Gemma 4 31B | Q4_K_M | 9.30 | 3.40 | 0.054 |
-| Gemma 4 26B-A4B | Q8_0 | 39.31 | 14.48 | 0.246 |
-| Gemma 4 12B | Q8_0 | 15.54 | 5.22 | 0.086 |
-| Gemma 4 E4B | Q8_0 | 39.39 | 12.49 | 0.208 |
-| Gemma 4 E2B | Q8_0 | 76.00 | 23.55 | 0.404 |
+| Qwen3.8 27B | Q8_0 | 5.62 | 2.32 | 0.038 |
+| Qwen3.5 9B | Q8_0 | 18.65 | 7.25 | 0.118 |
+| Gemma 4 31B | Q4_K_M | 9.50 | 3.44 | 0.055 |
+| Gemma 4 26B-A4B | Q8_0 | 40.41 | 14.83 | 0.250 |
+| Gemma 4 12B | Q8_0 | 15.75 | 5.32 | 0.085 |
+| Gemma 4 E4B | Q8_0 | 40.00 | 12.86 | 0.210 |
+| Gemma 4 E2B | Q8_0 | 77.64 | 24.42 | 0.404 |
 
 With multi-token prediction the draft head proposes tokens and the device verifies them in one launch. The output is identical to plain greedy decoding.
 
 | Model | Quantization | Plain tok/s | MTP tok/s | Speedup |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.8 27B | Q4_K_M | 3.20 | 4.48 | 1.40x |
-| Qwen3.8 2B | Q4_K_M | 31.50 | 33.97 | 1.08x |
-| Gemma 4 26B-A4B | Q8_0 | 14.42 | 17.67 | 1.23x |
+| Qwen3.8 27B | Q4_K_M | 3.22 | 4.53 | 1.41x |
+| Qwen3.8 2B | Q4_K_M | 31.67 | 34.32 | 1.08x |
+| Gemma 4 26B-A4B | Q8_0 | 14.74 | 18.20 | 1.23x |
 
 The MTP conditions and the per-K cycles are in [docs/performance.md](docs/performance.md).
 
