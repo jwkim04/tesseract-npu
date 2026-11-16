@@ -366,7 +366,7 @@ The checks, in flow order. Clock identity, reset and frequency failures always f
 | Hook | Check |
 |---|---|
 | `clock_bd_check.tcl` (post system link) | the connected block design nets and the clock of each reset generator |
-| `impl_pre.tcl` (opt_design pre) | the synthesized domain clocks, every RV flop on the RV clock, reset sources in separate domains; restores the scoped CDC XDC on the effective clocks; applies the TCM power-optimization exclusion |
+| `impl_pre.tcl` (opt_design pre) | the synthesized domain clocks, every RV flop on the RV clock, reset sources in separate domains; restores the scoped CDC XDC on the effective clocks; applies the TCM power-optimization exclusion; sets the setup margin of the host data clock (below) |
 | `cdc_pre_physopt.tcl`, `cdc_pre_route.tcl` | the clock, reset and effective CDC checks again before physical optimization and before routing |
 | `clock_net_check.tcl` | the clock periods against the request of the kernel's own config, within 0.5 % |
 | `clock_final_check.tcl` (write_bitstream pre) | `_new_clk_freq` after Vitis scaling against the window of the kernel found in the design. k4 accepts exactly the request of `k4.cfg` plus 0.1 MHz, k1 core 250.0 to 300.1 MHz and RV 158.33 to 166.8 MHz |
@@ -374,6 +374,13 @@ The checks, in flow order. Clock identity, reset and frequency failures always f
 A clock that Vitis scaled down fails the link. A 125 MHz RV fallback needs an explicit request and a window change. For a
 route-only run, check timing at the core frequency of the kernel's window before accepting the result, and keep the RV, hold and
 CDC checks.
+
+The shell's host data clock `dma_ip_axi_aclk` (4.0 ns) is the tightest clock of a K4 link. Its paths from the reconfigurable part
+into the isolation pipe of the static region carry about 2.6 ns of locked routing, so their driver cells have to sit close to
+their partition pins. `dma_clk_margin.tcl` asks for 0.060 ns more setup slack on that clock (`TSR_DMA_MARGIN_NS`; 0 switches it
+off). `impl_pre.tcl` sets it before opt_design and `cdc_check.tcl` removes it after route_design, so placement and routing work
+against the tighter requirement, and the post-route optimization, the frequency scaling and the final timing check see the
+platform's own constraint. It is a timing requirement: it names no cell, site or Pblock.
 
 ### 8.4 CDC checks
 

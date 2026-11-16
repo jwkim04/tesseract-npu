@@ -5,3 +5,6 @@ source $tsr_impl_hook_dir/clock_net_check.tcl
 source $tsr_impl_hook_dir/cdc_restore.tcl
 tsr_cdc_link::restore pre_impl [pwd]
 source $tsr_impl_hook_dir/tcm_opt.tcl
+# a setup margin on the shell's host data clock for placement and routing (removed after route_design, cdc_check.tcl)
+source $tsr_impl_hook_dir/dma_clk_margin.tcl
+tsr_dma_margin::on

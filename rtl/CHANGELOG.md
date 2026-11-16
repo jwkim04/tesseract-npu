@@ -31,6 +31,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   `tsr_f32_to_fp16` for every possible `amax` (0 mismatches over 2,139,095,041 patterns), and `tb/core` and `tb/platform`
   run the K4 core and kernel with `QACT_PIPE` 1 against the simulator and read bit 17.
 
+### Changed
+
+- A K4 link asks for 0.060 ns more setup slack on the shell's host data clock `dma_ip_axi_aclk` during placement and
+  routing (`hw/u200/dma_clk_margin.tcl`, [docs/platform-u200.md](../docs/platform-u200.md) §8.3). That clock is the
+  tightest one of every K4 link. The requirement is removed after routing, so the final timing check is the platform's
+  own. `TSR_DMA_MARGIN_NS=0` switches it off.
+
 ## [1.1.0] - 2026-11-12
 
 Core capability 1.0. The image is `tsr_u200_k4.xclbin` for the platform `xilinx_u200_gen3x16_xdma_2_202110_1`,

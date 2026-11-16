@@ -11,6 +11,9 @@
 # Clock/reset wiring is rechecked first and is always fatal. A failing CDC gate stops the implementation run (error), so a link that leaves the crossings unconstrained
 # does not produce an xclbin. TSR_CDC_GATE=warn in the environment reports the failure without stopping it.
 set tsr_cdc_dir [file dirname [file normalize [info script]]]
+# the placement and routing margin on the shell's host data clock ends here (dma_clk_margin.tcl)
+source $tsr_cdc_dir/dma_clk_margin.tcl
+tsr_dma_margin::off
 source $tsr_cdc_dir/clock_net_check.tcl
 source $tsr_cdc_dir/../../rtl/ctrl/viv/cdc_gate.tcl
 # the report_cdc waivers are not part of the IP's constraints
