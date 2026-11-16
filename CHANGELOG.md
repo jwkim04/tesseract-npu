@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-17
+
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).
+It runs on Tesseract Core 1.2.0, 1.1.0 and 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)).
+
 ### Added
 
 - The simulator models `CAPS` bit 17 `QACT_PIPE` (QACT computes the A32 block scales in a pipeline, `docs/rtl-core.md`
@@ -13,8 +18,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   `16 * T * b + 44`. A256 does not depend on the bit. The bit is not in `tsr_sim_caps_implemented()`, so a configuration that
   takes every implemented capability keeps the divider timing. Results do not change.
 - `TSR_SIM_QACT_PIPE=0|1` sets or clears `CAPS` bit 17 of the `sim` transport, after `TSR_SIM_CARD`. `TSR_SIM_CARD=k4qpipe` is
-  `k4dual` with the bit: the configuration of the image `tsr_u200_k4`. `k4full` and `k4dual` do not set it, and
-  `TSR_SIM_VU=0` keeps it as it keeps bit 16.
+  `k4dual` with the bit: with `TSR_SIM_GDN=1` it is the configuration of the image `tsr_u200_k4`. `k4full` and `k4dual` do
+  not set it, and `TSR_SIM_VU=0` keeps it as it keeps bit 16.
 - `tsr_versions_str` prints `QACT_PIPE` among the `CAPS` names (`Tesseract Core 1.0 (VU ATT GDN MVM_DUAL QACT_PIPE)` for
   the image of `tsr_u200_k4`), and so do `tsr-selftest` and the llama.cpp device list.
 - Tesseract Pivot reads `CAPS` bit 17 into `tsr_pivot_dev.qact_pipe`. With it the QACT cost of a Q8_0 weight MUL_MAT is
@@ -170,7 +175,8 @@ Basis ABI 1. Targets Tesseract Core capability 1.0.
 - ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
 - Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.4.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.5.0...HEAD
+[1.5.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.4.0...basis-v1.5.0
 [1.4.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.3.0...basis-v1.4.0
 [1.3.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.2.0...basis-v1.3.0
 [1.2.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.1.0...basis-v1.2.0

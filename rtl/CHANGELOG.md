@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-17
+
+Core capability 1.0. The image is `tsr_u200_k4.xclbin` for the platform `xilinx_u200_gen3x16_xdma_2_202110_1`,
+with the core clock at 200 MHz, the control core at 100 MHz and `CAPS` 0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE).
+
+| Item | Value |
+|---|---|
+| sha256 | `8e90db3b593edb16e867c5c637916d88dc7aca586048d0eb1a99a5c283685656` |
+| UUID | `65e69091-1b5e-4f7f-443f-bf3b4c456199` |
+
+The image needs Tesseract Basis 1.2.0 or later, as Core 1.1.0 does. Tesseract Basis 1.5.0 is the first that knows
+`CAPS` bit 17.
+
 ### Added
 
 - The QACT scale pipeline (`QACT_PIPE`, [docs/rtl-core.md](../docs/rtl-core.md) §8.1). The A32 block scales of QACT
@@ -89,6 +102,7 @@ with the core clock at 200 MHz, the control core at 100 MHz and `CAPS` 0x121 (VU
   debug module.
 - The XRT platform adapter and the U200 kernel tops.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.1.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.2.0...HEAD
+[1.2.0]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.1.0...core-v1.2.0
 [1.1.0]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.0.0...core-v1.1.0
 [1.0.0]: https://github.com/jwkim04/tesseract-npu/releases/tag/core-v1.0.0

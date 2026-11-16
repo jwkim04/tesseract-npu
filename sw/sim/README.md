@@ -71,7 +71,8 @@ scales in a pipeline, `docs/rtl-core.md` §8.1) an A32 op takes `T * (2 * b + 2 
 blocks per token: 2 cycles a block, 2 more for every D line (16 blocks, and the end of a token) and the fill. The formula is the
 unit's run time on the RTL for K from 32 to 32768 and T up to 8 (`tb/qact`). A256 does not depend on the bit.
 Results never depend on it. `tsr_sim_caps_implemented()` does not include the bit, so a simulator that takes every implemented
-capability keeps the divider timing. `TSR_SIM_CARD=k4qpipe` (`sw/transport`) is the card image: `k4dual` with the bit.
+capability keeps the divider timing. `TSR_SIM_CARD=k4qpipe` (`sw/transport`) is `k4dual` with the bit, and with
+`TSR_SIM_GDN=1` the card image.
 
 ## Environment
 
