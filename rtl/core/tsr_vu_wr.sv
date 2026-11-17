@@ -136,16 +136,12 @@ module tsr_vu_wr
   assign xy = lane_y;
 
 `ifndef SYNTHESIS
-  logic [TSR_SPM_BE_W-1:0] o_be_ref;                     // reference: the byte enables of the line, uniform per word
   logic chk_on_q;
   initial chk_on_q = 1'b0;
   always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
   always_ff @(posedge clk) begin
     if (rst_n && chk_on_q) assert (!(fv && bv))
       else $error("%m: front/back exits overlap on the shared return");
-    if (rst_n && chk_on_q && !$isunknown(o_be_ref))
-      for (int i = 0; i < 16; i++)
-        assert (o_be_ref[4*i +: 4] == {4{o_wm[i]}}) else $error("%m: byte enables of word %0d differ from the word mask", i);
   end
 `endif
 
@@ -170,6 +166,14 @@ module tsr_vu_wr
   logic [TSR_LINE_BITS-1:0] o_data;
   logic [TSR_SPM_WM_W-1:0]  o_wm;
   logic                     o_tag;
+`ifndef SYNTHESIS
+  logic [TSR_SPM_BE_W-1:0] o_be_ref;                     // reference: the byte enables of the line, uniform per word
+  always_ff @(posedge clk) begin
+    if (rst_n && chk_on_q && !$isunknown(o_be_ref))
+      for (int i = 0; i < 16; i++)
+        assert (o_be_ref[4*i +: 4] == {4{o_wm[i]}}) else $error("%m: byte enables of word %0d differ from the word mask", i);
+  end
+`endif
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       o_push <= 1'b0;
