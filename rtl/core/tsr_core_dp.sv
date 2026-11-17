@@ -1256,13 +1256,19 @@ module tsr_core_dp
         .m_valid(s_rd_req_valid[c][TSR_SRC_DMA]), .m_ready(s_rd_req_ready[c][TSR_SRC_DMA]),
         .m_data({s_rd_req_addr[c][TSR_SRC_DMA], s_rd_req_len[c][TSR_SRC_DMA], s_rd_req_id[c][TSR_SRC_DMA]})
       );
-      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + 1 + TSR_SRC_ID_W)) u_rsp (
+      // The DMA takes every read response beat (rd_rsp_ready is constant 1, tsr_dma): one register, no skid entry. The
+      // arbiter's response slice and the bridge's R path then see a constant ready, which synthesis can prune (this
+      // register keeps its hierarchy, so a slice here would hide the constant).
+      (* keep_hierarchy = "yes" *) tsr_vpipe #(
+        .VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(1), .KEEP_REGS(1'b1)
+      ) u_rsp (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
-        .s_valid(s_rd_rsp_valid[c][TSR_SRC_DMA]), .s_ready(s_rd_rsp_ready[c][TSR_SRC_DMA]),
-        .s_data({s_rd_rsp_data[c], s_rd_rsp_last[c], s_rd_rsp_id[c]}),
-        .m_valid(d_rd_rsp_valid[c]), .m_ready(d_rd_rsp_ready[c]),
-        .m_data({d_rd_rsp_data[c], d_rd_rsp_last[c], d_rd_rsp_id[c]})
+        .in_valid(s_rd_rsp_valid[c][TSR_SRC_DMA]),
+        .in_data({s_rd_rsp_data[c], s_rd_rsp_last[c], s_rd_rsp_id[c]}),
+        .out_valid(d_rd_rsp_valid[c]),
+        .out_data({d_rd_rsp_data[c], d_rd_rsp_last[c], d_rd_rsp_id[c]})
       );
+      assign s_rd_rsp_ready[c][TSR_SRC_DMA] = 1'b1;
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_wq (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
         .s_valid(a_wr_req_valid[c]), .s_ready(a_wr_req_ready[c]),
@@ -1555,6 +1561,9 @@ module tsr_core_dp
         else $error("tsr_core_dp: VU accepted a third op (S - D <= 2, CC §9.4 I3)");
       assert (!(vu_spm && vu_cnt_q == 2'd0 && !vu_take))
         else $error("tsr_core_dp: SPM access by an idle VU");
+      // the DMA takes every read response beat (g_dma_pipe's response register has no ready)
+      assert (&d_rd_rsp_ready)
+        else $error("tsr_core_dp: DMA rd_rsp_ready low (g_dma_pipe: constant 1, tsr_dma)");
       // U1
       assert (!(mvm_cmd_valid && !HAS_MVM))
         else $error("tsr_core_dp: MVM command offered with HAS_MVM = 0");
