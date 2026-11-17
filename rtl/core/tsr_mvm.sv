@@ -320,6 +320,7 @@ module tsr_mvm
   logic                                 bc_ph_q, bc_done_q;
   logic                                 rq_v_q;
   logic [SPM_AW-1:0]                    rq_line_q;
+  logic [SPM_AW-1:0]                    rq_nxt_q;        // the line that the next rq_fire loads into rq_line_q
   logic [15:0]                          rq_l_q, rs_l_q;
   logic [2:0]                           rq_tok_q, rs_tok_q;
   logic                                 rs_dbs_q;
@@ -353,6 +354,29 @@ module tsr_mvm
   wire pr_t_end = (pr_t_q == a_tact - 4'd1);
   wire pr_u_end = (pr_uo_q == a_q.n - 12'd1);
   wire pr_g_end = (pr_g_q == a_nseg - 9'd1);
+  localparam int unsigned TI1 = (T_MAX > 1) ? 1 : 0;       // rb0[1] (T_MAX 1: tact is 1, never read)
+
+  // Request line. rq_line_q is the line being requested; rq_nxt_q is the line that the next rq_fire loads into it, kept
+  // one fire ahead so that rq_fire reaches only the load enables and one 2:1 select. MVM / ATTQK: rq_line_q + 1. ATTPV
+  // walks (t, uo, gofs) = (pr_t_q, pr_uo_q, pr_gofs_q); the line that follows a state is
+  //   t at its end:  rb0[0] + gofs + (uo at its end ? gstep : uo + 1)
+  //   otherwise:     rb0[t + 1] + gofs + uo
+  // After a fire the walk is in the state w_* (as the counters below advance it), so the line that follows w_* (pv_nxt)
+  // is the new rq_nxt_q; it comes from registers only. A fire can follow a set-up event in the next cycle: the events
+  // that load rq_line_q load rq_nxt_q in the same cycle with the line that follows the first request.
+  wire                pw_t_end = pr_t_end;
+  wire [3:0]          w_t      = pw_t_end ? 4'd0 : pr_t_q + 4'd1;
+  wire [11:0]         w_uo     = !pw_t_end ? pr_uo_q : pr_u_end ? 12'd0 : pr_uo_q + 12'd1;
+  wire [SPM_AW-1:0]   w_gofs   = (pw_t_end && pr_u_end) ? pr_gofs_q + pr_gstep_q : pr_gofs_q;
+  wire                w_t_end  = (w_t == a_tact - 4'd1);
+  wire                w_u_end  = (w_uo == a_q.n - 12'd1);
+  wire [SPM_AW-1:0]   pv_nxt   = w_t_end ? pr_rb0_q[0] + w_gofs + (w_u_end ? pr_gstep_q : SPM_AW'(w_uo) + 1'b1)
+                                         : pr_rb0_q[TW'(w_t + 4'd1)] + w_gofs + SPM_AW'(w_uo);
+  // The line that follows the first ATTPV request (the cycle that loads rb0[0], with gofs = 0 and t = uo = 0): rb0[tact - 1]
+  // is written in that cycle (pb_rb0, the value that goes to rb0[pb_t_q]), so rb0[0] (tact 1) and rb0[1] (tact 2) are pb_rb0.
+  wire [SPM_AW-1:0]   pb_rb0   = SPM_AW'(a_q.x) + SPM_AW'(32'(pb_r_q) * 32'(a_q.rs));
+  wire [SPM_AW-1:0]   pv_nxt0  = (a_tact == 4'd1) ? pb_rb0 + ((12'd0 == a_q.n - 12'd1) ? pr_gstep_q : SPM_AW'(1))
+                                                  : ((a_tact == 4'd2) ? pb_rb0 : pr_rb0_q[TI1]);
 
   // cluster command of this MVM (from c_q, assembled in the su cycle)
   tsr_mvm_ccmd_t ccmd;
@@ -582,7 +606,7 @@ module tsr_mvm
     // ATTPV rb0[t] = p + (q(t) nh + hg0 + i(t)) pstride, t = 0 .. tact - 1 (one per cycle)
     if (as_q[4]) pb_r_q <= 18'(a_q.hg0);
     if (pb_act_q) begin
-      pr_rb0_q[TW'(pb_t_q)] <= SPM_AW'(a_q.x) + SPM_AW'(32'(pb_r_q) * 32'(a_q.rs));
+      pr_rb0_q[TW'(pb_t_q)] <= pb_rb0;
       pb_r_q <= (pb_i_q == a_gs - 4'd1) ? pb_r_q - 18'(a_gs - 4'd1) + 18'(a_nh) : pb_r_q + 18'd1;
     end
     // request line: MVM / ATTQK consecutive from x; ATTPV rb0[t] + g G pstride + uo
@@ -591,19 +615,15 @@ module tsr_mvm
     else if (pb_act_q && pb_t_q == a_tact - 4'd1) begin
       rq_line_q <= SPM_AW'(a_q.x) + SPM_AW'(32'(18'(a_q.hg0)) * 32'(a_q.rs));     // rb0[0]
       pr_gofs_q <= '0;
-    end else if (rq_fire && !pv_rd_q) rq_line_q <= rq_line_q + 1'b1;
-    else if (rq_fire && pv_rd_q) begin
-      if (pr_t_end) begin
-        if (pr_u_end) begin
-          pr_gofs_q <= pr_gofs_q + pr_gstep_q;
-          rq_line_q <= pr_rb0_q[0] + pr_gofs_q + pr_gstep_q;
-        end else begin
-          rq_line_q <= pr_rb0_q[0] + pr_gofs_q + SPM_AW'(pr_uo_q) + 1'b1;
-        end
-      end else begin
-        rq_line_q <= pr_rb0_q[TW'(pr_t_q + 4'd1)] + pr_gofs_q + SPM_AW'(pr_uo_q);
-      end
+    end else if (rq_fire) begin
+      rq_line_q <= rq_nxt_q;
+      if (pv_rd_q && pr_t_end && pr_u_end) pr_gofs_q <= pr_gofs_q + pr_gstep_q;
     end
+    // rq_nxt_q: loaded by the events that load rq_line_q, in the same priority
+    if (su_q) rq_nxt_q <= c_q.x_line[SPM_AW-1:0] + 1'b1;
+    else if (as_q[4] && !a_q.pv) rq_nxt_q <= a_q.x[SPM_AW-1:0] + 1'b1;
+    else if (pb_act_q && pb_t_q == a_tact - 4'd1) rq_nxt_q <= pv_nxt0;
+    else if (rq_fire) rq_nxt_q <= pv_rd_q ? pv_nxt : rq_nxt_q + 1'b1;
     if (bc_rsp) begin
       if (apv_q) bc_d_q <= {ps_end, 3'(ps_t_q), 1'b0, 10'd0,
                              local_pv ? TSR_LINE_BITS'(rq_line_q - SPM_AW'(a_q.x)) : spm_rd_rsp_data};
@@ -864,8 +884,19 @@ module tsr_mvm
   initial a_on_q = 1'b0;
   always @(posedge clk) if (!rst_t_n) a_on_q <= 1'b1;
 
+  // The line that an rq_fire loads into rq_line_q, from rq_line_q and the walk (the reference of rq_nxt_q)
+  logic [SPM_AW-1:0] rq_ref;
+  always_comb begin
+    if (!pv_rd_q)       rq_ref = rq_line_q + 1'b1;
+    else if (pr_t_end)  rq_ref = pr_u_end ? pr_rb0_q[0] + pr_gofs_q + pr_gstep_q
+                                          : pr_rb0_q[0] + pr_gofs_q + SPM_AW'(pr_uo_q) + 1'b1;
+    else                rq_ref = pr_rb0_q[TW'(pr_t_q + 4'd1)] + pr_gofs_q + SPM_AW'(pr_uo_q);
+  end
+
   always_ff @(posedge clk) begin
     if (rst_t_n && a_on_q) begin
+      if (rq_fire && !(su_q || (as_q[4] && !a_q.pv) || (pb_act_q && pb_t_q == a_tact - 4'd1)))
+        assert (rq_nxt_q == rq_ref) else $error("%m: rq_nxt_q 0x%0h != the line of the fire 0x%0h", rq_nxt_q, rq_ref);
       if (fire && !is_att) begin
         assert (cmd.fmt ? (cmd.k != 16'd0 && cmd.k[7:0] == 8'd0) : (cmd.k != 16'd0 && cmd.k[4:0] == 5'd0))
           else $error("%m: K = %0d not a multiple of the block size", cmd.k);
