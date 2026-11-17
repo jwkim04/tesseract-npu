@@ -1,4 +1,4 @@
-"""tb/dma test_rslice — the pointer and occupancy copies of tsr_rslice FORM 1 (RPC) and of tsr_mvm_pair_rx are
+"""tb/dma test_rslice — the pointer and occupancy copies of tsr_rslice FORM 1 (RPC) and of tsr_mvm_pair_rx / _tx are
 cycle-identical to the single flops: the same ready / valid in every cycle and the same data while valid; FORM 0 and
 FORM 1 move the same items in the same cycles. Random valid and ready patterns, W = 577 and an odd width."""
 from __future__ import annotations
@@ -53,6 +53,16 @@ async def rslice_copies(dut):
         # FORM 0: same ready / valid too (the cycle-identical contract of the header)
         assert sr & 1 == (sr >> 1) & 1 and mv & 1 == (mv >> 1) & 1, "FORM 0 differs at %d: s_ready %x m_valid %x" % (cyc, sr, mv)
         assert fr & 1 == (fr >> 1) & 1 and pvd & 1 == (pvd >> 1) & 1, "pair_rx copies differ at %d" % cyc
+        tr = int(dut.t_sready.value)
+        tv = int(dut.t_valid.value)
+        assert tr & 1 == (tr >> 1) & 1 == (tr >> 2) & 1, "pair_tx s_ready differs at %d: %x" % (cyc, tr)
+        assert tv & 1 == (tv >> 1) & 1 == (tv >> 2) & 1, "pair_tx m_valid differs at %d: %x" % (cyc, tv)
+        if tv & 1:
+            d = int(dut.t_data.value)
+            fw = (W + 1) // 2
+            fl = [(d >> (fw * k)) & ((1 << fw) - 1) for k in range(3)]
+            assert fl[0] == fl[1] == fl[2], "pair_tx flit differs at %d" % cyc
+            n_cmp += 1
         if mv & 1:
             d = int(dut.m_data.value)
             ds = [(d >> (W * k)) & ((1 << W) - 1) for k in range(4)]

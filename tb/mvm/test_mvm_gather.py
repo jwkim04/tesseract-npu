@@ -57,6 +57,9 @@ CFGS = {
     # XSLR_REG: one tsr_rpipe stage on each pair link (2 slots of a whole job, or 2 flits)
     "g4t8_pair_x": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, XSLR_REG=1),
     "g4t4_narrow_x": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2, XSLR_REG=1),
+    # FAST_CLK: eight pointer copies on the pair links (the transmitter's flit select, the receiver, the job slices)
+    "g4t4_narrow_x_fast": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2, XSLR_REG=1, FAST_CLK=1),
+    "g4t4_narrow_odd_fast": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=524288, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2, FAST_CLK=1),
     "g4t4_narrow_odd": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=524288, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
     "g4t1":  dict(NUM_CH=4, T_MAX=1, SPM_BYTES=262144, SPM_RD_LAT=2, ADD_LAT=5),
     "g1t3":  dict(NUM_CH=1, T_MAX=3, SPM_BYTES=65536, SPM_RD_LAT=1, ADD_LAT=1),

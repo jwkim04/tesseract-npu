@@ -290,8 +290,13 @@ endmodule
 // Two-flit pair transport. Only the FLIT_W payload, valid and ready connect
 // the endpoints. Each endpoint retains two complete-job slots, so this replaces
 // two wide slices without adding a second wide fallback link.
+// RPC > 1: the queue is a FORM 1 slice with RPC pointer copies, and the flit select `high_q` has RPC kept copies,
+// each steering one slice of the flit; copy 0 also drives the control. The flit mux then has FLIT_W / RPC loads per
+// select flop instead of FLIT_W (cycle-identical to RPC 1, the same value the pair receiver takes). 1 = the FORM 0
+// queue and the single select flop.
 module tsr_mvm_pair_tx #(
   parameter int unsigned W = 562,
+  parameter int unsigned RPC = 1,
   localparam int unsigned FLIT_W = (W + 1) / 2
 ) (
   input logic clk, rst_n,
@@ -305,16 +310,42 @@ module tsr_mvm_pair_tx #(
   logic q_valid, q_ready, high_q;
   logic [W-1:0] q_data;
   wire [2*FLIT_W-1:0] padded = {{(2*FLIT_W-W){1'b0}}, q_data};
-  tsr_rslice #(.W(W)) u_queue (
+  tsr_rslice #(.W(W), .FORM(RPC > 1 ? 1 : 0), .RPC(RPC)) u_queue (
     .clk, .rst_n, .s_valid, .s_ready, .s_data,
     .m_valid(q_valid), .m_ready(q_ready), .m_data(q_data)
   );
   assign m_valid = q_valid;
-  assign m_data = high_q ? padded[FLIT_W +: FLIT_W] : padded[0 +: FLIT_W];
   assign q_ready = m_ready & high_q;
-  always_ff @(posedge clk) begin
-    if (!rst_n) high_q <= 1'b0;
-    else if (m_valid && m_ready) high_q <= ~high_q;
+  if (RPC <= 1) begin : g_one
+    assign m_data = high_q ? padded[FLIT_W +: FLIT_W] : padded[0 +: FLIT_W];
+    always_ff @(posedge clk) begin
+      if (!rst_n) high_q <= 1'b0;
+      else if (m_valid && m_ready) high_q <= ~high_q;
+    end
+  end else begin : g_cp
+    localparam int unsigned CWD = (FLIT_W + RPC - 1) / RPC;
+    (* keep = "true" *) logic [RPC-1:0] hc_q;      // copies of high_q, one per slice of the flit
+    always_ff @(posedge clk) begin
+      if (!rst_n) hc_q <= '0;
+      else if (m_valid && m_ready) hc_q <= ~hc_q;
+    end
+    assign high_q = hc_q[0];
+    for (genvar j = 0; j < RPC; j++) begin : g_c
+      localparam int unsigned LO = j * CWD;
+      localparam int unsigned HI = (LO + CWD > FLIT_W) ? FLIT_W - 1 : LO + CWD - 1;
+      if (LO <= HI) begin : g_w
+        assign m_data[HI:LO] = hc_q[j] ? padded[FLIT_W+LO +: HI-LO+1] : padded[LO +: HI-LO+1];
+      end
+    end
+`ifndef SYNTHESIS
+    // The copies of the flit select are the same flop (armed once a reset has been seen).
+    logic a_on_q;
+    initial a_on_q = 1'b0;
+    always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+    always_ff @(posedge clk) begin
+      if (rst_n && a_on_q) assert (hc_q == {RPC{hc_q[0]}}) else $error("%m: flit select copies differ: %b", hc_q);
+    end
+`endif
   end
 endmodule
 
@@ -394,6 +425,7 @@ module tsr_mvm_pair_source
   parameter int unsigned JW = 561,
   parameter int unsigned FLITS = 1,
   parameter bit LOCAL_SCALE = 1'b0,
+  parameter int unsigned RPC = 1,   // pointer copies of the two-flit transmitter (tsr_mvm_pair_tx)
   localparam int unsigned LINK_W = (JW + FLITS) / FLITS
 ) (
   input logic clk, rst_n,
@@ -444,7 +476,7 @@ module tsr_mvm_pair_source
     wire unused_scale = &{1'b0, scale, post_scale, softcap, scale_en, scale_rsp};
   end
   if (FLITS == 2) begin : g_narrow
-    tsr_mvm_pair_tx #(.W(JW+1)) u_tx (
+    tsr_mvm_pair_tx #(.W(JW+1), .RPC(RPC)) u_tx (
       .clk, .rst_n, .s_valid(scaled_v), .s_ready(scaled_r), .s_data(scaled_d),
       .m_valid, .m_ready, .m_data
     );
@@ -799,7 +831,7 @@ module tsr_mvm_gather
       logic [JW:0] link_d;
       // Keep the complete collector addressable by its major-block Pblock.
       (* keep_hierarchy = "yes" *)
-      tsr_mvm_pair_source #(.JW(JW), .FLITS(GATHER_FLITS), .LOCAL_SCALE(LOCAL_SCALE)) u_source (
+      tsr_mvm_pair_source #(.JW(JW), .FLITS(GATHER_FLITS), .LOCAL_SCALE(LOCAL_SCALE), .RPC(FAST_CLK ? 8 : 1)) u_source (
         .clk, .rst_n, .s_valid({sv[p+2], sv[p]}), .s_ready({sr[p+2], sr[p]}),
         .s_data({sd[p+2], sd[p]}), .scale_en, .scale, .post_scale, .softcap,
         .scale_req(scale_req[p]), .scale_rsp(scale_rsp[p]),

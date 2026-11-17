@@ -1,6 +1,6 @@
 // Register slices on one stream: FORM 0, FORM 1 and FORM 1 with eight pointer / occupancy copies (RPC 8), and the
-// two-flit pair receiver with one and with eight pointer copies. The copies must be cycle-identical to their single
-// flops (tb/dma/test_rslice.py).
+// two-flit pair receiver and transmitter with one and with eight (the transmitter also three) pointer copies. The copies
+// must be cycle-identical to their single flops (tb/dma/test_rslice.py).
 module tsr_tb_rslice #(
   parameter int unsigned W = 577
 ) (
@@ -17,7 +17,11 @@ module tsr_tb_rslice #(
   input  logic [(W+1)/2-1:0] f_data,
   output logic [1:0]   f_ready,
   output logic [1:0]   p_valid,
-  output logic [1:0][W-1:0] p_data
+  output logic [1:0][W-1:0] p_data,
+  // the pair transmitter, fed by s_valid / s_data: 2 flits of (W + 1) / 2 bits
+  output logic [2:0]   t_sready,
+  output logic [2:0]   t_valid,
+  output logic [2:0][(W+1)/2-1:0] t_data
 );
   tsr_rslice #(.W(W), .FORM(0)) u_f0 (
     .clk, .rst_n, .s_valid, .s_ready(s_ready[0]), .s_data, .m_valid(m_valid[0]), .m_ready, .m_data(m_data[0])
@@ -36,5 +40,14 @@ module tsr_tb_rslice #(
   );
   tsr_mvm_pair_rx #(.W(W), .RPC(8)) u_rx8 (
     .clk, .rst_n, .s_valid(f_valid), .s_ready(f_ready[1]), .s_data(f_data), .m_valid(p_valid[1]), .m_ready, .m_data(p_data[1])
+  );
+  tsr_mvm_pair_tx #(.W(W), .RPC(1)) u_tx1 (
+    .clk, .rst_n, .s_valid, .s_ready(t_sready[0]), .s_data, .m_valid(t_valid[0]), .m_ready, .m_data(t_data[0])
+  );
+  tsr_mvm_pair_tx #(.W(W), .RPC(8)) u_tx8 (
+    .clk, .rst_n, .s_valid, .s_ready(t_sready[1]), .s_data, .m_valid(t_valid[1]), .m_ready, .m_data(t_data[1])
+  );
+  tsr_mvm_pair_tx #(.W(W), .RPC(3)) u_tx3 (
+    .clk, .rst_n, .s_valid, .s_ready(t_sready[2]), .s_data, .m_valid(t_valid[2]), .m_ready, .m_data(t_data[2])
   );
 endmodule
