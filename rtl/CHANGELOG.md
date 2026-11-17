@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Changed
+
+- Structure changes for the wiring of the K4 image. None changes a result bit or a cycle count.
+  - The DMA read response of channels 0 and 3 (`DDR_LOCAL_PIPE`) is one valid and payload register (`tsr_vpipe`) without a
+    skid entry: the DMA's read response ready is constant 1.
+  - The VU command link (`XSLR_REG`) is a delay line of three register stages without a ready path, because the VU takes every
+    command that reaches it. With `LOCAL_INTERMEDIATES` or `LOCAL_SCALE` it stays a valid and ready pipe.
+  - The trace writer's write mux on channel 0 sits behind the DMA's locality pipe slices, on the arbiter's side.
+  - The pair link transmitter (`tsr_mvm_pair_tx`, `RPC`) has pointer copies in its queue and one kept flit select copy per
+    slice of the flit, with the payload permuted to match.
+  - `MVM_BC_HEADS` (`tsr_mvm`, `tsr_core_dp`, `tsr_core`, `tsr_xrt_kernel`, default 1) makes `BC_HEADS` kept copies of the first
+    broadcast stage. Cluster `c` reads copy `c` mod `BC_HEADS`. `tsr_u200_k4` sets 2.
+  - The MVM request line register loads from a register that holds the next line, and `cfg_ok` of the GDN engine is a register.
+  - The VU's write link carries a 16-bit word mask to `tsr_core_dp`, which expands it to the SPM client port's byte enables.
+  - The accumulator select and the P register's enable term of the MAC lane (`PVR`) are registers of their own.
+  - `hw/u200/k4_floorplan.tcl` lists every broadcast head copy.
+
 ## [1.2.0] - 2026-11-17
 
 Core capability 1.0. The image is `tsr_u200_k4.xclbin` for the platform `xilinx_u200_gen3x16_xdma_2_202110_1`,

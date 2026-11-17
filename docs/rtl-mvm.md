@@ -27,6 +27,7 @@ budget (§1), the dispatch protocol (§3.0), `tsr_mvm_cmd_t` (§3.4), the memory
   |---|---|---|---|
   | `WS_FIFO_BEATS` | 512 | power of 2, at least 64 | weight FIFO per cluster (§4) |
   | `BC_PIPE` | 1 | 0 or more | broadcast pipe stages (`tsr_vpipe`, §3.1), also the weight-stream response pipe (§14.4) |
+  | `BC_HEADS` | 1 | 1, or a divisor of `NUM_CH` when `BC_PIPE` is at least 2 | copies of the first broadcast stage; cluster c reads copy c mod `BC_HEADS` (§14.4 item 1) |
   | `RES_PIPE` | 1 | 0 or more | result pipe stages (`tsr_rpipe`, §3.5), also the weight-stream request pipe and the gather's job and start pipes (`JOB_PIPE`, §14.4) |
   | `ACT_RD_LAT` | 2 | 1 or more | activation buffer read latency (§5) |
   | `MAC_LAT` | 3 | 1 or more | `tsr_mac_lane` latency (§7.2) |
@@ -34,8 +35,8 @@ budget (§1), the dispatch protocol (§3.0), `tsr_mvm_cmd_t` (§3.4), the memory
   | `ADD_LAT` | 5 | 1 to 8 | `tsr_fp_add` latency (`TSR_DEF_FADD_LAT`, §8.1) |
   | `WS_RD_LAT` | 2 | 1 to 4 | weight FIFO RAM read latency (`TSR_DEF_WS_RD_LAT`) |
 
-  `tsr_core` exposes them as `MVM_WS_FIFO`, `MVM_BC_PIPE`, `MVM_RES_PIPE`, `MVM_ACT_RD_LAT`, `MVM_MAC_LAT`, `MVM_MUL_LAT`,
-  `MVM_ADD_LAT` and `MVM_WS_RD_LAT`, with defaults `TSR_DEF_*`.
+  `tsr_core` exposes them as `MVM_WS_FIFO`, `MVM_BC_PIPE`, `MVM_BC_HEADS`, `MVM_RES_PIPE`, `MVM_ACT_RD_LAT`, `MVM_MAC_LAT`, `MVM_MUL_LAT`,
+  `MVM_ADD_LAT` and `MVM_WS_RD_LAT`, with defaults `TSR_DEF_*` (`MVM_BC_HEADS` 1).
 - The files, in `rtl/filelist.f` order, are `tech/generic/tsr_mac_lane.sv`, `core/tsr_fp_add.sv`, `tsr_vpipe.sv`, `tsr_rpipe.sv`,
   `tsr_mvm_ws.sv`, `tsr_mvm_front.sv`, `tsr_mvm_actbuf.sv`, `tsr_mvm_back.sv`, `tsr_mvm_cluster.sv`, `tsr_mvm_gather.sv` and
   `tsr_mvm.sv`. `rtl/lint.sh` lints each as its own top with edge parameters and lints `tsr_core` with `HAS_MVM` 1 at several
@@ -514,6 +515,7 @@ serializes runs). The part is `xcu200-fsgd2104-2-e`, the clock 3.333 ns, and eve
 |---|---|---|---|
 | `SPM_RD_LAT` | 4 | 2 | URAM output registers ([rtl-core.md](rtl-core.md) §12) |
 | `MVM_BC_PIPE` | 2 | 1 | broadcast and weight-response pipes: one register on each side of an SLR crossing |
+| `MVM_BC_HEADS` | 2 | 1 | two copies of the first broadcast stage, one for the clusters of each outer SLR (§14.4 item 1) |
 | `MVM_RES_PIPE` | 2 | 1 | result, weight-request and gather job and start pipes: the same |
 | `MVM_MAC_LAT` | 9 | 3 | a register after every adder level of the DSP-packed MAC lane (§14.4 item 4) |
 | `RST_PIPE` | 3 | 0 | reset register stages with per-block copies (§14.4 item 3) |
@@ -543,9 +545,11 @@ With the structures of §14.4 and §14.9 in place, these bound timing:
    them into one pipe, so that one cluster's registers would drive all four clusters across three SLRs. `tsr_vpipe` has the
    parameter `KEEP_REGS` (Xilinx `keep` and `shreg_extract = "no"` on the stage registers), used for the broadcast and
    weight-response pipes and the gather's start pipes. A destination cluster's registers never drive another SLR's cluster. The
-   first stage is shared when `BC_PIPE` is at least 2 (`u_bc_head`), and each cluster keeps a tail of `BC_PIPE` - 1 stages beside
-   its own decode. All reset copies have identical INIT and shift recurrence, so total latency and reset flush match independent
-   pipes. `BC_PIPE` 0 and 1 keep the independent path. The parameter is not named `KEEP`, because Vivado reads a parameter of that
+   first stage exists in `BC_HEADS` kept copies when `BC_PIPE` is at least 2 (`u_bc_head` and `g_bch[h].u_bc_head`, one input
+   and one reset), cluster c reads copy c mod `BC_HEADS`, and each cluster keeps a tail of `BC_PIPE` - 1 stages beside its own
+   decode. With 2 copies, copy 0 feeds clusters 0 and 2 and copy 1 clusters 1 and 3, so a copy drives clusters on one side only.
+   `BC_HEADS` above 1 needs `BC_PIPE` of at least 2 and `NUM_CH` a multiple of `BC_HEADS`. All reset copies have identical INIT
+   and shift recurrence, so total latency and reset flush match independent pipes. `BC_PIPE` 0 and 1 keep the independent path. The parameter is not named `KEEP`, because Vivado reads a parameter of that
    name as the instance's KEEP property.
 2. The gather job select is split. A single `NUM_CH * 2 * T_MAX : 1` select of the assembly buffers with select lines that fan out
    to every buffer flop is too slow and congests the router. `tsr_mvm_gather` is one assembler per cluster (`tsr_mvm_gasm`: the

@@ -559,7 +559,8 @@ boundary.
 
 VU: one client using both bank ports; it reads operand pairs (lines L, L+1 are always in different banks) and
 can therefore stream two source operands at one line each per cycle whatever their alignment (alternate cycles:
-A-pair, B-pair), and write one line per cycle (VU designs the reorder buffers).
+A-pair, B-pair), and write one line per cycle (VU designs the reorder buffers). The VU's write link carries a 16-bit word mask, one
+bit per 32-bit word of the line; `tsr_core_dp` expands each bit to the four byte enables of the word at `wr_be[63:0]`.
 
 ### 10.3 No-deadlock argument
 
@@ -705,12 +706,15 @@ the memory ports into the control plane. `tsr_issue` takes each unit's done stro
 completion one cycle later (`perf_busy` keeps the unit's own timing); the DB block's memory taps go through two
 register stages (`MT_PIPE`), so `DBG_RDOUT` and `DBG_WROUT` lag the memory ports by two cycles and the probes are
 not compared with the model (DB §9.1). `XSLR_REG` (set with `RV_LOCAL_TRANSPORT` in the release image) does the
-same for the blocks that sit two SLRs from the control plane, the whole vector unit in SLR2 and the trace
-writer's write mux: the VU's links pass three register stages on the command and its ready, the done strobe and
-the 16 s registers and two on the three PERF strobes and the progress strobe; the command goes through a valid
-and ready pipe (`tsr_rpipe`), so the VU starts a command three cycles later and its done reaches `tsr_issue`
-three cycles later (`DONE_REG` adds the fourth). The issue path's limit of two ops in flight (I3) counts the
-commands in the pipe, and the unit's own checks (`tsr_core_dp` U4) are made on the unit's side of the stages.
+same for the whole vector unit, which sits two SLRs from the control plane in SLR2, and for the trace
+writer's links to its write mux: the VU's links pass three register stages on the command, the done strobe and
+the 16 s registers and two on the three PERF strobes and the progress strobe; the command goes through a delay
+line of valid and command registers (`tsr_vpipe`) with no ready, so the VU starts a command three cycles later and
+its done reaches `tsr_issue` three cycles later (`DONE_REG` adds the fourth). The issue path sees a constant ready,
+because the VU takes every command that reaches it: the issue path's limit of two ops in flight (I3) counts the
+commands in the pipe and the VU holds two (with `LOCAL_INTERMEDIATES` or `LOCAL_SCALE` the VU can stall a command,
+and the command goes through a valid and ready pipe, `tsr_rpipe`). The unit's own checks (`tsr_core_dp` U4) are made
+on the unit's side of the stages.
 The trace writer's request and data streams pass a `tsr_rslice` each and its burst response two flops; each
 MVM cluster's attention-stall strobe passes two registers in `tsr_mvm`; the RISC-V's SPM request passes one
 register stage in the SPM link end; each pair link of the MVM gather passes one `tsr_rpipe` stage; in
@@ -927,9 +931,10 @@ Placement rules for the blocks themselves:
   separate logical contexts l and l+8. Keep local input and output pipe ends and front and back selection, with
   distinct bank control, reset and selection-token registers. Logical lane order and arithmetic are unchanged.
 - DDR0 and DDR3 bridges and arbiters stay in SLR0 and SLR2 beside their controllers. Their weight-stream
-  endpoints follow their cluster. `DDR_LOCAL_PIPE=1` adds five central DMA boundary slices per outer channel:
-  read request and response, write request, data and response. The write slices follow the central trace mux;
-  only DMA responses return to SLR1. DDR1 and DDR2 remain central. All streams retain their width and full-rate
+  endpoints follow their cluster. `DDR_LOCAL_PIPE=1` adds five central DMA boundary stages per outer channel:
+  slices for the read request, the write request, the write data and the write response, and one register for the
+  read response, which has no ready because the DMA takes every beat. On channel 0 the trace writer's write mux
+  sits on the arbiter side of the write request and data slices; only DMA responses return to SLR1. DDR1 and DDR2 remain central. All streams retain their width and full-rate
   handshakes.
 
 The k1 kernel (`NUM_CH` 1, `T_MAX` 1) has no SLR split; it is the bring-up link.

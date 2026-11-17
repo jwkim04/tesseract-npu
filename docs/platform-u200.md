@@ -416,15 +416,15 @@ of any of them:
 
 | Path | Structure |
 |---|---|
-| Cluster broadcast | The first stage is shared in SLR1 (`u_bc_head`). Each cluster keeps its own kept tail of `MVM_BC_PIPE` - 1 stages and decode (`g_cl[c].u_bcp`) in its SLR. Total delay and reset flush equal those of independent pipes. `MVM_BC_PIPE` 0 and 1 keep independent pipes |
+| Cluster broadcast | The first stage exists in `MVM_BC_HEADS` kept copies (`u_bc_head`, `g_bch[h].u_bc_head`), and cluster `c` reads copy `c` mod `MVM_BC_HEADS`. With 2, copy 0 feeds clusters 0 and 2 and copy 1 clusters 1 and 3, so a copy drives clusters of one outer SLR only. Each cluster keeps its own kept tail of `MVM_BC_PIPE` - 1 stages and decode (`g_cl[c].u_bcp`) in its SLR. Total delay and reset flush equal those of independent pipes. `MVM_BC_PIPE` 0 and 1 keep independent pipes |
 | VU front and back results | The lane banks select before crossing, so front and back lane results share one return bus. The reduction drain keeps its own bus. A selection token adds one input |
 | Gather jobs | `MVM_GATHER_PAIR` 1 pairs the clusters {0, 2} and {1, 3}. Each pair arbitrates locally and sends tagged jobs through a link of `MVM_GATHER_FLITS` flits, with eight buffered jobs per pair. Origin order and central completion are preserved. Saturated traffic stays at one job per cycle, and a start adds one cycle |
-| DDR0 and DDR3 weight response | `DDR_LOCAL_PIPE` 1 moves the complete bridge and arbiter of channels 0 and 3 beside their DDR controller. Five central slices register the DMA requests, data and responses. The DMA trunk to these channels is 512 bits wide in each direction |
+| DDR0 and DDR3 weight response | `DDR_LOCAL_PIPE` 1 moves the complete bridge and arbiter of channels 0 and 3 beside their DDR controller. Four central `tsr_rslice` stages register the read request, the write request, the write data and the write response of the DMA, and one register (`tsr_vpipe`) the read response, which has no ready because the DMA takes every beat. The DMA trunk to these channels is 512 bits wide in each direction |
 | DMA response select | One selector picks the active engine's channel and feeds both the LD and the KVST queues. Valid bits, credits and write channel tags stay separate |
-| KVST metadata writes | The 16-bit word mask of a partial write reaches `WSTRB`, so the core does no read-modify-write of metadata. The mask accompanies each beat through KVST, DMA, trace arbitration, channel arbitration, the DDR locality pipes and the bridge. ST, quantized data, full metadata and trace use all ones. Data, last and mask are 529 bits |
+| KVST metadata writes | The 16-bit word mask of a partial write reaches `WSTRB`, so the core does no read-modify-write of metadata. The mask accompanies each beat through KVST, DMA, the DDR locality pipes, trace arbitration, channel arbitration and the bridge. ST, quantized data, full metadata and trace use all ones. Data, last and mask are 529 bits |
 | VU inputs | For 8 front lanes each lane bank receives a 366-bit operand packet and caches its element-wise coefficients and RoPE angles locally. A separate 74-bit channel writes the angles. A bank has 441 input bits instead of 545 and returns 192 bits. The full-width configuration keeps its path ([VU](design/02-vector-unit.md) §7.10) |
 | RISC-V transport | `RV_LOCAL_TRANSPORT` 1 sends the SPM response (514 bits to 130, 4 payload cycles), the issue entry (389 to 131, 3 cycles) and the LQ and LCQ request (302 to 143, 1 cycle, 2 for POST) as segmented packets. The RV's 64-byte line buffer and all clock-domain crossings stay local to `u_ctrl` ([CC](design/04-control-core.md) §11.4) |
-| Debug writer | The trace writer's burst response and write mux sit in `XSLR_REG` stages (§8.8) |
+| Debug writer | The trace writer's request, data and burst response pass `XSLR_REG` stages (§8.8) to its write mux, which sits on the arbiter side of the DDR locality pipe of channel 0 |
 
 Each path keeps independent 512-bit weight streams of one beat per cycle: one per cluster and, with the dual weight stream
 ([rtl-mvm.md](rtl-mvm.md) §15), a second one per cluster through the read-only bridge of its channel. A halved weight link would
@@ -466,7 +466,7 @@ opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything
 
 | Group | Parameters |
 |---|---|
-| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_DUAL` 1 ([rtl-mvm.md](rtl-mvm.md) §15), `QACT_PIPE` 1 ([rtl-core.md](rtl-core.md) §8.1), `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
+| Structure | `NUM_CH` 4, `T_MAX` 4, `MVM_DUAL` 1 ([rtl-mvm.md](rtl-mvm.md) §15), `QACT_PIPE` 1 ([rtl-core.md](rtl-core.md) §8.1), `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `MVM_BC_HEADS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `FAST_CLK` 1 (§8.10) |
 | Vector unit | `VU_FRONT_LANES` 8, `VU_EXP_LANES` 8, `VU_BACK_LANES` 4, `VU_LANE_PIPE` 2, `HAS_GDN` 1 (§8.9) |
 | U200 common | `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3, `AXI_SLICES` 2, `RST_STAGES` 3 |
 | Left at their defaults | `HAS_VU` 1, `HAS_ATT` 1 (KVST, ATTQK, ATTPV), `HAS_TRW` 1, `HIST_DEPTH` 512, `HAS_TOPK` 0, `HAS_DQROW` 0 |
@@ -484,7 +484,7 @@ register stages on each link. Results, queue order and the architectural state d
 
 | Link | Stages | Effect |
 |---|---:|---|
-| Issue to VU: command, valid, ready (`tsr_rpipe`) | 3 | the VU starts a command 3 cycles later and the issue path sees a registered ready |
+| Issue to VU: command and valid (`tsr_vpipe`, no ready path) | 3 | the VU starts a command 3 cycles later and the issue path sees a constant ready |
 | VU done to `tsr_issue` | 3, plus 1 from `DONE_REG` | completion 4 cycles after the VU's strobe |
 | VU s registers (16 x 32) to `tsr_csr` | 3 | an s register shows a change 3 cycles later |
 | Progress and PERF strobes of the units, `perf_ch_*` to `tsr_csr` | 2 | the PERF counters and the watchdog see them 2 cycles late |
@@ -499,7 +499,7 @@ command and the 3 cycles of the done pipe after it finishes. That is 6 cycles mo
 the watchdog 2 cycles late, so HUNG does not change at the default `WDOG_CFG.L` of 24. The stages are parameters of
 `tsr_xrt_kernel`, `tsr_core` and `tsr_core_dp` with a default of 0, so every other configuration keeps its netlist.
 `tsr_mvm_gather` has a `tsr_rpipe` stage of the link width between source and receiver for one and two flits (`g_xslr`).
-`tsr_core_dp` has `VX` 3 stages on the VU command pipe, so no hop spans both boundaries.
+`tsr_core_dp` has `VX` 3 stages on the VU command pipe, so no hop spans both boundaries. The pipe is a delay line with no ready because the VU takes every command that reaches it: the issue path admits at most two VU ops in flight (I3) and counts the commands in the pipe, and the VU holds two. A simulation assertion checks it in every cycle. With `LOCAL_INTERMEDIATES` or `LOCAL_SCALE` the VU can stall a command, and the pipe is a valid and ready pipe (`tsr_rpipe`).
 
 Two RTL rules come from this image, and the tests below check them.
 
@@ -553,9 +553,9 @@ do not change. Some control and diagnostic paths take a few cycles more.
 | `tsr_mvm_gather` | the key tree has an input register (line, tail flags, strobe). The SPM-read issue slice is `tsr_rslice` FORM 1 with pointer copies | a row maximum is in the table 1 cycle later |
 | `tsr_csr` | the PERF counters take clear, enable and increment from registers, one copy per counter (64 loads each). The DB block's increments pass one register | counts shift by 1 cycle, 2 for the DB. Totals are equal |
 | `tsr_dbg_trw` | the DROPS counter adds the drops of the cycle before | reads 1 cycle later. DROP records and staging do not change |
-| `tsr_rslice` FORM 1, `tsr_mvm_pair_rx` `RPC` | copies of the read pointer and of the occupancy flops, one per slice of the payload, on the DDR0 and DDR3 write data (`u_wd`), the trace data (`u_td`), the gather's job slices and the pair receiver | none, cycle-identical |
+| `tsr_rslice` FORM 1, `tsr_mvm_pair_rx` and `tsr_mvm_pair_tx` `RPC` | copies of the read pointer and of the occupancy flops, one per slice of the payload, on the DDR0 and DDR3 write data (`u_wd`), the trace data (`u_td`), the gather's job slices, the pair receiver and the pair transmitter. The transmitter's queue is a FORM 1 slice, its flit select has one kept copy per slice of the flit, and its payload is permuted so that slice `j` of the queue holds slice `j` of the low and of the high flit: one pointer copy and one select copy steer a flit bit | none, cycle-identical |
 | `tsr_mvm_aqk` | the bounds test of a row is one stage earlier because the setup is stable | none |
-| `tsr_mac_lane` `PVR` | `pv_en` reaches the DSP controls through a register copy per slot and eight lanes (A and D input mux, post-adder mode, enable) | none. `pv_en` changes at least 2 cycles before an operand, which a simulation assertion checks in both lane variants |
+| `tsr_mac_lane` `PVR` | `pv_en` reaches the DSP controls through a register copy per slot and eight lanes (A and D input mux, post-adder mode, enable). The accumulator select of the post-adder and the enable term of the P register are registers of their own per slot and eight lanes, loaded one cycle ahead, so these controls come from flops (`ce` is still combined with the enable term) | none. `pv_en` changes at least 2 cycles before an operand, which a simulation assertion checks in both lane variants |
 
 The reset distribution needs no change at this clock. Registers that nothing reads before they are written under a valid have no
 reset, so the registers the stages add (slice payloads, walker counters, convert-pipeline registers) have none.
