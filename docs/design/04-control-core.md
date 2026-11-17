@@ -559,8 +559,9 @@ boundary.
 
 VU: one client using both bank ports; it reads operand pairs (lines L, L+1 are always in different banks) and
 can therefore stream two source operands at one line each per cycle whatever their alignment (alternate cycles:
-A-pair, B-pair), and write one line per cycle (VU designs the reorder buffers). The VU's write link carries a 16-bit word mask, one
-bit per 32-bit word of the line; `tsr_core_dp` expands each bit to the four byte enables of the word at `wr_be[63:0]`.
+A-pair, B-pair), and write one line per cycle (VU designs the reorder buffers). The VU's write link carries a
+16-bit word mask, one bit per 32-bit word of the line; `tsr_core_dp` expands each bit to the four byte enables of
+the word at `wr_be[63:0]`.
 
 ### 10.3 No-deadlock argument
 
@@ -934,8 +935,8 @@ Placement rules for the blocks themselves:
   endpoints follow their cluster. `DDR_LOCAL_PIPE=1` adds five central DMA boundary stages per outer channel:
   slices for the read request, the write request, the write data and the write response, and one register for the
   read response, which has no ready because the DMA takes every beat. On channel 0 the trace writer's write mux
-  sits on the arbiter side of the write request and data slices; only DMA responses return to SLR1. DDR1 and DDR2 remain central. All streams retain their width and full-rate
-  handshakes.
+  sits on the arbiter side of the write request and data slices; only DMA responses return to SLR1. DDR1 and
+  DDR2 remain central. All streams retain their width and full-rate handshakes.
 
 The k1 kernel (`NUM_CH` 1, `T_MAX` 1) has no SLR split; it is the bring-up link.
 

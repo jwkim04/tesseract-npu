@@ -35,8 +35,8 @@ budget (§1), the dispatch protocol (§3.0), `tsr_mvm_cmd_t` (§3.4), the memory
   | `ADD_LAT` | 5 | 1 to 8 | `tsr_fp_add` latency (`TSR_DEF_FADD_LAT`, §8.1) |
   | `WS_RD_LAT` | 2 | 1 to 4 | weight FIFO RAM read latency (`TSR_DEF_WS_RD_LAT`) |
 
-  `tsr_core` exposes them as `MVM_WS_FIFO`, `MVM_BC_PIPE`, `MVM_BC_HEADS`, `MVM_RES_PIPE`, `MVM_ACT_RD_LAT`, `MVM_MAC_LAT`, `MVM_MUL_LAT`,
-  `MVM_ADD_LAT` and `MVM_WS_RD_LAT`, with defaults `TSR_DEF_*` (`MVM_BC_HEADS` 1).
+  `tsr_core` exposes them as `MVM_WS_FIFO`, `MVM_BC_PIPE`, `MVM_BC_HEADS`, `MVM_RES_PIPE`, `MVM_ACT_RD_LAT`, `MVM_MAC_LAT`,
+  `MVM_MUL_LAT`, `MVM_ADD_LAT` and `MVM_WS_RD_LAT`, with defaults `TSR_DEF_*` (`MVM_BC_HEADS` 1).
 - The files, in `rtl/filelist.f` order, are `tech/generic/tsr_mac_lane.sv`, `core/tsr_fp_add.sv`, `tsr_vpipe.sv`, `tsr_rpipe.sv`,
   `tsr_mvm_ws.sv`, `tsr_mvm_front.sv`, `tsr_mvm_actbuf.sv`, `tsr_mvm_back.sv`, `tsr_mvm_cluster.sv`, `tsr_mvm_gather.sv` and
   `tsr_mvm.sv`. `rtl/lint.sh` lints each as its own top with edge parameters and lints `tsr_core` with `HAS_MVM` 1 at several
@@ -549,8 +549,8 @@ With the structures of §14.4 and §14.9 in place, these bound timing:
    and one reset), cluster c reads copy c mod `BC_HEADS`, and each cluster keeps a tail of `BC_PIPE` - 1 stages beside its own
    decode. With 2 copies, copy 0 feeds clusters 0 and 2 and copy 1 clusters 1 and 3, so a copy drives clusters on one side only.
    `BC_HEADS` above 1 needs `BC_PIPE` of at least 2 and `NUM_CH` a multiple of `BC_HEADS`. All reset copies have identical INIT
-   and shift recurrence, so total latency and reset flush match independent pipes. `BC_PIPE` 0 and 1 keep the independent path. The parameter is not named `KEEP`, because Vivado reads a parameter of that
-   name as the instance's KEEP property.
+   and shift recurrence, so total latency and reset flush match independent pipes. `BC_PIPE` 0 and 1 keep the independent path.
+   The parameter is not named `KEEP`, because Vivado reads a parameter of that name as the instance's KEEP property.
 2. The gather job select is split. A single `NUM_CH * 2 * T_MAX : 1` select of the assembly buffers with select lines that fan out
    to every buffer flop is too slow and congests the router. `tsr_mvm_gather` is one assembler per cluster (`tsr_mvm_gasm`: the
    buffers and everything that grows with `T_MAX`, where a job is a `2 * T_MAX : 1` select of flops with registered selects) and a
