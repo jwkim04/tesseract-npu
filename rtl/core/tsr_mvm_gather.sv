@@ -290,10 +290,13 @@ endmodule
 // Two-flit pair transport. Only the FLIT_W payload, valid and ready connect
 // the endpoints. Each endpoint retains two complete-job slots, so this replaces
 // two wide slices without adding a second wide fallback link.
-// RPC > 1: the queue is a FORM 1 slice with RPC pointer copies, and the flit select `high_q` has RPC kept copies,
-// each steering one slice of the flit; copy 0 also drives the control. The flit mux then has FLIT_W / RPC loads per
-// select flop instead of FLIT_W (cycle-identical to RPC 1, the same value the pair receiver takes). 1 = the FORM 0
-// queue and the single select flop.
+// RPC > 1: the queue is a FORM 1 slice with RPC pointer copies, and the flit select `high_q` has RPC kept copies
+// (copy 0 also drives the control). The payload is permuted into the queue so that slice j of the queue, the part
+// that pointer copy j serves, holds both halves of slice j of the flit: the low flit's slice j and the high flit's
+// slice j. One pointer copy and one select copy then steer a flit bit (a flit bit is a function of the four slot bits
+// of its two positions, the pointer copy and the select copy), and each select flop has FLIT_W / RPC loads instead of
+// FLIT_W. The permutation pads with zeros and changes no bit or cycle at the ports (cycle-identical to RPC 1, the same
+// value the pair receiver takes). 1 = the FORM 0 queue of W bits, the padded payload and the single select flop.
 module tsr_mvm_pair_tx #(
   parameter int unsigned W = 562,
   parameter int unsigned RPC = 1,
@@ -307,34 +310,54 @@ module tsr_mvm_pair_tx #(
   input logic m_ready,
   output logic [FLIT_W-1:0] m_data
 );
+  localparam int unsigned CWD = (FLIT_W + RPC - 1) / RPC;         // the width of a flit slice
+  localparam int unsigned QW  = (RPC > 1) ? 2 * RPC * CWD : W;    // the queue: RPC slices of two flit slices
   logic q_valid, q_ready, high_q;
-  logic [W-1:0] q_data;
-  wire [2*FLIT_W-1:0] padded = {{(2*FLIT_W-W){1'b0}}, q_data};
-  tsr_rslice #(.W(W), .FORM(RPC > 1 ? 1 : 0), .RPC(RPC)) u_queue (
-    .clk, .rst_n, .s_valid, .s_ready, .s_data,
+  logic [QW-1:0] q_in, q_data;
+  tsr_rslice #(.W(QW), .FORM(RPC > 1 ? 1 : 0), .RPC(RPC)) u_queue (
+    .clk, .rst_n, .s_valid, .s_ready, .s_data(q_in),
     .m_valid(q_valid), .m_ready(q_ready), .m_data(q_data)
   );
   assign m_valid = q_valid;
   assign q_ready = m_ready & high_q;
   if (RPC <= 1) begin : g_one
+    wire [2*FLIT_W-1:0] padded = {{(2*FLIT_W-W){1'b0}}, q_data};
+    assign q_in   = s_data;
     assign m_data = high_q ? padded[FLIT_W +: FLIT_W] : padded[0 +: FLIT_W];
     always_ff @(posedge clk) begin
       if (!rst_n) high_q <= 1'b0;
       else if (m_valid && m_ready) high_q <= ~high_q;
     end
   end else begin : g_cp
-    localparam int unsigned CWD = (FLIT_W + RPC - 1) / RPC;
     (* keep = "true" *) logic [RPC-1:0] hc_q;      // copies of high_q, one per slice of the flit
     always_ff @(posedge clk) begin
       if (!rst_n) hc_q <= '0;
       else if (m_valid && m_ready) hc_q <= ~hc_q;
     end
     assign high_q = hc_q[0];
+    // Queue slice j: bits [CWD-1:0] the low flit's slice j, bits [2*CWD-1:CWD] the high flit's slice j; positions
+    // past the end of the flit or of the payload are 0.
     for (genvar j = 0; j < RPC; j++) begin : g_c
+      for (genvar i = 0; i < CWD; i++) begin : g_b
+        localparam int unsigned LOW  = j * CWD + i;
+        localparam int unsigned HIGH = FLIT_W + j * CWD + i;
+        if (LOW < FLIT_W) begin : g_lo
+          assign q_in[2*CWD*j + i] = s_data[LOW];
+        end else begin : g_lo0
+          assign q_in[2*CWD*j + i] = 1'b0;
+          wire unused_pad = &{1'b0, q_data[2*CWD*j + i]};     // padding: nothing reads it
+        end
+        if (HIGH < W) begin : g_hi
+          assign q_in[2*CWD*j + CWD + i] = s_data[HIGH];
+        end else begin : g_hi0
+          assign q_in[2*CWD*j + CWD + i] = 1'b0;
+          wire unused_pad = &{1'b0, q_data[2*CWD*j + CWD + i]};
+        end
+      end
       localparam int unsigned LO = j * CWD;
       localparam int unsigned HI = (LO + CWD > FLIT_W) ? FLIT_W - 1 : LO + CWD - 1;
       if (LO <= HI) begin : g_w
-        assign m_data[HI:LO] = hc_q[j] ? padded[FLIT_W+LO +: HI-LO+1] : padded[LO +: HI-LO+1];
+        assign m_data[HI:LO] = hc_q[j] ? q_data[2*CWD*j + CWD +: HI-LO+1] : q_data[2*CWD*j +: HI-LO+1];
       end
     end
 `ifndef SYNTHESIS
