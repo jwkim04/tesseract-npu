@@ -3,14 +3,15 @@
 // DMA"): merges the DMA's write port of that channel and the trace writer's into the one write
 // source of the channel's tsr_mem_arb, per burst.
 //
-// tsr_core_dp places it between u_dma's channel-TRW_CH write port and
-// u_arb's s_wr_* port of that channel (tsr_mem_arb itself stays unchanged).
+// tsr_core_dp places it between the DMA's write streams of channel TRW_CH (u_dma's write port, behind the
+// locality-pipe slices u_wq / u_wd / u_ws where DDR_LOCAL_PIPE has them) and u_arb's s_wr_* port of that channel
+// (tsr_mem_arb itself stays unchanged).
 //
 // Protocol (docs/rtl-core.md §4): request {addr, len, id}, data {data, word mask, last} and response {id}
 // are independent valid / ready streams; the data beats of the bursts follow the request order
 // without interleaving. A source may offer data before its request is taken (the DMA does).
 // DMA mode (default): every DMA stream passes straight through, so with the trace writer idle
-//   the DMA sees exactly the arbiter's handshakes (no cycle added: HAS_TRW 0 and 1 give the same
+//   the DMA-side streams see exactly the arbiter's handshakes (no cycle added: HAS_TRW 0 and 1 give the same
 //   cycles, DB §10.3). When the trace writer requests a burst, the DMA's next request is held
 //   (req_ready 0) unless its data already passed, and so is any DMA data beat that does not
 //   belong to an accepted request; once

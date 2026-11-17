@@ -677,8 +677,9 @@ module tsr_core_dp
   logic [NUM_CH-1:0]                   d_wr_rsp_valid, d_wr_rsp_ready;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] d_wr_rsp_id;
 
-  // Write source ports of the arbiters [channel]: the DMA's, except channel TSR_TRW_CH, which has the
-  // trace writer's per-burst mux in front of it (tsr_dbg_wrmux, DB §8.3; a wire-through while idle).
+  // The DMA's write streams [channel] after the optional locality-pipe slices (g_dma_pipe): the DMA's own ports
+  // where there is no pipe. Channel TSR_TRW_CH has the trace writer's per-burst mux behind them (tsr_dbg_wrmux, DB §8.3;
+  // a wire-through while idle).
   logic [NUM_CH-1:0]                   a_wr_req_valid, a_wr_req_ready;
   logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  a_wr_req_addr;
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    a_wr_req_len;
@@ -689,7 +690,8 @@ module tsr_core_dp
   logic [NUM_CH-1:0]                   a_wr_rsp_valid, a_wr_rsp_ready;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] a_wr_rsp_id;
 
-  // Arbiter-facing writes after the optional central DDR boundary slices.
+  // Arbiter-facing writes [channel]: the write source ports of the arbiters, after the trace writer's mux on channel
+  // TSR_TRW_CH.
   logic [NUM_CH-1:0]                   b_wr_req_valid, b_wr_req_ready;
   logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  b_wr_req_addr;
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    b_wr_req_len;
@@ -1256,9 +1258,11 @@ module tsr_core_dp
     assign s_rd_req_len[c][TSR_SRC_AUX]   = '0;
     assign s_rd_req_id[c][TSR_SRC_AUX]    = '0;
     assign s_rd_rsp_ready[c][TSR_SRC_AUX] = 1'b1;
-    // DDR0/3 arbiters move beside their controllers. These kept slices stay in SLR1,
-    // so DMA, KVST and trace cross to the local arbiter's registered endpoints. The
-    // 512-bit weight response remains entirely local; only DMA responses return here.
+    // DDR0/3 arbiters move beside their controllers. Each kept slice here is a register stage with its own hierarchy:
+    // u_rq the DMA's read requests, u_rsp the read response (one register, the DMA takes every beat), u_wq and u_wd the
+    // write request and write data streams of the DMA and KVST, u_ws the write response going back. The weight
+    // response remains entirely local; only DMA responses return here. On channel TSR_TRW_CH the trace writer's mux
+    // (g_trwmux) follows u_wq and u_wd, so the trace streams join on the arbiter's side of these slices.
     if (DDR_LOCAL_PIPE && (c == 0 || c == 3)) begin : g_dma_pipe
       localparam int unsigned RQ_W = ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W;
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_rq (
@@ -1283,22 +1287,22 @@ module tsr_core_dp
       assign s_rd_rsp_ready[c][TSR_SRC_DMA] = 1'b1;
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_wq (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
-        .s_valid(a_wr_req_valid[c]), .s_ready(a_wr_req_ready[c]),
-        .s_data({a_wr_req_addr[c], a_wr_req_len[c], a_wr_req_id[c]}),
-        .m_valid(b_wr_req_valid[c]), .m_ready(b_wr_req_ready[c]),
-        .m_data({b_wr_req_addr[c], b_wr_req_len[c], b_wr_req_id[c]})
+        .s_valid(d_wr_req_valid[c]), .s_ready(d_wr_req_ready[c]),
+        .s_data({d_wr_req_addr[c], d_wr_req_len[c], d_wr_req_id[c]}),
+        .m_valid(a_wr_req_valid[c]), .m_ready(a_wr_req_ready[c]),
+        .m_data({a_wr_req_addr[c], a_wr_req_len[c], a_wr_req_id[c]})
       );
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + BEAT_BITS/32 + 1), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_wd (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
-        .s_valid(a_wr_dat_valid[c]), .s_ready(a_wr_dat_ready[c]),
-        .s_data({a_wr_dat_data[c], a_wr_dat_mask[c], a_wr_dat_last[c]}),
-        .m_valid(b_wr_dat_valid[c]), .m_ready(b_wr_dat_ready[c]),
-        .m_data({b_wr_dat_data[c], b_wr_dat_mask[c], b_wr_dat_last[c]})
+        .s_valid(d_wr_dat_valid[c]), .s_ready(d_wr_dat_ready[c]),
+        .s_data({d_wr_dat_data[c], d_wr_dat_mask[c], d_wr_dat_last[c]}),
+        .m_valid(a_wr_dat_valid[c]), .m_ready(a_wr_dat_ready[c]),
+        .m_data({a_wr_dat_data[c], a_wr_dat_mask[c], a_wr_dat_last[c]})
       );
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(TSR_SRC_ID_W)) u_ws (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
-        .s_valid(b_wr_rsp_valid[c]), .s_ready(b_wr_rsp_ready[c]), .s_data(b_wr_rsp_id[c]),
-        .m_valid(a_wr_rsp_valid[c]), .m_ready(a_wr_rsp_ready[c]), .m_data(a_wr_rsp_id[c])
+        .s_valid(a_wr_rsp_valid[c]), .s_ready(a_wr_rsp_ready[c]), .s_data(a_wr_rsp_id[c]),
+        .m_valid(d_wr_rsp_valid[c]), .m_ready(d_wr_rsp_ready[c]), .m_data(d_wr_rsp_id[c])
       );
     end else begin : g_dma_direct
       assign s_rd_req_valid[c][TSR_SRC_DMA] = d_rd_req_valid[c];
@@ -1311,19 +1315,19 @@ module tsr_core_dp
       assign d_rd_rsp_data[c]               = s_rd_rsp_data[c];
       assign d_rd_rsp_last[c]               = s_rd_rsp_last[c];
       assign d_rd_rsp_id[c]                 = s_rd_rsp_id[c];
-      assign b_wr_req_valid[c] = a_wr_req_valid[c];
-      assign a_wr_req_ready[c] = b_wr_req_ready[c];
-      assign b_wr_req_addr[c]  = a_wr_req_addr[c];
-      assign b_wr_req_len[c]   = a_wr_req_len[c];
-      assign b_wr_req_id[c]    = a_wr_req_id[c];
-      assign b_wr_dat_valid[c] = a_wr_dat_valid[c];
-      assign a_wr_dat_ready[c] = b_wr_dat_ready[c];
-      assign b_wr_dat_data[c]  = a_wr_dat_data[c];
-      assign b_wr_dat_mask[c]  = a_wr_dat_mask[c];
-      assign b_wr_dat_last[c]  = a_wr_dat_last[c];
-      assign a_wr_rsp_valid[c] = b_wr_rsp_valid[c];
-      assign b_wr_rsp_ready[c] = a_wr_rsp_ready[c];
-      assign a_wr_rsp_id[c]    = b_wr_rsp_id[c];
+      assign a_wr_req_valid[c] = d_wr_req_valid[c];
+      assign d_wr_req_ready[c] = a_wr_req_ready[c];
+      assign a_wr_req_addr[c]  = d_wr_req_addr[c];
+      assign a_wr_req_len[c]   = d_wr_req_len[c];
+      assign a_wr_req_id[c]    = d_wr_req_id[c];
+      assign a_wr_dat_valid[c] = d_wr_dat_valid[c];
+      assign d_wr_dat_ready[c] = a_wr_dat_ready[c];
+      assign a_wr_dat_data[c]  = d_wr_dat_data[c];
+      assign a_wr_dat_mask[c]  = d_wr_dat_mask[c];
+      assign a_wr_dat_last[c]  = d_wr_dat_last[c];
+      assign d_wr_rsp_valid[c] = a_wr_rsp_valid[c];
+      assign a_wr_rsp_ready[c] = d_wr_rsp_ready[c];
+      assign d_wr_rsp_id[c]    = a_wr_rsp_id[c];
     end
     // Source WS (weight stream of cluster c; tied off when HAS_MVM = 0).
     assign s_rd_req_valid[c][TSR_SRC_WS]  = w_rd_req_valid[c];
@@ -1334,13 +1338,15 @@ module tsr_core_dp
     assign w_rd_req_ready[c]              = s_rd_req_ready[c][TSR_SRC_WS];
     assign w_rd_rsp_valid[c]              = s_rd_rsp_valid[c][TSR_SRC_WS];
 
-    // Write source: the DMA's port, on channel TSR_TRW_CH through the trace writer's mux (DB §8.3).
+    // Write source of the arbiter: the DMA's streams (behind the locality pipe where there is one), on channel
+    // TSR_TRW_CH through the trace writer's mux (DB §8.3).
     if (HAS_DB && HAS_TRW && c == tsr_tables_pkg::TSR_TRW_CH) begin : g_trwmux
-      // The trace writer (tsr_dbg, with the control plane) and the write mux (beside the DMA and the channel's arbiter) sit in
-      // different SLRs when the control plane is relocated. XSLR_REG: the writer's request and data streams pass a tsr_rslice
-      // each and the burst response two flops, so every crossing ends in registers (without them the mux's combinational
-      // valid / ready terms joined the DMA's KVST write logic across the boundary: OOC placement, -2.4 ns at
-      // 3.333 ns). The writer only waits longer; the DMA waits at most one trace burst (tsr_dbg_wrmux), as before.
+      // The write mux sits beside the channel's arbiter, behind the DMA's locality-pipe slices u_wq / u_wd (g_dma_pipe),
+      // and joins the trace writer's streams there. The trace writer (tsr_dbg, with the control plane) can be in another SLR
+      // than the mux. XSLR_REG: the writer's request and data streams pass a tsr_rslice each and the burst response two
+      // flops, so every crossing of the writer's streams ends in registers (without them the mux's combinational
+      // valid / ready terms join the writer to the DMA's KVST write logic across the boundary). The writer only waits
+      // longer; the DMA waits at most one trace burst (tsr_dbg_wrmux).
       logic                   w_req_valid, w_req_ready, w_dat_valid, w_dat_ready, w_dat_last, w_rsp_valid;
       logic [ADDR_BEAT_W-1:0] w_req_addr;
       logic [TSR_LEN_W-1:0]   w_req_len;
@@ -1375,34 +1381,34 @@ module tsr_core_dp
       end
       tsr_dbg_wrmux #(.ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS)) u_wrmux (
         .clk, .rst_n(rst_b_n[RB_DBG]),
-        .d_wr_req_valid(d_wr_req_valid[c]), .d_wr_req_ready(d_wr_req_ready[c]),
-        .d_wr_req_addr(d_wr_req_addr[c]), .d_wr_req_len(d_wr_req_len[c]), .d_wr_req_id(d_wr_req_id[c]),
-        .d_wr_dat_valid(d_wr_dat_valid[c]), .d_wr_dat_ready(d_wr_dat_ready[c]),
-        .d_wr_dat_data(d_wr_dat_data[c]), .d_wr_dat_mask(d_wr_dat_mask[c]), .d_wr_dat_last(d_wr_dat_last[c]),
-        .d_wr_rsp_valid(d_wr_rsp_valid[c]), .d_wr_rsp_ready(d_wr_rsp_ready[c]), .d_wr_rsp_id(d_wr_rsp_id[c]),
+        .d_wr_req_valid(a_wr_req_valid[c]), .d_wr_req_ready(a_wr_req_ready[c]),
+        .d_wr_req_addr(a_wr_req_addr[c]), .d_wr_req_len(a_wr_req_len[c]), .d_wr_req_id(a_wr_req_id[c]),
+        .d_wr_dat_valid(a_wr_dat_valid[c]), .d_wr_dat_ready(a_wr_dat_ready[c]),
+        .d_wr_dat_data(a_wr_dat_data[c]), .d_wr_dat_mask(a_wr_dat_mask[c]), .d_wr_dat_last(a_wr_dat_last[c]),
+        .d_wr_rsp_valid(a_wr_rsp_valid[c]), .d_wr_rsp_ready(a_wr_rsp_ready[c]), .d_wr_rsp_id(a_wr_rsp_id[c]),
         .t_wr_req_valid(w_req_valid), .t_wr_req_ready(w_req_ready), .t_wr_req_addr(w_req_addr),
         .t_wr_req_len(w_req_len), .t_wr_dat_valid(w_dat_valid), .t_wr_dat_ready(w_dat_ready),
         .t_wr_dat_data(w_dat_data), .t_wr_dat_last(w_dat_last), .t_wr_rsp_valid(w_rsp_valid),
-        .s_wr_req_valid(a_wr_req_valid[c]), .s_wr_req_ready(a_wr_req_ready[c]),
-        .s_wr_req_addr(a_wr_req_addr[c]), .s_wr_req_len(a_wr_req_len[c]), .s_wr_req_id(a_wr_req_id[c]),
-        .s_wr_dat_valid(a_wr_dat_valid[c]), .s_wr_dat_ready(a_wr_dat_ready[c]),
-        .s_wr_dat_data(a_wr_dat_data[c]), .s_wr_dat_mask(a_wr_dat_mask[c]), .s_wr_dat_last(a_wr_dat_last[c]),
-        .s_wr_rsp_valid(a_wr_rsp_valid[c]), .s_wr_rsp_ready(a_wr_rsp_ready[c]), .s_wr_rsp_id(a_wr_rsp_id[c])
+        .s_wr_req_valid(b_wr_req_valid[c]), .s_wr_req_ready(b_wr_req_ready[c]),
+        .s_wr_req_addr(b_wr_req_addr[c]), .s_wr_req_len(b_wr_req_len[c]), .s_wr_req_id(b_wr_req_id[c]),
+        .s_wr_dat_valid(b_wr_dat_valid[c]), .s_wr_dat_ready(b_wr_dat_ready[c]),
+        .s_wr_dat_data(b_wr_dat_data[c]), .s_wr_dat_mask(b_wr_dat_mask[c]), .s_wr_dat_last(b_wr_dat_last[c]),
+        .s_wr_rsp_valid(b_wr_rsp_valid[c]), .s_wr_rsp_ready(b_wr_rsp_ready[c]), .s_wr_rsp_id(b_wr_rsp_id[c])
       );
     end else begin : g_wrdirect
-      assign a_wr_req_valid[c] = d_wr_req_valid[c];
-      assign d_wr_req_ready[c] = a_wr_req_ready[c];
-      assign a_wr_req_addr[c]  = d_wr_req_addr[c];
-      assign a_wr_req_len[c]   = d_wr_req_len[c];
-      assign a_wr_req_id[c]    = d_wr_req_id[c];
-      assign a_wr_dat_valid[c] = d_wr_dat_valid[c];
-      assign d_wr_dat_ready[c] = a_wr_dat_ready[c];
-      assign a_wr_dat_data[c]  = d_wr_dat_data[c];
-      assign a_wr_dat_mask[c]  = d_wr_dat_mask[c];
-      assign a_wr_dat_last[c]  = d_wr_dat_last[c];
-      assign d_wr_rsp_valid[c] = a_wr_rsp_valid[c];
-      assign a_wr_rsp_ready[c] = d_wr_rsp_ready[c];
-      assign d_wr_rsp_id[c]    = a_wr_rsp_id[c];
+      assign b_wr_req_valid[c] = a_wr_req_valid[c];
+      assign a_wr_req_ready[c] = b_wr_req_ready[c];
+      assign b_wr_req_addr[c]  = a_wr_req_addr[c];
+      assign b_wr_req_len[c]   = a_wr_req_len[c];
+      assign b_wr_req_id[c]    = a_wr_req_id[c];
+      assign b_wr_dat_valid[c] = a_wr_dat_valid[c];
+      assign a_wr_dat_ready[c] = b_wr_dat_ready[c];
+      assign b_wr_dat_data[c]  = a_wr_dat_data[c];
+      assign b_wr_dat_mask[c]  = a_wr_dat_mask[c];
+      assign b_wr_dat_last[c]  = a_wr_dat_last[c];
+      assign a_wr_rsp_valid[c] = b_wr_rsp_valid[c];
+      assign b_wr_rsp_ready[c] = a_wr_rsp_ready[c];
+      assign a_wr_rsp_id[c]    = b_wr_rsp_id[c];
     end
 
     tsr_mem_arb #(
