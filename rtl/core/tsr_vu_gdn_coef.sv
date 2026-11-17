@@ -40,6 +40,7 @@ module tsr_vu_gdn_coef #(
   input  logic [31:0]         alpha,
   input  logic [31:0]         beta,
   output logic                busy,
+  output logic                busy_n,                          // busy of the next cycle
   // vector stream
   input  logic                vec_valid,
   input  logic [31:0]         vec_data,
@@ -140,6 +141,11 @@ module tsr_vu_gdn_coef #(
     end
   end
   assign busy = (st_q != S_IDLE);
+  // Only S_IDLE leaves for another state on `start`; every other state but S_FIN stays busy, S_FIN returns.
+  always_comb begin
+    if (st_q == S_IDLE) busy_n = start;
+    else                busy_n = (st_q inside {S_AB, S_ABW, S_PK, S_PKD, S_PQ, S_PV, S_PVD, S_TK, S_TQ});
+  end
 
   always_ff @(posedge clk) begin
     if (st_q == S_IDLE && start) begin

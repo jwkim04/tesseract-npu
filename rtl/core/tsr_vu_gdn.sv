@@ -125,7 +125,7 @@ module tsr_vu_gdn
   logic [LA-1:0] bk_obase [2];
   logic [1:0]  bk_tag;
 
-  logic        coef_busy, coef_done, coef_bank_q, coef_badk, coef_badq;
+  logic        coef_busy, coef_busy_n, coef_done, coef_bank_q, coef_badk, coef_badq;
   logic [7:0]  coef_ek, coef_eq;
   logic        cfg_fire;
   logic        hq_full, hq_empty;
@@ -134,7 +134,6 @@ module tsr_vu_gdn
   logic [RW-1:0] cfg_rows;
   assign cfg_m    = MW'(g_slot.bline);
   assign cfg_rows = RW'(g_slot.r_row);
-  assign cfg_ok   = ~coef_busy & ~bk_busy[cfg_bank_q] & ~hq_full;
   assign cfg_fire = sl_cfg;
 
   // head queue for the ingest: {bank, nb, rows + 1}, two entries
@@ -175,7 +174,7 @@ module tsr_vu_gdn
   tsr_vu_gdn_coef #(.LANES(LANES), .NB_MAX(NB_MAX), .R_MAX(R_MAX), .RD_LAT(RD_LAT), .FM_LAT(FM_LAT), .STYLE(STYLE)) u_coef (
     .clk, .rst_n,
     .start(cfg_fire), .bank(cfg_bank_q), .m(cfg_m), .rows(cfg_rows), .alpha(g_alpha), .beta(g_beta),
-    .busy(coef_busy),
+    .busy(coef_busy), .busy_n(coef_busy_n),
     .vec_valid, .vec_data(vl_q[31:0]), .vec_ready,
     .kf_we(kf_we), .kf_lane(kf_lane), .kf_waddr(kf_waddr), .kf_wdata(kf_wdata),
     .tr_we(tr_we), .tr_lane(tr_lane), .tr_waddr(tr_waddr), .tr_wdata(tr_wdata),
@@ -196,6 +195,13 @@ module tsr_vu_gdn
   logic head_done_v;
   logic head_done_bank;
 
+  // the busy flags of the next cycle (a head done wins over a head command on the same bank)
+  logic [1:0] bk_busy_n;
+  always_comb begin
+    bk_busy_n = bk_busy;
+    if (cfg_fire) bk_busy_n[cfg_bank_q] = 1'b1;
+    if (head_done_v) bk_busy_n[head_done_bank] = 1'b0;
+  end
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       bk_busy  <= 2'b00;
@@ -203,16 +209,13 @@ module tsr_vu_gdn
       bk_badk  <= 2'b00;
       bk_badq  <= 2'b00;
     end else begin
-      if (cfg_fire) begin
-        bk_busy[cfg_bank_q] <= 1'b1;
-      end
+      bk_busy <= bk_busy_n;
       if (coef_done) begin
         bk_ready[coef_bank_q] <= 1'b1;
         bk_badk[coef_bank_q]  <= coef_badk;
         bk_badq[coef_bank_q]  <= coef_badq;
       end
       if (head_done_v) begin
-        bk_busy[head_done_bank]  <= 1'b0;
         bk_ready[head_done_bank] <= 1'b0;
       end
     end
@@ -231,6 +234,8 @@ module tsr_vu_gdn
   end
 
   // head queue
+  logic [1:0] hq_cnt_n;
+  assign hq_cnt_n = hq_cnt + {1'b0, cfg_fire} - {1'b0, ing_take_head};
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       hq_wp <= 1'b0;
@@ -239,9 +244,23 @@ module tsr_vu_gdn
     end else begin
       if (cfg_fire) hq_wp <= ~hq_wp;
       if (ing_take_head) hq_rp <= ~hq_rp;
-      hq_cnt <= hq_cnt + {1'b0, cfg_fire} - {1'b0, ing_take_head};
+      hq_cnt <= hq_cnt_n;
     end
   end
+
+  // cfg_ok is a register: the injector's decision takes it, through fire, to the clock enables of the whole
+  // slot path. It holds ~coef_busy & ~bk_busy[cfg_bank_q] & ~hq_full of the present cycle, computed from the
+  // next values of the setup state, the bank flags, the bank pointer and the head queue count. After reset
+  // all of them are idle and empty, so it is 1.
+  logic cfg_ok_q;
+  logic cfg_bank_n;
+  assign cfg_bank_n = cfg_bank_q ^ cfg_fire;
+  always_ff @(posedge clk) begin
+    if (!rst_n) cfg_ok_q <= 1'b1;
+    else        cfg_ok_q <= ~coef_busy_n & ~bk_busy_n[cfg_bank_n] & (hq_cnt_n != 2'd2);
+  end
+  assign cfg_ok = cfg_ok_q;
+
   always_ff @(posedge clk) begin
     if (cfg_fire) begin
       hq_bank[hq_wp] <= cfg_bank_q;
@@ -853,6 +872,7 @@ module tsr_vu_gdn
   always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
   always_ff @(posedge clk) begin
     if (rst_n && chk_on_q) begin
+      assert (cfg_ok == (~coef_busy & ~bk_busy[cfg_bank_q] & ~hq_full)) else $error("tsr_vu_gdn: cfg_ok differs from its definition");
       assert (!(cfg_fire && !cfg_ok)) else $error("tsr_vu_gdn: a head command without cfg_ok");
       assert (!(sl_vec && !vec_ok)) else $error("tsr_vu_gdn: a vector line without vec_ok");
       assert (!(take_in && !ing_act)) else $error("tsr_vu_gdn: a row beat without a head");
