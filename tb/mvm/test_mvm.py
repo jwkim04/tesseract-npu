@@ -273,6 +273,13 @@ def test_mvm_bc_u200():
          only=["mvm_directed", "mvm_bc_flush", "mvm_perf"], suffix="_bc2_rst2")
 
 
+def test_mvm_bc_heads():
+    """Four channels with BC_PIPE 2 and two copies of the central broadcast stage (BC_HEADS 2): the same checks and the
+    same cluster ports as test_mvm_bc_u200, so the same reference."""
+    _run("c4", real=True, att=True, overrides=dict(BC_PIPE=2, BC_HEADS=2, RST_LOCAL=2),
+         only=["mvm_directed", "mvm_bc_flush", "mvm_perf"], suffix="_bc2_heads2")
+
+
 def test_mvm_u200_t4():
     """Four-cluster T4 arithmetic and overlapping commands against the C oracle."""
     _run("c4", real=True, att=True,

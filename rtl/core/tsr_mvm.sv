@@ -25,9 +25,9 @@
 //   - perf_mvm_busy: registered, 1 in every cycle from the cycle after the accepting edge up to
 //     and including the cycle of done (cycles the unit holds an instruction; PERF_MVM_CYCLES).
 // Implementation parameters (results identical for every value): WS_FIFO_BEATS (per-cluster
-// weight FIFO), BC_PIPE (total broadcast delay, tsr_vpipe), RES_PIPE (result pipe
-// stages per cluster, tsr_rpipe), ACT_RD_LAT, MAC_LAT, MUL_LAT, ADD_LAT, WS_RD_LAT
-// (docs/rtl-mvm.md §1).
+// weight FIFO), BC_PIPE (total broadcast delay, tsr_vpipe), BC_HEADS (copies of the central
+// broadcast stage), RES_PIPE (result pipe stages per cluster, tsr_rpipe), ACT_RD_LAT, MAC_LAT,
+// MUL_LAT, ADD_LAT, WS_RD_LAT (docs/rtl-mvm.md §1).
 //
 // Interface addition (additive): parameter WS_RD_LAT (weight FIFO RAM read latency,
 //   docs/rtl-mvm.md §1, default TSR_DEF_WS_RD_LAT), passed to every cluster's front end.
@@ -42,9 +42,9 @@
 //
 //   cmd ─► c_q ─► su (1 cycle) ─► bc_cmd ──────────────┐   one source register bc_d_q (527 b):
 //                 │                                      ├─► holds the ccmd (low 137 bits) or a
-//                 └─► broadcast reader: SPM reads x_line │   line. With BC_PIPE >= 2, one central
-//                     .. + T*qa_lines - 1, one per cycle │   stage feeds separate local tails of
-//                     response -> {last, tok, dbs, addr, ┘   BC_PIPE-1 stages. The three valids
+//                 └─► broadcast reader: SPM reads x_line │   line. With BC_PIPE >= 2, BC_HEADS central
+//                     .. + T*qa_lines - 1, one per cycle │   stages (copies of one stage) feed separate
+//                     response -> {last, tok, dbs, addr, ┘   local tails of BC_PIPE-1 stages. The three valids
 //                     data} (counters on the response side)   {acmd, cmd, line} are exclusive.
 //                 └─► expect_ch: c * R < N, one channel per cycle (NUM_CH cycles), then the
 //                     gather's start pulse (results cannot come earlier; if they did they would
@@ -122,6 +122,9 @@ module tsr_mvm
   parameter  int unsigned BEAT_BITS     = TSR_DEF_BEAT_BITS,
   parameter  int unsigned WS_FIFO_BEATS = TSR_DEF_WS_FIFO_BEATS,
   parameter  int unsigned BC_PIPE       = TSR_DEF_MVM_BC_PIPE,
+  // BC_PIPE >= 2: copies of the central broadcast stage; cluster c takes copy c % BC_HEADS (each copy then feeds the
+  // clusters of one SLR side; cycle-identical for every value). 1 = one stage for all clusters.
+  parameter  int unsigned BC_HEADS      = 1,
   parameter  bit          GATHER_PAIR   = 1'b0,
   parameter  int unsigned GATHER_FLITS  = 1,
   parameter  bit          DUAL          = 1'b0,   // dual weight stream (header): T_MAX even and >= 2, ADDR_BEAT_W <= 32
@@ -640,16 +643,27 @@ module tsr_mvm
   // Share only the source-side stage. Each destination keeps its own registers so
   // synthesis cannot turn a local cluster's activation/decode registers into a
   // driver for clusters in another SLR (docs/rtl-mvm.md §14.4). The tail is local
-  // to its cluster; a common source net can cross once into each destination SLR.
+  // to its cluster. The source-side stage has BC_HEADS kept copies (u_bc_head, then
+  // g_bch[h].u_bc_head), cluster c reads copy c % BC_HEADS: with two copies and the
+  // clusters of the two outer SLRs alternating, a copy's net crosses into one SLR side only.
   // rt_q and every rc_q have the same INIT and shift recurrence, so this stage's
   // reset is cycle-identical to the original per-cluster stage, including flush.
+  if (BC_HEADS < 1 || (BC_HEADS > 1 && (BC_PIPE < 2 || NUM_CH % BC_HEADS != 0))) begin : g_chk_bch
+    $fatal(1, "tsr_mvm: BC_HEADS must be 1, or BC_PIPE >= 2 and NUM_CH a multiple of BC_HEADS");
+  end
   localparam int unsigned BC_HEAD = (BC_PIPE >= 2) ? 1 : 0;
-  logic [2:0]     bc_head_v;
-  logic [BCW-1:0] bc_head_d;
+  logic [BC_HEADS-1:0][2:0]     bc_head_v;
+  logic [BC_HEADS-1:0][BCW-1:0] bc_head_d;
   tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_HEAD), .KEEP_REGS(1'b1)) u_bc_head (
     .clk, .rst_n(rst_t_n), .in_valid(bc_v_q), .in_data(bc_d_q),
-    .out_valid(bc_head_v), .out_data(bc_head_d)
+    .out_valid(bc_head_v[0]), .out_data(bc_head_d[0])
   );
+  for (genvar h = 1; h < BC_HEADS; h++) begin : g_bch
+    tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_HEAD), .KEEP_REGS(1'b1)) u_bc_head (
+      .clk, .rst_n(rst_t_n), .in_valid(bc_v_q), .in_data(bc_d_q),
+      .out_valid(bc_head_v[h]), .out_data(bc_head_d[h])
+    );
+  end
 
   for (genvar c = 0; c < NUM_CH; c++) begin : g_cl
     logic [2:0]          pv;
@@ -675,7 +689,7 @@ module tsr_mvm
     logic [AJW-1:0]      ca_j;
 
     tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_PIPE-BC_HEAD), .KEEP_REGS(1'b1)) u_bcp (
-      .clk, .rst_n(rst_c_n[c]), .in_valid(bc_head_v), .in_data(bc_head_d), .out_valid(pv), .out_data(pd)
+      .clk, .rst_n(rst_c_n[c]), .in_valid(bc_head_v[c%BC_HEADS]), .in_data(bc_head_d[c%BC_HEADS]), .out_valid(pv), .out_data(pd)
     );
     assign p_cmd  = pd[CCW-1:0];
     assign p_acmd = pd[ACW-1:0];
@@ -869,6 +883,10 @@ module tsr_mvm
       assert (!(g_rd_v && bc_ph_q)) else $error("%m: gather read request during the broadcast");
       assert (!(rq_v_q && !bc_ph_q)) else $error("%m: broadcast read outside the broadcast phase");
       assert ($onehot0(bc_v_q)) else $error("%m: bc_cmd / bc_acmd / bc_line in one cycle");
+      for (int unsigned h = 1; h < BC_HEADS; h++) begin
+        assert (bc_head_v[h] == bc_head_v[0]) else $error("%m: broadcast head copy %0d: valid %b != copy 0 %b", h, bc_head_v[h], bc_head_v[0]);
+        if (|bc_head_v[0]) assert (bc_head_d[h] == bc_head_d[0]) else $error("%m: broadcast head copy %0d: data differs from copy 0", h);
+      end
       if (st_q == S_IDLE) begin
         assert (!spm_rd_req_valid && !spm_wr_valid && ws_rd_req_valid == '0 && wsb_rd_req_valid == '0)
           else $error("%m: SPM / weight traffic while idle");

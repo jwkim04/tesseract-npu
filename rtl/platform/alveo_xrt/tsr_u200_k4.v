@@ -548,6 +548,7 @@ module tsr_u200_k4 (
     .HAS_GDN(1),
     .MVM_GATHER_PAIR(1),
     .MVM_GATHER_FLITS(2),
+    .MVM_BC_HEADS(2),
     .DDR_LOCAL_PIPE(1),
     .RV_LOCAL_TRANSPORT(1),
     .XSLR_REG(1),

@@ -25,6 +25,7 @@ module tsr_tb_mvm
   parameter  int unsigned ADDR_BEAT_W    = 28,
   parameter  int unsigned WS_FIFO_BEATS  = 512,
   parameter  int unsigned BC_PIPE        = 1,
+  parameter  int unsigned BC_HEADS       = 1,
   parameter  int unsigned RES_PIPE       = 1,
   parameter  int unsigned ACT_RD_LAT     = 2,
   parameter  int unsigned MAC_LAT        = 3,
@@ -148,7 +149,7 @@ module tsr_tb_mvm
 
   tsr_mvm #(
     .HAS_ATT(HAS_ATT), .DUAL(DUAL), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
-    .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE),
+    .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE), .BC_HEADS(BC_HEADS),
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_LOCAL(RST_LOCAL)
   ) u_mvm (

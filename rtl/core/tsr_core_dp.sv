@@ -65,6 +65,7 @@ module tsr_core_dp
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
+  parameter int unsigned     MVM_BC_HEADS   = 1,
   parameter bit              DDR_LOCAL_PIPE = 1'b0,
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
   // XSLR_REG: register stages on the links between the relocated control plane and the blocks two SLRs away from it
@@ -900,7 +901,7 @@ module tsr_core_dp
       .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .XC_CMD_W(XC_CMD_W),
       .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
-      .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
+      .BC_PIPE(MVM_BC_PIPE), .BC_HEADS(MVM_BC_HEADS), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
       .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
       .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK), .DUAL(MVM_DUAL)
     ) u_mvm (

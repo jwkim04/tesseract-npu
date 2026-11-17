@@ -30,6 +30,7 @@ module tsr_core
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
+  parameter int unsigned     MVM_BC_HEADS   = 1,
   parameter bit              DDR_LOCAL_PIPE = 1'b0,
   parameter bit              LOCAL_SOFTCAP  = 1'b0,
   parameter bit              LOCAL_SCALE    = 1'b0,

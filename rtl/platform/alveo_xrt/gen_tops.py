@@ -53,7 +53,7 @@ KERNELS = {
     # front / EXP / back lanes 8 / 8 / 4 behind two lane-pipe stages (VU_LANE_PIPE 2), attention (HAS_ATT: ATTQK /
     # ATTPV in the clusters and the gather, KVST with masked metadata writes on the DMA), the DB block with trace
     # writer and dispatch history (HAS_TRW 1, HIST_DEPTH at the table default), paired two-flit gather
-    # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
+    # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), two copies of the central broadcast stage (MVM_BC_HEADS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
     # control core in SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1: the registered unit done
     # strobes, the DB memory taps and the cluster reset copies). The local-intermediate banks and the local
     # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x30121 (VU,
@@ -73,7 +73,7 @@ KERNELS = {
     #      add LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1 to the entry below
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
     "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_DUAL=1, QACT_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
-                       DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
+                       MVM_BC_HEADS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
                        VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1),
 }
 # The U200 bitstream parameters (docs/rtl-mvm.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
@@ -136,7 +136,7 @@ def gen_top(name: str, k: dict) -> str:
             params[knob] = k[knob]
     params.update(COMMON)
     for knob in ("MVM_DUAL", "QACT_PIPE", "HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
-                 "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG", "FAST_CLK",
+                 "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "MVM_BC_HEADS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG", "FAST_CLK",
                  "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:
             params[knob] = k[knob]

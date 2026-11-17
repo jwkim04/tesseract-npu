@@ -965,7 +965,7 @@ def test_core_k4full():
     """
     from common.runner import run
     elf = C.build_fw(FW_OUT)
-    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, MVM_BC_HEADS=2,
                   RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4full",
@@ -983,7 +983,7 @@ def test_core_k4_fast():
     trace records."""
     from common.runner import run
     elf = C.build_fw(FW_OUT)
-    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, MVM_BC_HEADS=2,
                   RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4fast",
@@ -1002,7 +1002,7 @@ def test_core_k4gdn():
     the final CSR state must be equal."""
     from common.runner import run
     elf = C.build_fw(FW_OUT)
-    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, MVM_BC_HEADS=2,
                   RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn",
@@ -1021,7 +1021,7 @@ def test_core_k4gdn_fast():
     the final CSR state must be equal."""
     from common.runner import run
     elf = C.build_fw(FW_OUT)
-    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, MVM_BC_HEADS=2,
                   RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn_fast",
@@ -1059,7 +1059,7 @@ def _run_k4_dual(name, dual_en=True, fast=False, k4min=False, seed=None, qpipe=F
         env = {"TB_CORE_NCH": "4", "TB_CORE_TMAX": "8", "TB_CORE_NOVU": "1"}
         tests = ["core_smoke"]
     else:
-        params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+        params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, MVM_BC_HEADS=2,
                       RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                       VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
         if fast:

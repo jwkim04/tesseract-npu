@@ -778,7 +778,7 @@ def _run(name, cfg, testcase="at_mvm", rand_reset=None, mutant=None):
     cfg.update(json.loads(os.environ.get("TSR_ATMVM_CFGX", "{}")))   # measurement: e.g. rd_lat, p_rd, p_wr
     params = dict(NUM_CH=cfg["num_ch"], T_MAX=cfg["t_max"], K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
                   CH_BYTES="64'd%d" % cfg["ch_bytes"], SPM_RD_LAT=cfg["spm_rd_lat"], ADDR_BEAT_W=cfg["addr_beat_w"],
-                  RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), RES_PIPE=cfg.get("res_pipe", 1),
+                  RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), BC_HEADS=cfg.get("bc_heads", 1), RES_PIPE=cfg.get("res_pipe", 1),
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
                   RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0), GATHER_FLITS=cfg.get("gather_flits", 1),
@@ -805,6 +805,14 @@ def test_at_mvm_u200_flits2():
     and the SPM image are the simulator's."""
     _run("u200_flits2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                              addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                             rst_local=2, gather_pair=1, gather_flits=2, n_ops=40))
+
+
+def test_at_mvm_u200_heads2():
+    """The U200 shape with the paired two-flit gather and two copies of the central broadcast stage (MVM_BC_HEADS 2, the
+    full K4 image's): the attention results and the SPM image are the simulator's, the broadcast the observer's."""
+    _run("u200_heads2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                             addr_beat_w=28, rd_out=16, bc_pipe=2, bc_heads=2, res_pipe=2, mac_lat=9,
                              rst_local=2, gather_pair=1, gather_flits=2, n_ops=40))
 
 
@@ -891,6 +899,15 @@ def test_at_mvm_bc_reset():
                          mac_lat=9, rst_local=2, models=False, n_ops=0, bc_all_valids=True,
                          directed=[dict(pv=False, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3),
                                    dict(pv=True, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3)]))
+
+
+def test_at_mvm_bc_heads():
+    """Two broadcast head copies: all three broadcast kinds against old-pipe histories (as test_at_mvm_bc_reset)."""
+    _run("bc_heads2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30,
+                           spm_rd_lat=4, addr_beat_w=28, rd_out=16, bc_pipe=2, bc_heads=2, res_pipe=2,
+                           mac_lat=9, rst_local=2, models=False, n_ops=0, bc_all_valids=True,
+                           directed=[dict(pv=False, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3),
+                                     dict(pv=True, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3)]))
 
 
 def test_at_mvm_odd():
