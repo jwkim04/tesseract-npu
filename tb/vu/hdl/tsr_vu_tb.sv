@@ -64,9 +64,7 @@ module tsr_vu_tb
   logic [NCL-1:0][1:0][TSR_SPM_BE_W-1:0]  wr_be;
   logic [1:0][TSR_SPM_WM_W-1:0]           vu_wr_wm;   // the VU's word mask, expanded to the byte enables of client 2
   for (genvar b = 0; b < 2; b++) begin : g_vu_be
-    for (genvar w = 0; w < TSR_SPM_WM_W; w++) begin : g_w
-      assign wr_be[2][b][4*w +: 4] = {4{vu_wr_wm[b][w]}};
-    end
+    assign wr_be[2][b] = tsr_spm_wm_be(vu_wr_wm[b]);
   end
 
   tsr_spm #(.SPM_BYTES(SPM_BYTES), .NCL(NCL), .RD_LAT(SPM_RD_LAT), .BANK_LINES(1024)) u_spm (

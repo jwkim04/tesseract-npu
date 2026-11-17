@@ -1253,9 +1253,7 @@ module tsr_core_dp
       assign sb_wr_data[c]      = vu_wr_data;
       // the unit's write enables cover whole words: a mask bit is the four byte enables of its word
       for (genvar b = 0; b < 2; b++) begin : g_be
-        for (genvar w = 0; w < TSR_SPM_WM_W; w++) begin : g_w
-          assign sb_wr_be[c][b][4*w +: 4] = {4{vu_wr_wm[b][w]}};
-        end
+        assign sb_wr_be[c][b] = tsr_spm_wm_be(vu_wr_wm[b]);
       end
     end else begin : g_tie
       assign sb_rd_req_valid[c] = '0;

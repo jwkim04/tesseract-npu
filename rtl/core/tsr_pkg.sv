@@ -94,6 +94,12 @@ package tsr_pkg;
   localparam int unsigned TSR_SPM_NSP       = 4;  // clients 0..3: single port through tsr_spm_cport
   localparam int unsigned TSR_SPM_BE_W      = TSR_LINE_BYTES;
   localparam int unsigned TSR_SPM_WM_W      = TSR_SPM_BE_W / 4;   // word mask of a line: one bit per 32-bit word
+  // The byte enables of a word mask: the four enables of word w are wm[w].
+  function automatic logic [TSR_SPM_BE_W-1:0] tsr_spm_wm_be(logic [TSR_SPM_WM_W-1:0] wm);
+    logic [TSR_SPM_BE_W-1:0] be;
+    for (int unsigned w = 0; w < TSR_SPM_WM_W; w++) be[4*w +: 4] = {4{wm[w]}};
+    return be;
+  endfunction
 
   // -------------------------------------------------------------------------------------------
   // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). Offsets: docs/design
