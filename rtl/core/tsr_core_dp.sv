@@ -1291,6 +1291,31 @@ module tsr_core_dp
         .out_data({d_rd_rsp_data[c], d_rd_rsp_last[c], d_rd_rsp_id[c]})
       );
       assign s_rd_rsp_ready[c][TSR_SRC_DMA] = 1'b1;
+`ifndef SYNTHESIS
+      // The register is the FORM 0 slice that it replaces whenever the DMA takes every beat: the slice takes every beat
+      // (s_ready 1) and gives it out in the next cycle, the same valid and the same data.
+      logic                                      rsp_ref_ready, rsp_ref_valid, rsp_on_q;
+      logic [BEAT_BITS + 1 + TSR_SRC_ID_W - 1:0] rsp_ref_data;
+      tsr_rslice #(.W(BEAT_BITS + 1 + TSR_SRC_ID_W), .FORM(0)) u_rsp_ref (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(s_rd_rsp_valid[c][TSR_SRC_DMA]), .s_ready(rsp_ref_ready),
+        .s_data({s_rd_rsp_data[c], s_rd_rsp_last[c], s_rd_rsp_id[c]}),
+        .m_valid(rsp_ref_valid), .m_ready(d_rd_rsp_ready[c]), .m_data(rsp_ref_data)
+      );
+      initial rsp_on_q = 1'b0;
+      always @(posedge clk) if (!rst_b_n[RB_ARB + c]) rsp_on_q <= 1'b1;
+      always_ff @(posedge clk) begin
+        if (rst_b_n[RB_ARB + c] && rsp_on_q) begin
+          assert (rsp_ref_ready)
+            else $error("%m: the reference slice of the read response is not ready");
+          assert (rsp_ref_valid == d_rd_rsp_valid[c])
+            else $error("%m: read response valid %b differs from the slice it replaces (%b)", d_rd_rsp_valid[c], rsp_ref_valid);
+          if (rsp_ref_valid && d_rd_rsp_valid[c])
+            assert (rsp_ref_data == {d_rd_rsp_data[c], d_rd_rsp_last[c], d_rd_rsp_id[c]})
+              else $error("%m: read response data differs from the slice it replaces");
+        end
+      end
+`endif
       (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_wq (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
         .s_valid(d_wr_req_valid[c]), .s_ready(d_wr_req_ready[c]),
