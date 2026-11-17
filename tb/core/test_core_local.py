@@ -221,7 +221,7 @@ def test_k4_full_graph(tmp_path):
     params = dict(NUM_CH=4, T_MAX=4, K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
                   CH_BYTES=f"64'd{cfg['ch_bytes']}", ADDR_BEAT_W=cfg["addr_beat_w"],
                   MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, RST_PIPE=3,
-                  SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
+                  SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_BC_HEADS=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2)
     extra = os.pathsep.join(str(Path(item).resolve())
                             for item in filter(None, os.environ.get("TSR_K4_TRACE_MORE", "").split(os.pathsep)))
@@ -358,7 +358,7 @@ def test_k4_full_ops_trace(tmp_path):
     params = dict(NUM_CH=4, T_MAX=4, K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
                   CH_BYTES=f"64'd{cfg['ch_bytes']}", ADDR_BEAT_W=cfg["addr_beat_w"],
                   MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, RST_PIPE=3,
-                  SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
+                  SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_BC_HEADS=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2)
     run("tsr_core", __name__, parameters=params, name="core_k4_full_ops",
         sources=rtl_sources(RTL / "filelist_xilinx.f"), extra_sources=[sv], plusargs=preload,
