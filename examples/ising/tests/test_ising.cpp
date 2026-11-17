@@ -1,4 +1,4 @@
-// fw_example_ising: the Ising machine example (sw/ctrl/examples/ising/) on the simulator, through the transport.
+// example_ising: the Ising machine example (examples/ising/) on the simulator, through the transport.
 //
 //   1. the numeric constants of the kernel: the scale 0x3C010204 makes the block term exact, the wall factor m is 0 or 1
 //   2. bit-exact agreement with the host model (ising_ref.cpp): every snapshot, every energy word, the final state,
@@ -22,7 +22,6 @@
 #include "ising_problem.hpp"
 #include "ising_ref.hpp"
 #include "ising_run.hpp"
-#include "tsr_fw_paths.h"
 #include "tsr_ref.h"
 #include "tsr_ref_vu.h"
 #include "tsr_transport.h"
@@ -48,7 +47,7 @@ struct device {
         setenv("TSR_SIM_SCHED", sched, 1);
         setenv("TSR_SIM_RACE", "fatal", 1);
         setenv("TSR_SIM_TMAX", tmax, 1);
-        if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_example_ising, &img) != 0) return false;
+        if (tsr_image_open(TSR_ISING_IMAGE, &img) != 0) return false;
         t = tsr_transport_open("sim");
         if (!t || tsr_transport_boot(t, img) != 0) return false;
         kernel = tsr_image_kernel(img, "ising");
@@ -433,6 +432,6 @@ int main() {
     test_status();
     test_stop();
     test_quality();
-    printf("fw_example_ising: %s\n", g_fail ? "FAILED" : "ok");
+    printf("example_ising: %s\n", g_fail ? "FAILED" : "ok");
     return g_fail ? 1 : 0;
 }

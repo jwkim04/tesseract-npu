@@ -164,12 +164,12 @@ extern "C" int32_t vadd(const tsr_args * args) {
 The [firmware SDK guide](sw/ctrl/README.md) covers the kernel API and the host side that loads an
 image and launches a kernel by name.
 
-A kernel can grow far beyond that. [`sw/ctrl/examples/ising`](sw/ctrl/examples/ising) is an Ising
+A kernel can grow far beyond that. [`examples/ising`](examples/ising) is an Ising
 machine. It searches for the ground state of a Sherrington-Kirkpatrick spin glass, where every pair
 of spins is coupled by +1 or -1 at random, with simulated bifurcation. One step is one dense
 matrix-vector product over all the couplings, which the MVM clusters stream from card DDR, plus a
-few vector-unit ops. Up to eight replicas run side by side in the same ops. The
-[SDK guide](sw/ctrl/README.md#the-ising-machine-example) shows how to run it.
+few vector-unit ops. Up to eight replicas run side by side in the same ops. It is a project of
+its own that uses the SDK, not part of it; its [README](examples/ising/README.md) shows how to run it.
 
 [![A spin glass of 16,384 spins on the simulator: the spins as an image, the energy per spin against the step with the ground-state value of an infinite system, and the histogram of the local stabilities](docs/demo/spin-glass.gif)](docs/demo/spin-glass.mp4)
 

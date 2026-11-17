@@ -1,4 +1,4 @@
-# fw_example_ising_tool: runs the tool tsr-ising on the simulator and checks its exit status, its dump and the video script.
+# example_ising_tool: runs the tool tsr-ising on the simulator and checks its exit status, its dump and the video script.
 #   cmake -DTOOL=<tsr-ising> -DVIDEO=<sk_video.py> -DOUT=<scratch dir> -P ising_tool.cmake
 #
 #   1. n = 64, t = 3, two column tensors, a snapshot every 4 steps, --check and --dump, under a random schedule with the
@@ -72,7 +72,7 @@ if (TIMEOUT_EXE)
         message(FATAL_ERROR "the run was not stopped cleanly by SIGINT (status ${rc}):\n${out}\n${err}")
     endif()
 else()
-    message(STATUS "fw_example_ising_tool: no timeout program, the SIGINT case is skipped")
+    message(STATUS "example_ising_tool: no timeout program, the SIGINT case is skipped")
 endif()
 
 # 4: the video script on the dump of 1
@@ -103,7 +103,7 @@ if (VIDEO_PY)
         message(FATAL_ERROR "the pictures of sk_video.py are not a PNG and a GIF")
     endif()
 else()
-    message(STATUS "fw_example_ising_tool: no interpreter with numpy, matplotlib and Pillow (set TSR_PYTHON), the video script is not run")
+    message(STATUS "example_ising_tool: no interpreter with numpy, matplotlib and Pillow (set TSR_PYTHON), the video script is not run")
 endif()
 
 # 5
@@ -112,4 +112,4 @@ run_tool(2 --n 1)
 run_tool(2 --t 9)
 run_tool(2 --steps x)
 run_tool(2 --problem sk)
-message(STATUS "fw_example_ising_tool: ok")
+message(STATUS "example_ising_tool: ok")

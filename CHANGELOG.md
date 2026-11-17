@@ -6,16 +6,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
-### Added
-
-- Example kernel `ising` (`sw/ctrl/examples/ising/`): an Ising machine that searches for the ground state of a
-  Sherrington-Kirkpatrick spin glass with discrete simulated bifurcation. One step is one MVM op over the couplings plus
-  vector-unit ops, for up to `T_MAX` replicas side by side. It uses an argument block, tickets, several weight tensors and
-  a soft stop, and its numerics follow a bit-exact host model (`ising_ref.cpp`). The tool `tsr-ising` makes the problem,
-  runs it on the simulator or the card, prints the energy per spin of every replica, checks the device against the model
-  with `--check` and writes the trajectory with `--dump`. `sk_video.py` turns a dump into a video. Tests:
-  `fw_example_ising` and `fw_example_ising_tool`.
-
 ## [1.5.0] - 2026-11-17
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).

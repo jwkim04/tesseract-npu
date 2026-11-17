@@ -14,7 +14,7 @@ logic of a kernel is tested without a RISC-V interpreter. The RISC-V build stays
 | `rt/` | `crt0.S`, `runtime.cpp` (launch dispatcher), `trap.cpp`, `log.cpp`, `libc.cpp` (`memcpy`, `memset`, `memmove`, `memcmp`), `link.ld` |
 | `kernels/` | the base kernels `graph.cpp`, `selftest.cpp` and `replay.cpp`, and the kind handlers of the graph executor (`k_*.cpp`, `gdn_kinds.cpp`, `k_fast.hpp`, `zz_kind_stubs.cpp`) |
 | `host/`, `ref/` | the main project's side (`tsr-elf`, the `tsr_fw` external project, `tsr_fw_host`, the host backend and shim) and host references of the kernels |
-| `tools/`, `tests/`, `examples/` | `tsr-elf` and `install-toolchain.sh`, ctest snippets and test kernels, the tested examples `vadd.cpp` and `examples/ising/` (an Ising machine) |
+| `tools/`, `tests/`, `examples/` | `tsr-elf` and `install-toolchain.sh`, ctest snippets and test kernels, the tested example `vadd.cpp` |
 
 ## Build
 
@@ -136,45 +136,6 @@ ctest `fw_kind_revs` fails with "bump the revision" when the bits moved and "rev
 did). A change that leaves every output bit alone needs no revision. A change that breaks the layout of `tsr_args`,
 `.note.tsr`, the launch protocol or the op list format raises `TSR_SDK_ABI` in the same commit.
 
-### The Ising machine example
-
-[`examples/ising/`](examples/ising) is a larger kernel. It searches for the ground state of a Sherrington-Kirkpatrick
-spin glass (N spins, every pair coupled by +1 or -1) with discrete simulated bifurcation. One step is a dense
-matrix-vector product over the couplings (one MVM op, the coupling matrix streams from card DDR), a few vector-unit
-ops on the positions and momenta, and an optional energy word. Up to `T_MAX` replicas run side by side in the same
-ops. It shows:
-
-- an argument block (`TSR_KFLAG_ARGBLK`) that carries the parameters, with checks against the device;
-- tickets that order ops between the DMA, vector and MVM units, and between steps;
-- several weight tensors when the couplings exceed the K limit of one tensor;
-- a soft stop, polled once per step: the kernel stores the state and returns the number of steps done;
-- a bit-exact host model of the kernel, and a field of the spins that is an exact integer (the kernel replaces the
-  QACT block scales by the f32 nearest to 1/127, and the couplings are Q8_0 with scale 1.0).
-
-| File | Content |
-| --- | --- |
-| `ising.cpp` | the kernel |
-| `ising_abi.hpp` | the parameter block and the memory layout that kernel and host share |
-| `ising_problem.*`, `ising_run.*` | the problem and its upload, the launches |
-| `ising_ref.*` | the bit-exact model of the kernel |
-| `ising_dump.*` | the trajectory file |
-| `ising_host.cpp` | the tool `tsr-ising` |
-| `sk_video.py` | the video of a dump |
-
-`tsr-ising` runs on the simulator by default and on the card with `--device` or `$TSR_DEVICE`. It prints the energy per
-spin e = E / N^1.5 of every replica. From the repository root, after the build above:
-
-```sh
-# a small run, checked bit for bit against the model of the kernel
-build/dev/sw/ctrl/host/tsr-ising --n 1024 --steps 200 --check
-
-# a run with a dump, and the video of the dump (without --ffmpeg: the GIF and a PNG only)
-build/dev/sw/ctrl/host/tsr-ising --n 16384 --t 4 --snap-every 5 --dump sk.dump
-"$TSR_PYTHON" sw/ctrl/examples/ising/sk_video.py sk.dump --out sk --ffmpeg /path/to/ffmpeg
-```
-
-The video script needs numpy, matplotlib and Pillow. Ctrl-C stops a run softly between two steps.
-
 ## Test
 
 All firmware tests carry the label `fw` and have the `fw_` prefix (`ctest --test-dir build/dev -N -L fw`). They cover
@@ -182,10 +143,7 @@ All firmware tests carry the label `fw` and have the `fw_` prefix (`ctest --test
 the fixed and 7 random schedules with the race detector fatal, and a mutant without the ring's wait deps that must be
 caught), the runtime (R1 to R10, every status of EX §4.4, traps, logging, cancel and stop, `SPM_STALE`), the executor
 and planners, every kernel and kind bit-exact against its reference under 8 schedules, `selftest_sim`, `replay_sim*`,
-the production image end to end, and `kind_revs`. The examples have `fw_example_vadd`, `fw_example_ising` (the kernel
-against its bit-exact model, under the fixed and random schedules) and `fw_example_ising_tool` (`tsr-ising` with
-`--check` and `--dump`, a Ctrl-C stop, bad command lines and the video script).
-`tsr_fw_host` (SW §6.8, SW-25) builds the kernels for the host
+the production image end to end, and `kind_revs`. `tsr_fw_host` (SW §6.8, SW-25) builds the kernels for the host
 against the simulator's test hooks, so the same `issue()` and `spm_ring` code runs there under ASan and UBSan, and the
 tests compare its push stream with the RISC-V build's. The long sweeps carry the label `slow`. The profile harness
 `tests/fw_prof.h` attributes RISC-V cycles to PCs and access classes (`TSR_FW_PROF=1`, `TSR_FW_PROF_DUMP=<path>`,

@@ -44,7 +44,6 @@
 #include "ising_problem.hpp"
 #include "ising_ref.hpp"
 #include "ising_run.hpp"
-#include "tsr_fw_paths.h"
 #include "tsr_ref.h"
 #include "tsr_transport.h"
 
@@ -205,7 +204,7 @@ int main(int argc, char ** argv) {
     if (strcmp(kind, "sim") == 0) setenv("TSR_SIM_TMAX", "8", 0);
     tsr_image * img = nullptr;
     const char * image_path = c.image != nullptr ? c.image : getenv("TSR_IMAGE");
-    if (image_path == nullptr || image_path[0] == '\0') image_path = TSR_FW_TEST_IMAGE_fw_example_ising;
+    if (image_path == nullptr || image_path[0] == '\0') image_path = TSR_ISING_IMAGE;
     if (tsr_image_open(image_path, &img) != 0 || img == nullptr) return fail(std::string("cannot open the firmware image ") + image_path);
     tsr_transport * tr = tsr_transport_open(kind);
     if (!tr) { tsr_image_close(img); return fail(std::string("cannot open the \"") + kind + "\" transport"); }

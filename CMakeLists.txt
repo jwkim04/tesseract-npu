@@ -15,6 +15,7 @@ set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 
 option(TSR_WITH_LLAMA "Build pinned llama.cpp with the ggml-tesseract backend" ON)
 option(TSR_WITH_XRT   "Build the XRT transport (needs XRT)" OFF)
+option(TSR_WITH_EXAMPLES "Build the custom kernel examples (examples/)" ON)
 option(TSR_WITH_TORCH "Build the PyTorch extension sw/torch (_tesseract_rt; needs TSR_WITH_LLAMA and torch in TSR_TORCH_PYTHON)" OFF)
 
 enable_testing()
@@ -28,6 +29,9 @@ include(sw/ggml-tesseract/lower.cmake)   # tsr_lower: SPM tiling, allocator, wei
                                          # builder / cache / launcher (no ggml; links tsr_transport,
                                          # so after sw/transport); linked by ggml-tesseract and sw/rt
 add_subdirectory(sw/tools)       # selftest, klcheck, numcheck, tsr_bw
+if (TSR_WITH_EXAMPLES)
+    add_subdirectory(examples/ising)     # custom kernel example (uses sw/sim, sw/ctrl/host, sw/transport)
+endif()
 
 if (TSR_WITH_LLAMA)
     set(GGML_TESSERACT ON CACHE BOOL "" FORCE)
