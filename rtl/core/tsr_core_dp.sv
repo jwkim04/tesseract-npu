@@ -1122,9 +1122,12 @@ module tsr_core_dp
   // glue (not in a Pblock, so the stages are free to sit in SLR1): two stages left one hop of the pipe across both
   // boundaries (the link-3 paths of the issue command register and of the s registers, -0.159 and -0.057 ns), three give
   // each hop at most one crossing.
-  //   command   a valid / ready pipe (tsr_rpipe): the issue path sees a registered ready of its own, the VU a registered
-  //             valid and command. Every item is offered to the VU as before, VX cycles later; up to
-  //             2 + 2 VX commands are in the pipe, but the issue path's limit (two ops in flight, CC §9.4 I3) counts them.
+  //   command   a delay line (tsr_vpipe): the VU takes every command that reaches it (the issue path counts the ops in
+  //             flight, at most two, and the VU holds two: the assertion on vu_cmd_valid below), so the line needs no
+  //             ready, and the issue path sees 1. Every item is offered to the VU as before, VX cycles later. With
+  //             LOCAL_INTERMEDIATES or LOCAL_SCALE the VU stalls a command for its local banks, and the command pipe is
+  //             a valid / ready pipe (tsr_rpipe: the issue path sees a registered ready of its own, up to 2 + 2 VX
+  //             commands in the pipe, counted by the issue path's limit).
   //   done      the strobe reaches tsr_issue VX cycles later (tsr_issue's DONE_REG adds one more)
   //   sreg      VX stages toward tsr_csr: the s registers show a change VX cycles later, but the host reads them after
   //             the op's done, which takes VX + 1 cycles from the VU to the issue path
@@ -1139,11 +1142,20 @@ module tsr_core_dp
     assign vi_done          = vu_done;
     assign vu_sreg          = vu_sreg_u;
   end else begin : g_vux
-    tsr_rpipe #(.W(XC_CMD_W), .DEPTH(VX)) u_cmd (
-      .clk, .rst_n(rst_b_n[RB_VU]),
-      .s_valid(vi_cmd_valid), .s_ready(vi_cmd_ready), .s_data(vi_cmd),
-      .m_valid(vu_cmd_valid), .m_ready(vu_cmd_ready), .m_data(vu_cmd)
-    );
+    if (LOCAL_INTERMEDIATES || LOCAL_SCALE) begin : g_cmd_rdy
+      tsr_rpipe #(.W(XC_CMD_W), .DEPTH(VX)) u_cmd (
+        .clk, .rst_n(rst_b_n[RB_VU]),
+        .s_valid(vi_cmd_valid), .s_ready(vi_cmd_ready), .s_data(vi_cmd),
+        .m_valid(vu_cmd_valid), .m_ready(vu_cmd_ready), .m_data(vu_cmd)
+      );
+    end else begin : g_cmd_line
+      tsr_vpipe #(.VW(1), .W(XC_CMD_W), .DEPTH(VX), .KEEP_REGS(1'b1)) u_cmd (
+        .clk, .rst_n(rst_b_n[RB_VU]),
+        .in_valid(vi_cmd_valid), .in_data(vi_cmd),
+        .out_valid(vu_cmd_valid), .out_data(vu_cmd)
+      );
+      assign vi_cmd_ready = 1'b1;
+    end
     (* shreg_extract = "no", keep = "true" *) logic [VX-1:0] done_q;
     (* shreg_extract = "no", keep = "true" *) logic [VX-1:0][511:0] sreg_q;
     initial sreg_q = '0;                  // the data stages start at 0 like the VU's registers after reset
@@ -1557,6 +1569,11 @@ module tsr_core_dp
         else $error("tsr_core_dp: VU command offered with HAS_VU = 0");
       assert (!(vu_done && vu_cnt_q == 2'd0))
         else $error("tsr_core_dp: VU done without an op in flight");
+      // A command that reaches the VU finds a free entry: the issue path counts it with the ops in flight (at most
+      // TSR_ACCEPT_MAX_VU = TSR_VU_ACCEPT_AHEAD = 2, CC §9.4 I3), and the VU's done leaves its entry before the issue
+      // path sees the strobe. With LOCAL_INTERMEDIATES or LOCAL_SCALE the VU also stalls a command for its local banks.
+      assert (!vu_cmd_valid || vu_cmd_ready || LOCAL_INTERMEDIATES || LOCAL_SCALE)
+        else $error("tsr_core_dp: VU command offered while the VU holds two ops (CC §9.4 I3)");
       assert (!(vu_take && vu_cnt_q - 2'(vu_done) >= 2'd2))
         else $error("tsr_core_dp: VU accepted a third op (S - D <= 2, CC §9.4 I3)");
       assert (!(vu_spm && vu_cnt_q == 2'd0 && !vu_take))
