@@ -1,12 +1,12 @@
-# hw/u200/k4_floorplan.tcl — SLR floorplan C'' of tsr_u200_k4 in the v++ link (docs/platform-u200.md
-# §8, docs/design/04-control-core.md §14.2): floorplan C' (docs/rtl-mvm.md §14.5, the out-of-context floorplan
-# that met 300 MHz: k4 +0.015 ns, k4t1 +0.108 ns) translated to the kernel hierarchy and to the platform's
-# dynamic-region pblocks, extended by the control core, the issue path and the vector unit.
+# hw/u200/k4_floorplan.tcl — SLR floorplan C'' of tsr_u200_k4, the whole-core plan for out-of-context runs
+# (docs/platform-u200.md §8.1, docs/design/04-control-core.md §14.2): floorplan C' (docs/rtl-mvm.md §14.5, the
+# out-of-context floorplan that met 300 MHz: k4 +0.015 ns, k4t1 +0.108 ns) translated to the kernel hierarchy and to
+# the platform's dynamic-region pblocks, extended by the control core, the issue path and the vector unit.
 #
-# Applied by hw/u200/k4.cfg as the place_design pre-hook (run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE):
-# after opt_design, where tb/core/viv/core_ooc.tcl sources tb/core/viv/core_slr.tcl (which makes stand-in
-# pblocks and sources this file). v++ sources it after its own and the platform's hooks of that step
-# (scripts/impl_1/_full_place_pre.tcl).
+# hw/u200/k4.cfg does not source it: the v++ link places with hw/u200/k4_major_blocks.tcl, the Pblocks of whole
+# major blocks. This script runs before place_design, after opt_design: tb/core/viv/core_ooc.tcl sources
+# tb/core/viv/core_slr.tcl, which makes stand-in pblocks and sources this file. As a place_design pre-hook of a
+# link, v++ would source it after its own and the platform's hooks of that step (scripts/impl_1/_full_place_pre.tcl).
 #
 # Pblocks: the platform's, never created here (xilinx_u200_gen3x16_xdma_2_202110_1, hw.xsa
 # tcl_hooks/impl.xdc; children of pblock_dynamic_region; platforminfo: DDR bank0 SLR0, bank1 and
@@ -35,10 +35,10 @@
 # pipes retain registered source/destination ends. Paired gather source slots,
 # fair selector and first shared stage are local; the final shared stage is
 # central. Archived independent gather and VU transport remain recognizable.
-# Broadcast has a central shared head and local tails, or historical per-cluster
-# first stages. PERF-only ATT stall aggregation stays central; its source FFs
-# and shared functional decode stay with their clusters. Core reset copies
-# remain free except the explicit VU transport endpoints.
+# Broadcast has a central shared head (one stage in one or more copies) and local
+# tails, or historical per-cluster first stages. PERF-only ATT stall aggregation
+# stays central; its source FFs and shared functional decode stay with their
+# clusters. Core reset copies remain free except the explicit VU transport endpoints.
 #
 # Environment (validation outside the link only; docs/platform-u200.md §8):
 #   TSR_K4_FP_BODY  hierarchical name of the tsr_xrt_kernel instance ("" = the top cell). Default:
@@ -373,21 +373,30 @@ proc k4fp_broadcast_parts {inst first_s last_s {min_stages 2}} {
   }
   return $parts
 }
-# The shared head may be replicated by physical optimization, but all copies
-# must stay central. A reconstructed consumer cone here needs an explicit
-# ownership decision; do not silently assign arbitrary decode to SLR1.
+# The shared head is one register stage in MVM_BC_HEADS copies (tsr_mvm): u_bc_head
+# and, for the further copies, g_bch[h].u_bc_head. Every copy stays central, and so
+# does each replica that physical optimization makes of one. A reconstructed consumer
+# cone here needs an explicit ownership decision; do not silently assign arbitrary
+# decode to SLR1.
 proc k4fp_broadcast_head {mvm} {
-  set inst "$mvm/u_bc_head"
-  set cells [k4fp_direct_leaves $inst]
-  if {[llength $cells] == 0} { error "k4_floorplan: shared broadcast head is empty" }
-  set plen [string length "$inst/"]
-  foreach cell $cells {
-    set rel [string range [get_property NAME $cell] $plen end]
-    if {![regexp {^g_keep\.[vd]_q_reg\[0\]} $rel] || [get_property REF_NAME $cell] ne "FDRE"} {
-      error "k4_floorplan: unknown shared broadcast head leaf $cell"
+  set insts [list "$mvm/u_bc_head"]
+  for {set h 1} {[llength [get_cells -quiet "$mvm/g_bch\[$h\].u_bc_head"]] == 1} {incr h} {
+    lappend insts "$mvm/g_bch\[$h\].u_bc_head"
+  }
+  set result {}
+  foreach inst $insts {
+    set cells [k4fp_direct_leaves $inst]
+    if {[llength $cells] == 0} { error "k4_floorplan: shared broadcast head is empty ($inst)" }
+    set plen [string length "$inst/"]
+    foreach cell $cells {
+      set rel [string range [get_property NAME $cell] $plen end]
+      if {![regexp {^g_keep\.[vd]_q_reg\[0\]} $rel] || [get_property REF_NAME $cell] ne "FDRE"} {
+        error "k4_floorplan: unknown shared broadcast head leaf $cell"
+      }
+      lappend result $cell
     }
   }
-  return $cells
+  return $result
 }
 proc k4fp_pair_helpers {inst} {
   set cells {}

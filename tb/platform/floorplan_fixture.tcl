@@ -256,7 +256,12 @@ set vu "$dp/g_vu.u_vu"
 set shared_bc [string match *shared_bc* $fixture_case]
 set shared_vu [string match *shared_vu* $fixture_case]
 set bc_tail_depth [expr {$shared_bc && $fixture_case ne "shared_bc_deep" ? 1 : 2}]
-if {$shared_bc} { fixture_vpipe "$mvm/u_bc_head" 1 }
+# *shared_bc_heads*: the head stage in two copies (MVM_BC_HEADS 2), the second one in the generate block g_bch[1]
+set bc_heads [expr {[string match *shared_bc_heads* $fixture_case] ? 2 : 1}]
+if {$shared_bc} {
+  fixture_vpipe "$mvm/u_bc_head" 1
+  for {set h 1} {$h < $bc_heads} {incr h} { fixture_vpipe "$mvm/g_bch\[$h\].u_bc_head" 1 }
+}
 set ctrl [expr {$core eq "" ? "u_ctrl" : "$core/u_ctrl"}]
 fixture_cell "$ctrl/u_rv/rv_q" FDRE
 fixture_cell "$ctrl/u_cdc/cdc_q" FDRE
@@ -407,6 +412,12 @@ if {$fixture_case eq "shared_bc_empty_head"} {
   }
 }
 if {$fixture_case eq "shared_bc_unknown_head"} { fixture_cell "$mvm/u_bc_head/decode_i_1" LUT2 }
+if {$fixture_case eq "shared_bc_heads_empty"} {
+  foreach n [dict keys $cells] {
+    if {[string first "$mvm/g_bch\[1\].u_bc_head/" $n] == 0} { dict unset cells $n }
+  }
+}
+if {$fixture_case eq "shared_bc_heads_unknown"} { fixture_cell "$mvm/g_bch\[1\].u_bc_head/decode_i_1" LUT2 }
 if {$fixture_case eq "shared_bc_missing_tail"} {
   foreach n [dict keys $cells] {
     if {[string first "$mvm/g_cl\[2\].u_bcp/g_keep." $n] == 0} { dict unset cells $n }
@@ -548,6 +559,10 @@ fixture_assert_owner $functional_sink 0
 if {$shared_bc} {
   fixture_assert_owner "$mvm/u_bc_head/g_keep.d_q_reg\[0\]\[0\]" 1
   fixture_assert_owner "$mvm/u_bc_head/g_keep.v_q_reg\[0\]\[0\]" 1
+  for {set h 1} {$h < $bc_heads} {incr h} {
+    fixture_assert_owner "$mvm/g_bch\[$h\].u_bc_head/g_keep.d_q_reg\[0\]\[0\]" 1
+    fixture_assert_owner "$mvm/g_bch\[$h\].u_bc_head/g_keep.v_q_reg\[0\]\[0\]" 1
+  }
 }
 
 foreach {c s} {0 0 1 2 2 0 3 2} {
@@ -695,6 +710,12 @@ if {[string match post_* $fixture_case]} {
   if {$fixture_case eq "post_missing_proc"} { rename k4fp_check_locality {} }
   if {$fixture_case eq "post_shared_bc_head_misplaced"} {
     dict set placements "$mvm/u_bc_head/g_keep.d_q_reg\[0\]\[0\]" SLR0
+  }
+  if {$fixture_case eq "post_shared_bc_heads_misplaced"} {
+    dict set placements "$mvm/g_bch\[1\].u_bc_head/g_keep.d_q_reg\[0\]\[0\]" SLR2
+  }
+  if {$fixture_case eq "post_shared_bc_heads_replica"} {
+    fixture_cell "$mvm/g_bch\[1\].u_bc_head/g_keep.d_q_reg\[0\]\[0\]_replica_99" FDRE
   }
   if {$fixture_case eq "post_shared_bc_tail_misplaced"} {
     dict set placements "$mvm/g_cl\[2\].u_bcp/g_keep.d_q_reg\[0\]\[0\]" SLR1

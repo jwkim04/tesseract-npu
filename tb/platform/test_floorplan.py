@@ -23,7 +23,8 @@ def run_fixture(mode, case):
 @pytest.mark.parametrize("case", ["normal", "placed", "membership", "post_normal",
                                   "stall_reparented", "stall_existing_parent", "repeat",
                                   "shared_bc", "shared_bc_deep", "shared_bc_repeat",
-                                  "post_shared_bc", "shared_vu", "post_shared_vu",
+                                  "post_shared_bc", "shared_bc_heads", "post_shared_bc_heads",
+                                  "shared_vu", "post_shared_vu",
                                   "stall_comp_numbered", "post_stall_comp_numbered",
                                   "banked", "post_banked", "banked_repeat", "paired", "paired_repeat", "post_paired", "banked_paired", "banked_arithmetic", "banked_arithmetic_repeat", "post_banked_arithmetic", "banked_drain", "banked_drain_repeat", "post_banked_drain"])
 def test_k4_floorplan_locality(mode, case):
@@ -103,6 +104,10 @@ def test_k4_floorplan_locality(mode, case):
     ("post_shared_bc_head_misplaced", "is not placed in SLR1"),
     ("post_shared_bc_tail_misplaced", "is not placed in SLR0"),
     ("post_shared_bc_replica", "is not assigned"),
+    ("shared_bc_heads_empty", "shared broadcast head is empty"),
+    ("shared_bc_heads_unknown", "unknown shared broadcast head leaf"),
+    ("post_shared_bc_heads_misplaced", "is not placed in SLR1"),
+    ("post_shared_bc_heads_replica", "is not assigned"),
     ("post_shared_vu_misplaced", "is not placed in SLR0"),
     ("post_shared_vu_missing", "empty locality check"),
 ])
