@@ -1158,6 +1158,30 @@ module tsr_core_dp
         .out_valid(vu_cmd_valid), .out_data(vu_cmd)
       );
       assign vi_cmd_ready = 1'b1;
+`ifndef SYNTHESIS
+      // The line is the ready pipe that it replaces whenever the VU takes every command: that pipe is ready, and gives
+      // each command out in the same cycle as the line, with the same valid and data.
+      logic                cmd_ref_ready, cmd_ref_valid, cmd_on_q;
+      logic [XC_CMD_W-1:0] cmd_ref;
+      tsr_rpipe #(.W(XC_CMD_W), .DEPTH(VX)) u_cmd_ref (
+        .clk, .rst_n(rst_b_n[RB_VU]),
+        .s_valid(vi_cmd_valid), .s_ready(cmd_ref_ready), .s_data(vi_cmd),
+        .m_valid(cmd_ref_valid), .m_ready(vu_cmd_ready), .m_data(cmd_ref)
+      );
+      initial cmd_on_q = 1'b0;
+      always @(posedge clk) if (!rst_b_n[RB_VU]) cmd_on_q <= 1'b1;
+      always_ff @(posedge clk) begin
+        if (rst_b_n[RB_VU] && cmd_on_q) begin
+          assert (cmd_ref_ready)
+            else $error("%m: the reference pipe of the VU command is not ready");
+          assert (cmd_ref_valid == vu_cmd_valid)
+            else $error("%m: VU command valid %b differs from the pipe it replaces (%b)", vu_cmd_valid, cmd_ref_valid);
+          if (cmd_ref_valid && vu_cmd_valid)
+            assert (cmd_ref == vu_cmd)
+              else $error("%m: VU command data differs from the pipe it replaces");
+        end
+      end
+`endif
     end
     (* shreg_extract = "no", keep = "true" *) logic [VX-1:0] done_q;
     (* shreg_extract = "no", keep = "true" *) logic [VX-1:0][511:0] sreg_q;
