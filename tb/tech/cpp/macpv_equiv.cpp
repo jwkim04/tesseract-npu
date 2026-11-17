@@ -1,6 +1,6 @@
 // macpv_equiv.cpp — Verilator C++ harness: tsr_mac_lane with PV = 1 (ATTPV's accumulate
 // mode, AT §8.2) of rtl/tech/xilinx against rtl/tech/generic, cycle by cycle, on every
-// configuration of tb/tech/hdl/tsr_tb_tech_macpv.sv (N 32 x T {1, 2, 3, 8} x LAT {3..7, 9, 11}, N 5).
+// configuration of tb/tech/hdl/tsr_tb_tech_macpv.sv (N 32 x T {1, 2, 3, 8} x LAT {3..7, 9, 11}, N 5, the dual weight stream, PVR 1).
 // Both models (Vgen, Vxil) get identical inputs. In every cycle:
 //   - PV phases (pv_en = 1, in_valid = 0): pv_acc of both models is compared with a reference model
 //     of the contract (operands of the advancing edges, PV_LAT = IN + AD + M + P registers of the
@@ -11,7 +11,7 @@
 //     the phase have flushed every register of the configuration (the same lanes' MVM mode after PV
 //     use; mac_equiv.cpp checks the MVM contract).
 // Stimulus: alternating phases; mode switches only after 16 idle cycles (the contract: pv_en
-// changes while the lane is empty). PV: segments of 1..70 products starting with pv_first, pv_valid
+// changes while the lane is empty) and no operand is offered in the cycle of the change (PVR). PV: segments of 1..70 products starting with pv_first, pv_valid
 // 80 %, ce 90 %, a in {+-(2^24 - 1), +-2^23, 0, +-1, random 25-bit}, w random / {-128, 127, 0, -1};
 // rst_n low for 1..3 cycles with probability 0.1 %.
 // Usage: macpv_equiv [cycles [seed]]. Exit status 0 iff no mismatch.
@@ -30,7 +30,7 @@
 #include "Vgen.h"
 #include "Vxil.h"
 
-static const int NC = 33;
+static const int NC = 38;
 static const int YW = 8 * 21;
 static const int PW = 4 * 32 * 38;
 
@@ -58,6 +58,11 @@ static std::vector<Cfg> configs() {
     v.push_back({32, 4, 9, 2, pv_lat(9, 32), sw(32)});     // dual weight stream configurations (TH = T / 2)
     v.push_back({32, 2, 5, 1, pv_lat(5, 32), sw(32)});
     v.push_back({32, 6, 6, 3, pv_lat(6, 32), sw(32)});
+    v.push_back({32, 2, 3, 1, pv_lat(3, 32), sw(32)});     // PVR 1 configurations
+    v.push_back({32, 8, 9, 4, pv_lat(9, 32), sw(32)});
+    v.push_back({5, 3, 6, 2, pv_lat(6, 5), sw(5)});
+    v.push_back({32, 4, 9, 2, pv_lat(9, 32), sw(32)});
+    v.push_back({32, 3, 4, 2, pv_lat(4, 32), sw(32)});
     return v;
 }
 
@@ -146,13 +151,15 @@ int main(int argc, char** argv) {
         // ---- stimulus ----
         in.rst_n = (cyc < 4) ? 0 : (U(1000) == 0 ? 0 : 1);
         in.ce = U(10) < 9;
+        bool switched = false;
         if (phase_left <= 0 && idle >= 16) {          // switch modes only while empty
+            switched = true;
             mode ^= 1;
             phase_left = 300 + U(3000);
             mvm_age = 0;
             seg_left = 0;
         }
-        const bool draining = phase_left <= 0;
+        const bool draining = phase_left <= 0 || switched;   // no operand in the cycle of a change (PVR)
         in.pv_en = mode;
         in.in_valid = 0;
         in.pv_valid = 0;

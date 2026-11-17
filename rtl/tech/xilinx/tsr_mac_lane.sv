@@ -64,6 +64,7 @@
 //   both), B = w[i] in both, and a dynamic OPMODE on the post-adder: MVM P = M + C (the packing
 //   constant, W mux), PV P = M + (pv_first ? 0 : P) (Z mux: the accumulator), with CEP = the PV valid
 //   at P. The P register is 48 bits; PV uses 38. LAT >= 3. PV = 0 is the lane above, unchanged.
+//   With PVR the Z mux select and the P enable term are flops (one copy per slot and eight lanes, parameter PVR).
 
 module tsr_mac_lane #(
   parameter  int unsigned N     = 32,   // products summed (lanes of one group)
@@ -71,8 +72,11 @@ module tsr_mac_lane #(
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
   parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
   // PVR: pv_en reaches the DSP controls (the A / D input mux, the post-adder mode and enable) through a register copy per
-  // slot and eight lanes, one cycle later (docs/platform-u200.md §8.10). pv_en changes only while the lane is empty; the
-  // bench assertion below checks that no operand is offered within a cycle of a change. PVR = 0: the signal itself.
+  // slot and eight lanes, one cycle later (docs/platform-u200.md §8.10). The accumulator select (Z mux: pv_en and not the
+  // first operand) and the P register's enable term (not pv_en, or a valid operand at P) are registers of their own per slot
+  // and eight lanes, loaded one cycle ahead from the sources of the pv_en copy, pv_fp and pv_vp, so that the DSP's control pins
+  // come from flops. pv_en changes only while the lane is empty; the bench assertions below check that no operand is offered
+  // within a cycle of a change and that the registers equal the expressions they replace. PVR = 0: the signals themselves.
   parameter  bit          PVR   = 1'b0,
   parameter  int unsigned TH    = 0,    // dual weight stream: tokens >= TH take `wb` (0: all tokens take `w`)
   localparam int unsigned SUM_W = 16 + $clog2(N),
@@ -175,13 +179,26 @@ module tsr_mac_lane #(
   wire pv_on = PV & pv_en;
   localparam int unsigned NK8 = (N + 7) / 8;
   logic [NS-1:0][NK8-1:0] pve_w;          // the mode as each group of eight lanes of each slot sees it
+  logic [NS-1:0][NK8-1:0] pzs_w;          // the post-adder's Z select: PV mode and not the first operand at P
+  logic [NS-1:0][NK8-1:0] pen_w;          // the P register's enable term (with ce): MVM mode, or a valid PV operand at P
   if (PVR && PV) begin : g_pvr
-    (* keep = "true" *) logic [NS-1:0][NK8-1:0] pve_q;
-    always_ff @(posedge clk) pve_q <= {(NS * NK8){pv_en}};
+    (* keep = "true" *) logic [NS-1:0][NK8-1:0] pve_q, pzs_q, pen_q;
+    // the values pv_fp and pv_vp take at the next edge (pv_vp is reset, pv_fp is not)
+    wire pv_fp_n = ce ? pv_fa : pv_fp;
+    wire pv_vp_n = rst_n & (ce ? pv_va : pv_vp);
+    always_ff @(posedge clk) begin
+      pve_q <= {(NS * NK8){pv_en}};
+      pzs_q <= {(NS * NK8){pv_en & ~pv_fp_n}};
+      pen_q <= {(NS * NK8){~pv_en | pv_vp_n}};
+    end
     assign pve_w = pve_q;
+    assign pzs_w = pzs_q;
+    assign pen_w = pen_q;
     wire unused_pvon = &{1'b0, pv_on};
   end else begin : g_pv0
     assign pve_w = {(NS * NK8){pv_on}};
+    assign pzs_w = {(NS * NK8){pv_on & ~pv_fp}};
+    assign pen_w = {(NS * NK8){~pv_on | pv_vp}};
   end
 
   // ---- products (layer 0): exact 16-bit two's complement, zero for the padding lanes ----
@@ -260,11 +277,11 @@ module tsr_mac_lane #(
 
       // P: post-adder; W mux = the packing constant (MVM pair), Z mux = P (PV accumulate)
       wire signed [47:0] p_w = (!pvo && PAIR) ? 48'sd131072 : 48'sd0;
-      wire signed [47:0] p_z = (pvo && !pv_fp) ? p_q : 48'sd0;
+      wire signed [47:0] p_z = pzs_w[s][k / 8] ? p_q : 48'sd0;
       assign p_d = p_w + p_z + 48'(m_q);
       if (R_P) begin : g_p
         always_ff @(posedge clk) begin
-          if (ce && (!pvo || pv_vp)) p_q <= p_d;
+          if (ce && pen_w[s][k / 8]) p_q <= p_d;
         end
       end else begin : g_no_p
         assign p_q = p_d;
@@ -353,12 +370,29 @@ module tsr_mac_lane #(
           else $error("%m: pv_en changed less than 2 cycles before an operand (PVR)");
       end
     end
+    // the registered Z select and P enable term equal the expressions of the pv_en copy, pv_fp and pv_vp they replace
+    logic [NS-1:0][NK8-1:0] ref_pzs, ref_pen;
+    always_comb begin
+      ref_pzs = g_pvr.pve_q & {(NS * NK8){~pv_fp}};
+      ref_pen = ~g_pvr.pve_q | {(NS * NK8){pv_vp}};
+    end
+    always_ff @(posedge clk) begin
+      if (a_on_q) begin
+        assert (g_pvr.pzs_q === ref_pzs)
+          else $error("%m: registered Z select differs from pv_en && !pv_fp (PVR)");
+        assert (g_pvr.pen_q === ref_pen)
+          else $error("%m: registered P enable term differs from !pv_en || pv_vp (PVR)");
+      end
+    end
   end
 `endif
 
   if (!PV) begin : g_nopv
     assign pv_acc = '0;
     wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a, pv_fp, pv_vp};
+  end
+  if (!R_P) begin : g_nop
+    wire unused_pen = &{1'b0, pen_w};     // no P register, no enable
   end
   if (TH == 0) begin : g_nowb
     wire unused_wb = &{1'b0, wb};
