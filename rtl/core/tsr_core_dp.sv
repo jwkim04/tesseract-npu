@@ -1070,7 +1070,7 @@ module tsr_core_dp
   logic [1:0]                             vu_wr_valid, vu_wr_ready;
   logic [1:0][SPM_AW-1:0]                 vu_wr_line;
   logic [1:0][TSR_LINE_BITS-1:0]          vu_wr_data;
-  logic [1:0][TSR_SPM_BE_W-1:0]           vu_wr_be;
+  logic [1:0][TSR_SPM_WM_W-1:0]           vu_wr_wm;                        // a bit per 32-bit word
   logic                                   vu_perf_spm_wait, vu_perf_hazard, vu_perf_line, vu_progress;
   logic [15:0][31:0]                      vu_sreg_u;                       // the unit's; vu_sreg is tsr_csr's side
   if (HAS_VU) begin : g_vu
@@ -1087,7 +1087,7 @@ module tsr_core_dp
       .rd_req_valid(vu_rd_req_valid), .rd_req_ready(vu_rd_req_ready), .rd_req_line(vu_rd_req_line),
       .rd_rsp_valid(vu_rd_rsp_valid), .rd_rsp_data(vu_rd_rsp_data),
       .wr_valid(vu_wr_valid), .wr_ready(vu_wr_ready), .wr_line(vu_wr_line), .wr_data(vu_wr_data),
-      .wr_be(vu_wr_be),
+      .wr_wm(vu_wr_wm),
       .sreg(vu_sreg_u),
       .perf_spm_wait(vu_perf_spm_wait), .perf_hazard(vu_perf_hazard), .perf_line(vu_perf_line),
       .dbg_held(vu_dbg_held), .dbg_w0(vu_dbg_w0), .dbg_flags(vu_dbg_flags),
@@ -1109,7 +1109,7 @@ module tsr_core_dp
     assign vu_wr_valid       = '0;
     assign vu_wr_line        = '0;
     assign vu_wr_data        = '0;
-    assign vu_wr_be          = '0;
+    assign vu_wr_wm          = '0;
     assign vu_sreg_u         = '0;
     assign vu_perf_spm_wait  = 1'b0;
     assign vu_perf_hazard    = 1'b0;
@@ -1227,7 +1227,12 @@ module tsr_core_dp
       assign vu_wr_ready        = sb_wr_ready[c];
       assign sb_wr_line[c]      = vu_wr_line;
       assign sb_wr_data[c]      = vu_wr_data;
-      assign sb_wr_be[c]        = vu_wr_be;
+      // the unit's write enables cover whole words: a mask bit is the four byte enables of its word
+      for (genvar b = 0; b < 2; b++) begin : g_be
+        for (genvar w = 0; w < TSR_SPM_WM_W; w++) begin : g_w
+          assign sb_wr_be[c][b][4*w +: 4] = {4{vu_wr_wm[b][w]}};
+        end
+      end
     end else begin : g_tie
       assign sb_rd_req_valid[c] = '0;
       assign sb_rd_req_line[c]  = '0;

@@ -47,7 +47,7 @@ module tsr_vu_red
   output logic                           r_tag,
   output logic [TSR_VU_LW-1:0]           r_line,
   output logic [TSR_LINE_BITS-1:0]       r_data,
-  output logic [TSR_SPM_BE_W-1:0]        r_be,
+  output logic [TSR_SPM_WM_W-1:0]        r_wm,        // words written (a bit per 32-bit word)
   output logic                           s_we,
   output logic [3:0]                     s_wi,
   output logic [31:0]                    s_wd,
@@ -306,6 +306,9 @@ module tsr_vu_red
   // Results: s register, or the packer
   // -------------------------------------------------------------------------------------------
   logic [15:0][31:0] pk_q;                   // the result line being packed
+`ifndef SYNTHESIS
+  logic [TSR_SPM_BE_W-1:0] r_be_ref;         // reference: the byte enables of the line, uniform per word
+`endif
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       s_we <= 1'b0;
@@ -335,9 +338,24 @@ module tsr_vu_red
         wm[i] = (4'(i) <= pt.row[3:0]);
       end
       r_data <= ln;
-      for (int i = 0; i < 16; i++) r_be[4*i +: 4] <= (opk[pt.tag].keep && !wm[i]) ? 4'h0 : 4'hF;
+      for (int i = 0; i < 16; i++) r_wm[i] <= !(opk[pt.tag].keep && !wm[i]);
+`ifndef SYNTHESIS
+      for (int i = 0; i < 16; i++) r_be_ref[4*i +: 4] <= (opk[pt.tag].keep && !wm[i]) ? 4'h0 : 4'hF;
+`endif
     end
   end
+
+`ifndef SYNTHESIS
+  // r_wm stands for byte enables that are uniform per word: r_be_ref holds them.
+  logic                    chk_on_q;
+  initial chk_on_q = 1'b0;
+  always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
+  always_ff @(posedge clk) begin
+    if (rst_n && chk_on_q && !$isunknown(r_be_ref))
+      for (int i = 0; i < 16; i++)
+        assert (r_be_ref[4*i +: 4] == {4{r_wm[i]}}) else $error("%m: byte enables of word %0d differ from the word mask", i);
+  end
+`endif
 
   assign sopx_idle = !dv_busy_q && !sx_div;
   assign idle = !dq_v && (rdv_sr == '0) && !tq_v && (tv == '0) && (pv_sr == '0) && !g_v_q && !dr_busy &&

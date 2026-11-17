@@ -15,7 +15,9 @@
 // reads (oc_take, rc_take); a place is free again when its line leaves for the SPM. The lanes therefore
 // never wait, and a stalled SPM write only stops new reads.
 // SPM write: one request register (R2) loaded from the FIFO heads in turn (RED, TOPK, output);
-// wr_line[b] / wr_valid[b] for the line's bank b. A write is done when tsr_spm accepts it (VU §4.5):
+// wr_line[b] / wr_valid[b] for the line's bank b. Every write enable of the unit covers whole 32-bit
+// words, so the FIFOs, the request register and wr_wm carry one bit per word; the SPM client port
+// expands a bit to the four byte enables of its word (tsr_core_dp). A write is done when tsr_spm accepts it (VU §4.5):
 // ev_w[tag] pulses then (and for s-register writes), for the top's done count.
 
 module tsr_vu_wr
@@ -48,7 +50,7 @@ module tsr_vu_wr
   input  logic                           r_tag,
   input  logic [TSR_VU_LW-1:0]           r_line,
   input  logic [TSR_LINE_BITS-1:0]       r_data,
-  input  logic [TSR_SPM_BE_W-1:0]        r_be,
+  input  logic [TSR_SPM_WM_W-1:0]        r_wm,
   // TOPK result lines
   input  logic                           t_v,
   output logic                           t_ready,
@@ -68,7 +70,7 @@ module tsr_vu_wr
   input  logic [1:0]                     wr_ready,
   output logic [1:0][AW-1:0]             wr_line,
   output logic [1:0][TSR_LINE_BITS-1:0]  wr_data,
-  output logic [1:0][TSR_SPM_BE_W-1:0]   wr_be,
+  output logic [1:0][TSR_SPM_WM_W-1:0]   wr_wm,       // words written (a bit per 32-bit word)
   // events
   output logic [1:0]                     ev_w,        // [tag]: a write of that op completed
   output logic                           ev_line,     // an SPM line was written (VU_LINES)
@@ -134,12 +136,16 @@ module tsr_vu_wr
   assign xy = lane_y;
 
 `ifndef SYNTHESIS
+  logic [TSR_SPM_BE_W-1:0] o_be_ref;                     // reference: the byte enables of the line, uniform per word
   logic chk_on_q;
   initial chk_on_q = 1'b0;
   always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
   always_ff @(posedge clk) begin
     if (rst_n && chk_on_q) assert (!(fv && bv))
       else $error("%m: front/back exits overlap on the shared return");
+    if (rst_n && chk_on_q && !$isunknown(o_be_ref))
+      for (int i = 0; i < 16; i++)
+        assert (o_be_ref[4*i +: 4] == {4{o_wm[i]}}) else $error("%m: byte enables of word %0d differ from the word mask", i);
   end
 `endif
 
@@ -162,7 +168,7 @@ module tsr_vu_wr
   logic                     o_push;
   logic [TSR_VU_LW-1:0]     o_line;
   logic [TSR_LINE_BITS-1:0] o_data;
-  logic [TSR_SPM_BE_W-1:0]  o_be;
+  logic [TSR_SPM_WM_W-1:0]  o_wm;
   logic                     o_tag;
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -177,11 +183,17 @@ module tsr_vu_wr
     o_line <= xd.line;
     o_tag  <= xd.tag;
     o_data <= ln;
-    o_be   <= xd.sts ? (TSR_SPM_BE_W'(4'hF) << (4 * 32'(xd.dword))) : '1;
+    for (int i = 0; i < 16; i++) o_wm[i] <= xd.sts ? (4'(i) == xd.dword) : 1'b1;
     if (xd.keep) begin
-      for (int i = 0; i < 16; i++) o_be[4*i +: 4] <= (32'(i) < 32'(xd.tail)) ? 4'hF : 4'h0;
+      for (int i = 0; i < 16; i++) o_wm[i] <= (32'(i) < 32'(xd.tail));
     end
     if (xd.sts) o_data <= {16{ln[0]}};
+`ifndef SYNTHESIS
+    o_be_ref <= xd.sts ? (TSR_SPM_BE_W'(4'hF) << (4 * 32'(xd.dword))) : '1;
+    if (xd.keep) begin
+      for (int i = 0; i < 16; i++) o_be_ref[4*i +: 4] <= (32'(i) < 32'(xd.tail)) ? 4'hF : 4'h0;
+    end
+`endif
     lm_wa  <= LMAW'(xd.line);
     lm_wd  <= ln;
     s_wi   <= xd.line[3:0];
@@ -190,9 +202,9 @@ module tsr_vu_wr
   end
 
   // -------------------------------------------------------------------------------------------
-  // FIFOs (line, data, be, tag)
+  // FIFOs (line, data, word mask, tag)
   // -------------------------------------------------------------------------------------------
-  localparam int unsigned EW = 1 + TSR_VU_LW + TSR_LINE_BITS + TSR_SPM_BE_W;
+  localparam int unsigned EW = 1 + TSR_VU_LW + TSR_LINE_BITS + TSR_SPM_WM_W;
 
   logic          of_v, rf_v, tf_v;
   logic [EW-1:0] of_h, rf_h, tf_h;
@@ -202,13 +214,13 @@ module tsr_vu_wr
   logic [$clog2(TFD):0] tf_n;
 
   tsr_vu_fifo #(.W(EW), .D(OFD)) u_of (
-    .clk, .rst_n, .push(o_push), .din({o_tag, o_line, o_data, o_be}), .pop(of_pop), .v(of_v), .dout(of_h), .n(of_n)
+    .clk, .rst_n, .push(o_push), .din({o_tag, o_line, o_data, o_wm}), .pop(of_pop), .v(of_v), .dout(of_h), .n(of_n)
   );
   tsr_vu_fifo #(.W(EW), .D(RFD)) u_rf (
-    .clk, .rst_n, .push(r_v), .din({r_tag, r_line, r_data, r_be}), .pop(rf_pop), .v(rf_v), .dout(rf_h), .n(rf_n)
+    .clk, .rst_n, .push(r_v), .din({r_tag, r_line, r_data, r_wm}), .pop(rf_pop), .v(rf_v), .dout(rf_h), .n(rf_n)
   );
   tsr_vu_fifo #(.W(EW), .D(TFD)) u_tf (
-    .clk, .rst_n, .push(t_v && t_ready), .din({t_tag, t_line, t_data, {TSR_SPM_BE_W{1'b1}}}), .pop(tf_pop),
+    .clk, .rst_n, .push(t_v && t_ready), .din({t_tag, t_line, t_data, {TSR_SPM_WM_W{1'b1}}}), .pop(tf_pop),
     .v(tf_v), .dout(tf_h), .n(tf_n)
   );
   assign t_ready = (32'(tf_n) < TFD);
@@ -245,7 +257,7 @@ module tsr_vu_wr
   // -------------------------------------------------------------------------------------------
   logic          wq_v;
   logic [EW-1:0] wq;
-  wire           wq_acc = wq_v && wr_ready[wq[TSR_LINE_BITS + TSR_SPM_BE_W]];   // the line's bit 0
+  wire           wq_acc = wq_v && wr_ready[wq[TSR_LINE_BITS + TSR_SPM_WM_W]];   // the line's bit 0
   wire           wq_free = !wq_v || wq_acc;
   assign rf_pop = wq_free && rf_v;
   assign tf_pop = wq_free && !rf_v && tf_v;
@@ -259,12 +271,12 @@ module tsr_vu_wr
     if (wq_free) wq <= rf_v ? rf_h : tf_v ? tf_h : of_h;
   end
   wire                     wq_tag  = wq[EW-1];
-  wire [TSR_VU_LW-1:0]     wq_line = wq[TSR_LINE_BITS + TSR_SPM_BE_W +: TSR_VU_LW];
+  wire [TSR_VU_LW-1:0]     wq_line = wq[TSR_LINE_BITS + TSR_SPM_WM_W +: TSR_VU_LW];
   for (genvar b = 0; b < 2; b++) begin : g_wb
     assign wr_valid[b] = wq_v && (wq_line[0] == 1'(b));
     assign wr_line[b]  = AW'(wq_line);
-    assign wr_data[b]  = wq[TSR_SPM_BE_W +: TSR_LINE_BITS];
-    assign wr_be[b]    = wq[TSR_SPM_BE_W-1:0];
+    assign wr_data[b]  = wq[TSR_SPM_WM_W +: TSR_LINE_BITS];
+    assign wr_wm[b]    = wq[TSR_SPM_WM_W-1:0];
   end
 
   always_comb begin

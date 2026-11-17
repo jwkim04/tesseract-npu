@@ -32,7 +32,7 @@ async def local_reduce_order(dut):
                         cycle=cycle, kind="SPM", bank=bank,
                         line=(int(vu.wr_line.value) >> (bank * address_width)) & ((1 << address_width)-1),
                         data=hex((int(vu.wr_data.value) >> (512 * bank)) & ((1 << 512)-1)),
-                        enables=hex((int(vu.wr_be.value) >> (64 * bank)) & ((1 << 64)-1)),
+                        enables=hex(sum(0xF << (4 * w) for w in range(16) if (int(vu.wr_wm.value) >> (16 * bank + w)) & 1)),
                     ))
             if int(vu.u_red.s_we.value):
                 trace.append(dict(cycle=cycle, kind="SREG", index=int(vu.u_red.s_wi.value),

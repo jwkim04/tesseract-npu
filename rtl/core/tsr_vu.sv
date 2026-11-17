@@ -79,7 +79,7 @@ module tsr_vu
   input  logic [1:0]                     wr_ready,
   output logic [1:0][AW-1:0]             wr_line,
   output logic [1:0][TSR_LINE_BITS-1:0]  wr_data,
-  output logic [1:0][TSR_SPM_BE_W-1:0]   wr_be,
+  output logic [1:0][TSR_SPM_WM_W-1:0]   wr_wm,       // words written, a bit per 32-bit word
   // s registers (SREG0-15, EX §5.1; the core window)
   output logic [15:0][31:0]              sreg,
   // PERF (VU §5.10): VU_SPM_WAIT, VU_HAZARD (levels), VU_LINES (event)
@@ -145,7 +145,7 @@ module tsr_vu
   logic        r_v, r_tag;
   logic [TSR_VU_LW-1:0] r_line;
   logic [TSR_LINE_BITS-1:0] r_data;
-  logic [TSR_SPM_BE_W-1:0]  r_be;
+  logic [TSR_SPM_WM_W-1:0]  r_wm;
   logic [15:0]       l_v, l_neg, l_lv;
   tsr_vu_uop_e       l_uop;
   logic [15:0][31:0] l_a, l_b;
@@ -744,7 +744,7 @@ module tsr_vu
   end
   tsr_vu_red #(.DRL(LANE_X), .LOCAL_L1(LOCAL_L1)) u_red (
     .clk, .rst_n, .opk, .row_v, .row_tok, .dr_addr, .dr_sel, .dr_empty, .dr_mx, .dr_data, .dr_l1, .ring_rel, .sopx_v, .sopx_tag, .sopx_idle,
-    .r_v, .r_tag, .r_line, .r_data, .r_be, .s_we(s2_we), .s_wi(s2_wi), .s_wd(s2_wd), .s_wtag(s2_wtag),
+    .r_v, .r_tag, .r_line, .r_data, .r_wm, .s_we(s2_we), .s_wi(s2_wi), .s_wd(s2_wd), .s_wtag(s2_wtag),
     .idle(red_idle)
   );
 
@@ -919,10 +919,10 @@ module tsr_vu
   tsr_vu_wr #(.SPM_BYTES(SPM_BYTES), .OFD(OFD), .LMAW(LMAW), .LANE_X(LANE_X)) u_wr (
     .clk, .rst_n, .d_v(m_dv), .d_back(m_dback), .d_desc(m_desc), .lane_y,
     .oc_take(5'(slot_take ? slot_oc : 2'd0) + gdn_oc_take), .oc_free, .rc_take(slot_take && slot_rc), .rc_free,
-    .r_v, .r_tag, .r_line, .r_data, .r_be,
+    .r_v, .r_tag, .r_line, .r_data, .r_wm,
     .t_v(t_v_w), .t_ready(t_ready_w), .t_tag(t_tag_w), .t_line(t_line_w), .t_data(t_data_w),
     .lm_we, .lm_wa, .lm_wd, .s_we, .s_wi, .s_wd, .s_wtag,
-    .wr_valid, .wr_ready, .wr_line, .wr_data, .wr_be, .ev_w, .ev_line, .wr_wait, .idle(wr_idle)
+    .wr_valid, .wr_ready, .wr_line, .wr_data, .wr_wm, .ev_w, .ev_line, .wr_wait, .idle(wr_idle)
   );
 
   // -------------------------------------------------------------------------------------------

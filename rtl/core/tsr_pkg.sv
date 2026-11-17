@@ -93,6 +93,7 @@ package tsr_pkg;
   localparam int unsigned TSR_SPM_CL_AT     = 5;  // absent in M6 (tied off)
   localparam int unsigned TSR_SPM_NSP       = 4;  // clients 0..3: single port through tsr_spm_cport
   localparam int unsigned TSR_SPM_BE_W      = TSR_LINE_BYTES;
+  localparam int unsigned TSR_SPM_WM_W      = TSR_SPM_BE_W / 4;   // word mask of a line: one bit per 32-bit word
 
   // -------------------------------------------------------------------------------------------
   // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). Offsets: docs/design

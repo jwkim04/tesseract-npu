@@ -62,6 +62,12 @@ module tsr_vu_tb
   logic [NCL-1:0][1:0][AW-1:0]       wr_line;
   logic [NCL-1:0][1:0][TSR_LINE_BITS-1:0] wr_data;
   logic [NCL-1:0][1:0][TSR_SPM_BE_W-1:0]  wr_be;
+  logic [1:0][TSR_SPM_WM_W-1:0]           vu_wr_wm;   // the VU's word mask, expanded to the byte enables of client 2
+  for (genvar b = 0; b < 2; b++) begin : g_vu_be
+    for (genvar w = 0; w < TSR_SPM_WM_W; w++) begin : g_w
+      assign wr_be[2][b][4*w +: 4] = {4{vu_wr_wm[b][w]}};
+    end
+  end
 
   tsr_spm #(.SPM_BYTES(SPM_BYTES), .NCL(NCL), .RD_LAT(SPM_RD_LAT), .BANK_LINES(1024)) u_spm (
     .clk, .rst_n, .rd_req_valid, .rd_req_ready, .rd_req_line, .rd_rsp_valid, .rd_rsp_data,
@@ -128,7 +134,7 @@ module tsr_vu_tb
     /* verilator lint_on PINCONNECTEMPTY */
     .rd_req_valid(rd_req_valid[2]), .rd_req_ready(rd_req_ready[2]), .rd_req_line(rd_req_line[2]),
     .rd_rsp_valid(rd_rsp_valid[2]), .rd_rsp_data,
-    .wr_valid(wr_valid[2]), .wr_ready(wr_ready[2]), .wr_line(wr_line[2]), .wr_data(wr_data[2]), .wr_be(wr_be[2]),
+    .wr_valid(wr_valid[2]), .wr_ready(wr_ready[2]), .wr_line(wr_line[2]), .wr_data(wr_data[2]), .wr_wm(vu_wr_wm),
     .sreg, .perf_spm_wait, .perf_hazard, .perf_line, .dbg_held, .dbg_w0, .dbg_flags, .progress(dbg_x)
   );
   wire unused_ok = &{1'b0, n_rsp_v, n_rsp_d, n_wrdy, dbg_x, dbg_held, dbg_w0, dbg_flags};

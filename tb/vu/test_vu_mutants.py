@@ -89,8 +89,8 @@ MUTANTS = [
     # ---- tsr_vu_rd / tsr_vu_wr ----
     ("rd_bank_b", "tsr_vu_rd.sv", "if (wb) qm[b][qwp[b] + 2'(wa)] <= {1'b1, AW'(s_slot.bline)};",
      "if (wb) qm[b][qwp[b] + 2'(wa)] <= {1'b1, AW'(s_slot.aline)};", "unit:vu_smoke", "operand b's line"),
-    ("wr_keep", "tsr_vu_wr.sv", "for (int i = 0; i < 16; i++) o_be[4*i +: 4] <= (32'(i) < 32'(xd.tail)) ? 4'hF : 4'h0;",
-     "for (int i = 0; i < 16; i++) o_be[4*i +: 4] <= (32'(i) <= 32'(xd.tail)) ? 4'hF : 4'h0;", "unit:vu_at",
+    ("wr_keep", "tsr_vu_wr.sv", "for (int i = 0; i < 16; i++) o_wm[i] <= (32'(i) < 32'(xd.tail));",
+     "for (int i = 0; i < 16; i++) o_wm[i] <= (32'(i) <= 32'(xd.tail));", "unit:vu_at",
      "AT row vectors keep the words past R"),
     # ---- tsr_vu_angle / tsr_vu_topk / tsr_vu_dq ----
     ("ang_cs_swap", "tsr_vu_angle.sv", "mem[{wr_h, wr_i[8:4]}] <= {mc, ms};", "mem[{wr_h, wr_i[8:4]}] <= {ms, mc};",
