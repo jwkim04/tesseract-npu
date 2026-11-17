@@ -113,6 +113,8 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -
 # Optional K4 local consumers and the physical two-flit result link. Defaults
 # intentionally retain the legacy path, so lint these elaborations explicitly.
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GSPM_BYTES=4194304 -GSPM_RD_LAT=4 -GMVM_RES_PIPE=2 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GLOCAL_INTERMEDIATES=1 -GLOCAL_SCALE=1 -GLOCAL_SOFTCAP=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
+# The K4 shape with the local consumers and XSLR_REG: the VU command pipe keeps its ready path (tsr_core_dp g_vux.g_cmd_rdy).
+lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GLOCAL_INTERMEDIATES=1 -GLOCAL_SCALE=1 -GLOCAL_SOFTCAP=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GMVM_RES_PIPE=2 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
 # The reduced card image (tsr_u200_k4, gen_tops.py): four clusters, T_MAX 8, the RV transport, no vector unit,
 # no attention (KVST, ATTQK, ATTPV), no trace writer or history.
