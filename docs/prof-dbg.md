@@ -149,6 +149,15 @@ EXPECT_CYCLES=<cycles of the unprofiled run> REF_RUN=build/prof-report/card_nopr
     build/prof-report/card build/prof-report/sim build/prof-report "Model name"
 ```
 
+A run of the simulator alone has a report of its own: `python3 sw/tools/prof/prof_report.py report --sim DIR --out OUT`,
+without `--card`. For the scheduler splits in the Graph tab, first run
+`prof_report.py sched DIR/sched_and_run.log DIR/sched.json`. The page, the Perfetto file and `summary.json` then
+describe the simulator run: the group, the toolbar and the table headers say "Simulator", there is no comparison with
+a card, and the Summary tab names the speed as the simulator's speed on the host. The device time and the unit shares
+are those of the cycle model, and the Utilization table has the factors G, F and E at clock. The factors H, E and U,
+which divide by the host's wall time, are not computed. `./quickstart.sh` ([getting-started.md](getting-started.md))
+builds this report from a run of a small model.
+
 `report.html` is one self-contained file that opens from `file://` and makes no request. It is a profiler window, laid
 out like Nsight Systems and Nsight Compute: a toolbar (model, image, commit, bitstream, clock, launch selector, theme
 toggle), a tree on the left (launches, then layers, then records), a timeline, and a bottom pane with four tabs. The

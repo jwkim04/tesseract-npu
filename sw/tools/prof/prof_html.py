@@ -60,11 +60,12 @@ def timeline_rows(tl, span, tag, label):
 
 def page_data(model, extra):
     s = model["summary"]
-    run = model["run"]["card"]
+    sim_only = model.get("kind") == "sim"      # the report of a simulator run alone: the page names it the simulator's
+    run = model["run"]["sim"] if sim_only else model["run"]["card"]
     capture = model.get("capture") or {}
     gm = G.GraphModel(model)
     tl = model["timeline"]
-    runs = [timeline_rows(tl["card"], tl["span"], "card", "Card")]
+    runs = [timeline_rows(tl["card"], tl["span"], "sim", "Simulator") if sim_only else timeline_rows(tl["card"], tl["span"], "card", "Card")]
     if tl.get("sim"):
         runs.append(timeline_rows(tl["sim"], tl["sim_span"], "sim", "Simulator"))
     recs = []
@@ -85,7 +86,7 @@ def page_data(model, extra):
                                      "E_clock", "empty", "wait", "mvm_dual", "t_max")}
     summary["llama_on"] = s.get("llama_on")
     summary["llama_off"] = s.get("llama_off")
-    return {
+    D = {
         "meta": {"model": model.get("model") or "", "image": run["image_id"], "commit": capture.get("git", ""), "date": (capture.get("date") or "")[:10],
                  "xclbin": (capture.get("xclbin_sha256") or "")[:8], "launch": model["launch"], "n_launches": run["n_launches"],
                  "description": run["description"], "sim_description": (model["run"].get("sim") or {}).get("description", ""),
@@ -100,6 +101,9 @@ def page_data(model, extra):
         "spm_lines": model.get("spm_lines") or 65536, "units": P.UNITS, "opnames": {str(k): v for k, v in P.OPNAME.items()},
         "tl": {"runs": runs},
     }
+    if sim_only:
+        D["meta"]["sim_only"] = True
+    return D
 
 
 def frame(D):
@@ -112,6 +116,8 @@ def frame(D):
         dis = "" if (l["k"] == m["launch"]) else " disabled"
         opts.append('<option value="%d"%s%s>%d  %s  %s cycles</option>' % (l["k"], sel, dis, l["k"], what, "{:,}".format(int(l["cycles"]))))
     kv = [("Model", m["model"] or "-"), ("Image", m["image"] or "-"), ("Commit", m["commit"] or "-"), ("Clock", "%.1f MHz" % (m["f"] / 1e6))]
+    if m.get("sim_only"):
+        kv.insert(0, ("Run", "Simulator"))
     if m["xclbin"]:
         kv.insert(2, ("Bitstream", m["xclbin"]))
     kvs = "".join('<span class="kv"><span class="k">%s</span><span class="v">%s</span></span>' % (esc(k), esc(v)) for k, v in kv)

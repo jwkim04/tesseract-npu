@@ -6,6 +6,8 @@
   - the record cycles add up to the launch span, the join found every record, the HTML follows the page rules (a title of two to four
     words, tokens on :root with a dark set under both selectors, no external script or stylesheet, under 16 MB), the Perfetto file
     has a slice id on every slice and a flow arrow from a record to each of its ops
+  - prof_report.py report --sim DIR (no --card) reports a simulator run alone: the page, the Perfetto file and summary.json name it the
+    simulator's, there is no card or comparison section, equal inputs give equal bytes, and --card keeps the card labels
   - the ideal MVM cycles follow the weight streams of the core (docs/prof-dbg.md §3.1): runs of the card image's simulator with the dual
     weight stream (TSR_SIM_CARD=k4dual) and with TSR_MVM_DUAL=0, and of the plain simulator, against the rule, the simulated run time of
     every MVM op, meta.json's mvm_dual and the E and F of the utilization split
@@ -201,6 +203,58 @@ def dual_checks(a, plain, plain_summ):
           "an older dump gives the same report on one stream (mvm_dual %s, ideal %s cycles)" % (so.get("mvm_dual"), so.get("ideal_cycles")))
 
 
+def sim_only_checks(a, dump, summ):
+    """The report of a run of the simulator alone (report --sim DIR): labels, no comparison with a card, equal inputs give equal bytes."""
+    def page(path):
+        html = open(os.path.join(path, "report.html")).read()
+        return html, json.loads(re.search(r'<script type="application/json" id="data">(.*?)</script>', html, re.S).group(1).replace("<\\/", "</"))
+    out = os.path.join(a.out_dir, "report_simonly")
+    out2 = os.path.join(a.out_dir, "report_simonly2")
+    cmd = [sys.executable, os.path.join(HERE, "prof_report.py"), "report", "--sim", dump, "--model-name", "tiny", "--out"]
+    ps = [subprocess.run(cmd + [o] + ["--expect-cycles", str(int(summ["summary"]["cycles"]))], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600) for o in (out, out2)]
+    check(all(p.returncode == 0 for p in ps), "prof_report.py report --sim DIR (no --card) exits 0")
+    if any(p.returncode != 0 for p in ps):
+        print(ps[0].stdout.decode(), ps[0].stderr.decode())
+        return
+    check(all(open(os.path.join(out, f), "rb").read() == open(os.path.join(out2, f), "rb").read() for f in ("report.html", "trace.perfetto.json", "summary.json")),
+          "report --sim: the same inputs give byte-identical report.html, trace.perfetto.json and summary.json")
+    html, d = page(out)
+    runs = d["tl"]["runs"]
+    check(d["meta"].get("sim_only") is True and not d["meta"]["has_sim"] and d["sim"] is None and d["meta"]["sim_note"] == "",
+          "report --sim: the page data marks a simulator run alone, with no comparison data")
+    check(len(runs) == 1 and runs[0]["label"] == "Simulator" and runs[0]["tag"] == "sim" and all(r["id"].startswith("sim.") for r in runs[0]["rows"]),
+          "report --sim: one timeline group, labelled Simulator, with rows named sim.*")
+    check('Run</span><span class="v">Simulator' in html, "report --sim: the toolbar names the run Simulator")
+    check(all("sim" not in r and "sim_ops" not in r for r in d["records"]) and all("cycles" in x and "card" not in x for x in d["per_token"]),
+          "report --sim: no record or decode launch carries a card or simulator-against-card column")
+    ss = json.load(open(os.path.join(out, "summary.json")))
+    check(ss.get("kind") == "sim" and list(ss["run"]) == ["sim"] and ss["run"]["sim"]["tag"] == "simulator" and ss.get("sim") is None,
+          "report --sim: summary.json has kind sim, only the simulator's run and no comparison")
+    check(not {"H", "E", "U", "U_w"} & set(ss["summary"]) and ss["summary"]["G"] is not None and "t_dev_ms" in ss["summary"],
+          "report --sim: summary.json has no utilization of the host time (H, E, U), and the cycle numbers")
+    s = summ["summary"]
+    check(ss["summary"]["cycles"] == s["cycles"] and ss["summary"]["span"] == s["span"] and [(k["kind"], k["cycles"]) for k in ss["kinds"]] == [(k["kind"], k["cycles"]) for k in summ["kinds"]],
+          "report --sim: the same cycles, span and per-kind table as the report of the same dump given as --card")
+    ev = json.load(open(os.path.join(out, "trace.perfetto.json")))["traceEvents"]
+    procs = [e["args"]["name"] for e in ev if e["ph"] == "M" and e["name"] == "process_name"]
+    ids = [e["args"]["id"] for e in ev if e["ph"] == "X" and "id" in e["args"]]
+    check(len(procs) == 1 and procs[0].startswith("Tesseract simulator") and "card" not in procs[0].lower() and ids and all(i.startswith("sim:") for i in ids),
+          "report --sim: Perfetto has one process, %r, and slice ids sim:*" % (procs[0] if procs else None))
+    check(any(c["text"].startswith("Simulator total") for c in ss["checks"]), "report --sim: --expect-cycles gives a check that says \"Simulator total\"")
+    # The page's JS is not run here (the host has no JS engine): these only check that the embedded script has the simulator branches.
+    check('SIMONLY ? "Simulator" : "Card"' in html and "Simulator speed on the host" in html and "SIMONLY && s.G != null" in html,
+          "report --sim: the embedded script has the simulator labels and the simulator utilization branch (the JS rendering itself is not run)")
+    bad = [c["text"] for c in ss["checks"] if c["ok"] is False]
+    check(not bad and not any("card" in c["text"].lower() for c in ss["checks"]), "report --sim: the report's own checks pass and name no card")
+    # --card keeps the card labels; no --card and no --sim is an error
+    _, dc = page(os.path.join(a.out_dir, "report"))
+    sc = json.load(open(os.path.join(a.out_dir, "report", "summary.json")))
+    check("sim_only" not in dc["meta"] and dc["tl"]["runs"][0]["label"] == "Card" and dc["tl"]["runs"][0]["tag"] == "card" and "kind" not in sc and "card" in sc["run"],
+          "report --card (with --sim): the card labels and keys as before")
+    p = subprocess.run([sys.executable, os.path.join(HERE, "prof_report.py"), "report", "--out", os.path.join(a.out_dir, "report_none")], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    check(p.returncode == 2 and b"--sim" in p.stderr, "report without --card and --sim exits 2 and names the options")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True)
@@ -303,6 +357,7 @@ def main():
     check(bad == 0, "Perfetto: slices of a track never overlap without nesting (%d tracks)" % len(per))
     sl = [e for e in xs if e["args"].get("kind") in ("MUL_MAT", "MUL_MAT_BEGIN") and "ideal_cycles" in e["args"]]
     check(len(sl) > 0 and all("efficiency" in e["args"] for e in sl if e["args"].get("cycles")), "Perfetto: MVM slices carry the ideal cycles and the efficiency")
+    sim_only_checks(a, dump, summ)
     dual_checks(a, dump, summ)
     if FAILS:
         print("%d check(s) failed" % len(FAILS))

@@ -282,15 +282,17 @@ def kind_name_of(meta, kind):
     return k["name"] if k else "kind%d" % kind
 
 
-def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, title=None, model_name=None, sched=None, ref_run=None):
-    """The data of the report: dict of plain values."""
+def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, title=None, model_name=None, sched=None, ref_run=None, kind="card"):
+    """The data of the report: dict of plain values. kind "sim": `card` is the dump of a simulator run alone, which the report names the
+    simulator's, not the card's (prof_report.py report --sim DIR without --card); `sim` is then None."""
     run = card
+    tag = "sim" if kind == "sim" else "card"
     dec = run.decode_launches()
     dec = [k for k in dec if run.launch(k)[1] is not None]
     if not dec:
         raise SystemExit("prof_report: no decode launch with a trace in %s" % run.path)
     k = launch if launch is not None else dec[len(dec) // 2] if len(dec) > 1 else dec[0]
-    cv = LaunchView(run, k, "card")
+    cv = LaunchView(run, k, tag)
     sv = None
     sim_note = None
     if sim is not None:
@@ -321,6 +323,8 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
     C = meta["num_ch"]
     f = cv.f
     out = {"title": title or "Decode token profile", "model": model_name or "", "launch": k}
+    if kind == "sim":
+        out["kind"] = "sim"
     # ---- records
     rows = []
     for i, r in enumerate(recs):
@@ -339,7 +343,7 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
         ops = cv.by_idx.get(i, (None, []))[1]
         if ops:
             lo = max(ops, key=lambda o: o.run if o.ran else 0)
-            row["slice"] = "card:r%d.%s%d" % (i, P.UNITS[lo.unit], lo.ordinal)
+            row["slice"] = "%s:r%d.%s%d" % (tag, i, P.UNITS[lo.unit], lo.ordinal)
         if sv is not None:
             ss = sv.rec_stats(i)
             row["sim"] = {"cost": ss["cost"], "n_ops": ss["n"]}
@@ -374,7 +378,11 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
         s["llama_off"] = P.parse_llama_log(os.path.join(ref_run, "run.log"))
         if s["llama_off"]["toks"]:
             s["ref_toks"] = s["llama_off"]["toks"]
-    if cyc and mvm and ideal_total and period:
+    if kind == "sim" and cyc and mvm and ideal_total:
+        # the simulator's wall time is the host's: no share of it is the device's idle time, and no DDR rate is read against it
+        s.update({"G": 1.0 - mvm / cyc, "F": 1.0 - ideal_total / mvm, "E_clock": w_bytes / ideal_total * f / B_M0,
+                  "empty": pf.get("MVM_EMPTY", 0) / cyc, "wait": pf.get("MVM_WAIT", 0) / cyc})
+    elif cyc and mvm and ideal_total and period:
         H = 1.0 - t_dev / period
         G = 1.0 - mvm / cyc
         F = 1.0 - ideal_total / mvm
@@ -443,7 +451,10 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
     out["sim_note"] = sim_note
     # ---- checks
     out["checks"] = make_checks(cv, sv, out, expect_cycles, run, dec)
-    out["run"] = {"card": run_info(run, cv, "card"), "sim": run_info(sim, sv, "simulator") if sv is not None else None}
+    if kind == "sim":
+        out["run"] = {"sim": run_info(run, cv, "simulator")}
+    else:
+        out["run"] = {"card": run_info(run, cv, "card"), "sim": run_info(sim, sv, "simulator") if sv is not None else None}
     out["capture"] = run.capture
     out["spm_lines"] = run.meta.get("spm_lines")
     # cycles of every decode launch, card against simulator
@@ -454,7 +465,7 @@ def build_model(card, sim=None, launch=None, expect_cycles=None, ref_toks=None, 
         sc_k = None
         if sim is not None and kk < len(sim.launch_log) and sim.launch_log[kk].get("perf"):
             sc_k = sim.launch_log[kk]["perf"][0]
-        series.append({"k": kk, "card": cyc_k, "sim": sc_k})
+        series.append({"k": kk, "cycles": cyc_k} if kind == "sim" else {"k": kk, "card": cyc_k, "sim": sc_k})
     out["per_token"] = series
     lg = collections.OrderedDict()
     for kk, e in enumerate(log):
@@ -522,7 +533,8 @@ def make_checks(cv, sv, out, expect_cycles, run, dec):
             "work before LAUNCH_BEGIN and after LAUNCH_END, %.2f %%)." % (span, cyc, d, 100.0 * d / cyc))
     if expect_cycles:
         d = (cyc - expect_cycles) / expect_cycles
-        add(abs(d) <= 0.01, "Card total %.3f M cycles against the earlier measurement of %.3f M (%+.2f %%)." % (cyc / 1e6, expect_cycles / 1e6, 100 * d))
+        add(abs(d) <= 0.01, "%s total %.3f M cycles against the earlier measurement of %.3f M (%+.2f %%)." %
+            ("Simulator" if out.get("kind") == "sim" else "Card", cyc / 1e6, expect_cycles / 1e6, 100 * d))
     # DB 8.7: the per-unit busy cycles against PERF
     busy = collections.Counter()
     for o in cv.tl.ops:

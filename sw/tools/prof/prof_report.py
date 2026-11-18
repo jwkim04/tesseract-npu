@@ -2,9 +2,11 @@
 """prof_report.py: the profile report of one decode token (docs/prof-dbg.md "The profile report").
 
   prof_report.py report --card DIR [--sim DIR] --out DIR [--launch N] [--model-name S] [--expect-cycles N] [--ref-toks X]
+  prof_report.py report --sim DIR --out DIR [--launch N] [--model-name S]
       reads a dump directory of the card (TSR_DUMP_PLAN, tools/prof/capture_card.sh) and, optionally, of the simulator
       (capture_sim.sh), and writes OUT/report.html (one self-contained page), OUT/trace.perfetto.json (the same slices for
-      Perfetto / chrome://tracing) and OUT/summary.json (the numbers of the page).
+      Perfetto / chrome://tracing) and OUT/summary.json (the numbers of the page). With --sim alone the report is of the
+      simulator run: the page, the trace and the summary name it the simulator's, and there is no comparison with a card.
   prof_report.py sched LOG OUT.json
       the scheduler's splits out of a GGML_SCHED_DEBUG=2 log (llama-completion -lv 5): which nodes the CPU runs.
 
@@ -79,8 +81,12 @@ def cmd_sched(a):
 
 
 def cmd_report(a):
-    card = P.Run(a.card)
-    sim = P.Run(a.sim) if a.sim else None
+    if not a.card and not a.sim:
+        print("prof_report: report needs --card DIR, or --sim DIR for a run of the simulator alone", file=sys.stderr)
+        return 2
+    kind = "card" if a.card else "sim"
+    card = P.Run(a.card or a.sim)
+    sim = P.Run(a.sim) if a.card and a.sim else None
     # a launch both runs have, in the middle of the decode tokens
     launch = a.launch
     if launch is None and sim is not None:
@@ -89,18 +95,21 @@ def cmd_report(a):
         both = [k for k in cd if k in sd]
         if both:
             launch = both[len(both) // 2]
-    model = M.build_model(card, sim, launch=launch, expect_cycles=a.expect_cycles, ref_toks=a.ref_toks, model_name=a.model_name, ref_run=a.ref_run)
+    model = M.build_model(card, sim, launch=launch, expect_cycles=a.expect_cycles, ref_toks=a.ref_toks, model_name=a.model_name, ref_run=a.ref_run, kind=kind)
     os.makedirs(a.out, exist_ok=True)
     cmds = a.commands or ""
     n = H.build_html(model, os.path.join(a.out, "report.html"), {"commands": cmds})
     views = []
-    cv = M.LaunchView(card, model["launch"], "card")
-    views.append((cv, 1, "Tesseract card (%s, %.0f MHz)" % (model["run"]["card"]["image_id"], (cv.f or 0) / 1e6)))
+    cv = M.LaunchView(card, model["launch"], kind)
+    if kind == "sim":
+        views.append((cv, 2, "Tesseract simulator (%s, %.0f MHz in the cycle model)" % (model["run"]["sim"]["image_id"], (cv.f or 0) / 1e6)))
+    else:
+        views.append((cv, 1, "Tesseract card (%s, %.0f MHz)" % (model["run"]["card"]["image_id"], (cv.f or 0) / 1e6)))
     if sim is not None and model.get("sim") is not None:
         sv = M.LaunchView(sim, model["launch"], "sim")
         views.append((sv, 2, "Tesseract simulator (card configuration)"))
     nev = PF.write_perfetto(os.path.join(a.out, "trace.perfetto.json"), views, model["records"], cv.f)
-    summ = {k: v for k, v in model.items() if k in ("summary", "kinds", "group_totals", "checks", "run", "launch", "other_cycles", "sim", "per_token")}
+    summ = {k: v for k, v in model.items() if k in ("kind", "summary", "kinds", "group_totals", "checks", "run", "launch", "other_cycles", "sim", "per_token")}
     summ["layers"] = [{"layer": L["layer"], "groups": L["groups"]} for L in model["layers"]]
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summ, f, indent=1, default=lambda o: o if not isinstance(o, float) else round(o, 6))
@@ -116,8 +125,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("report")
-    r.add_argument("--card", required=True)
-    r.add_argument("--sim")
+    r.add_argument("--card", help="dump directory of a card run")
+    r.add_argument("--sim", help="dump directory of a simulator run: compared with --card, or reported alone without it")
     r.add_argument("--out", required=True)
     r.add_argument("--launch", type=int)
     r.add_argument("--model-name")

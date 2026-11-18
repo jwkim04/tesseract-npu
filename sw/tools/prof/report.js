@@ -4,7 +4,7 @@
   "use strict";
   var D = JSON.parse(document.getElementById("data").textContent);
   var M = D.meta, R = D.records, S = D.summary, F = M.f;
-  var RUNS = D.tl.runs, SPAN = M.span;
+  var RUNS = D.tl.runs, SPAN = M.span, SIMONLY = !!M.sim_only;   // SIMONLY: the report of a simulator run alone (prof_report.py report --sim DIR)
   var GL = {};
   D.groups.forEach(function (g) { GL[g.id] = g.label; });
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -444,17 +444,17 @@
   function renderSummary() {
     var s = S, h = "", on = s.llama_on || {}, off = s.llama_off || {};
     var run = [
-      mrow("Model", "", esc(M.model || "-")), mrow("Image", "", '<span class="num">' + esc(M.image) + "</span>"), mrow("Bitstream", "", '<span class="num">' + esc(M.xclbin || "-") + "</span>"),
+      mrow("Model", "", esc(M.model || "-")), mrow("Image", "", '<span class="num">' + esc(M.image) + "</span>")].concat(SIMONLY ? [] : [mrow("Bitstream", "", '<span class="num">' + esc(M.xclbin || "-") + "</span>")]).concat([
       mrow("Commit", "", '<span class="num">' + esc(M.commit || "-") + "</span>"), mrow("Captured", "", esc(M.date || "-")),
       mrow("Launch", "", fint(M.launch) + " of " + fint(M.n_launches)), mrow("Decode tokens captured", "", fint(s.n_decode))
-    ];
-    var speed = [];
-    if (off.toks) speed.push(mrow("Decode speed, profiler off", "tok/s", fx(off.toks, 2)));
-    else if (s.ref_toks) speed.push(mrow("Decode speed, reference", "tok/s", fx(s.ref_toks, 2)));
-    if (on.toks) speed.push(mrow("Decode speed, profiler on", "tok/s", fx(on.toks, 2)));
-    if (s.tok_s) { speed.push(mrow("Decode speed, token period", "tok/s", fx(s.tok_s, 2))); speed.push(mrow("Token period", "ms", fx(s.token_period_ms, 2))); }
-    speed.push(mrow("Device time per token", "ms", fx(s.t_dev_ms, 2)));
-    speed.push(mrow("Device speed", "tok/s", fx(s.tok_s_dev, 2)));
+    ]);
+    var speed = [], host = SIMONLY ? "Simulator speed on the host" : "Decode speed";
+    if (off.toks) speed.push(mrow(host + ", profiler off", "tok/s", fx(off.toks, 2)));
+    else if (s.ref_toks) speed.push(mrow(host + ", reference", "tok/s", fx(s.ref_toks, 2)));
+    if (on.toks) speed.push(mrow(host + ", profiler on", "tok/s", fx(on.toks, 2)));
+    if (s.tok_s) { speed.push(mrow(host + ", token period", "tok/s", fx(s.tok_s, 2))); speed.push(mrow("Token period", "ms", fx(s.token_period_ms, 2))); }
+    if (SIMONLY) speed.push(mrow("Simulated device time per token (cycle model)", "ms", fx(s.t_dev_ms, 2)));
+    else { speed.push(mrow("Device time per token", "ms", fx(s.t_dev_ms, 2))); speed.push(mrow("Device speed", "tok/s", fx(s.tok_s_dev, 2))); }
     var dev = [
       mrow("Device cycles (PERF)", "cycle", fint(s.cycles)), mrow("Launch span", "cycle", fint(s.span)), mrow("Setup", "cycle", fint(s.setup)), mrow("Tail", "cycle", fint(s.tail)),
       mrow("Core clock", "MHz", fx(F / 1e6, 1)), mrow("MVM busy", "cycle", fint(s.mvm_cycles)), mrow("MVM busy share", "%", fpct(div(s.mvm_cycles, s.cycles))),
@@ -465,12 +465,13 @@
     h += '<div class="grid">';
     h += section("Run", table([["Field", ""], ["", "u"], ["Value", ""]], run));
     h += section("Speed", table(H3, speed));
-    h += section("Device", table(H3, dev));
-    if (s.U != null) {
+    h += section(SIMONLY ? "Simulated device" : "Device", table(H3, dev));
+    if (s.U != null || (SIMONLY && s.G != null)) {
       var u = [
         ["H", "No launch active (host)", "%", fpct(s.H)], ["G", "Launch cycles without MVM", "%", fpct(s.G)], ["F", "MVM cycles above ideal", "%", fpct(s.F)],
         ["E", "Read rate over the stream rate", "%", fpct(s.E)], ["U", "(1 - H)(1 - G)(1 - F) E", "%", fpct(s.U)], ["E at clock", "Stream rate ceiling", "%", fpct(s.E_clock)]
-      ].map(function (x) { return [esc(x[0]), esc(x[1]), esc(x[2]), x[3]]; });
+      ].filter(function (x) { return !SIMONLY || x[0] === "G" || x[0] === "F" || x[0] === "E at clock"; })
+       .map(function (x) { return [esc(x[0]), esc(x[1]), esc(x[2]), x[3]]; });
       h += section("Utilization", table([["Factor", ""], ["Meaning", ""], ["Unit", "u"], ["Value", "n"]], u));
     }
     // groups
@@ -495,8 +496,8 @@
     } else if (M.sim_note) h += section("Card and simulator", '<div class="msg">' + esc(M.sim_note) + "</div>");
     var ck = D.checks.map(function (c) { return [c.ok === true ? '<span class="ok">Pass</span>' : c.ok === false ? '<span class="bad">Fail</span>' : '<span class="dim">Info</span>', '<span style="white-space:normal">' + esc(c.text) + "</span>"]; });
     h += section("Checks", table([["Status", ""], ["Check", ""]], ck));
-    var pt = D.per_token.map(function (x) { return [fint(x.k), fint(x.card), x.sim != null ? fint(x.sim) : "-", x.sim ? fx(x.sim / x.card, 4) : "-"]; });
-    if (pt.length) h += section("Decode launches", table([["Launch", "n"], ["Card cycles", "n"], ["Sim cycles", "n"], ["Sim / card", "n"]], pt));
+    var pt = D.per_token.map(function (x) { return SIMONLY ? [fint(x.k), fint(x.cycles)] : [fint(x.k), fint(x.card), x.sim != null ? fint(x.sim) : "-", x.sim ? fx(x.sim / x.card, 4) : "-"]; });
+    if (pt.length) h += section("Decode launches", table(SIMONLY ? [["Launch", "n"], ["Cycles", "n"]] : [["Launch", "n"], ["Card cycles", "n"], ["Sim cycles", "n"], ["Sim / card", "n"]], pt));
     if (M.commands) h += section("Commands", '<pre class="cmd">' + esc(M.commands) + "</pre>");
     h += "</div>";
     $("#p-summary").innerHTML = h;
@@ -652,7 +653,7 @@
       ["Ideal", "cycle", r.ideal ? fint(r.ideal) : "-", null], ["Efficiency", "%", eff != null ? fpct(eff) : "-", sim && r.sim && r.ideal ? fpct(r.ideal / r.sim) : null],
       ["Ops", "op", fint(r.n_ops), sim ? fint(r.sim_ops) : null], ["First op start", "cycle", r.first != null ? fint(r.first) : "-", null], ["Last op end", "cycle", r.last != null ? fint(r.last) : "-", null]
     ];
-    h += section("Cycles", table([["Metric", ""], ["Unit", "u"], ["Card", "n"]].concat(sim ? [["Simulator", "n"]] : []), rows.map(function (x) { return [esc(x[0]), esc(x[1]), x[2]].concat(sim ? [x[3] == null ? "" : x[3]] : []); })));
+    h += section("Cycles", table([["Metric", ""], ["Unit", "u"], [SIMONLY ? "Simulator" : "Card", "n"]].concat(sim ? [["Simulator", "n"]] : []), rows.map(function (x) { return [esc(x[0]), esc(x[1]), x[2]].concat(sim ? [x[3] == null ? "" : x[3]] : []); })));
     h += section("Traffic", table(H3, [mrow("DRAM read", "B", fint(r.rd)), mrow("DRAM written", "B", fint(r.wr)), mrow("Weights", "B", fint(r.w)), mrow("Rate", "GB/s", r.cost ? fx((r.rd + r.wr) / (r.cost / F) / 1e9, 2) : "-")]));
     var ring = D.spm_lines - 16 - 4096 - 256 - 1024;
     h += section("SPM tiles", table(H3, [mrow(r.grouped ? "Tiles (planned least)" : "Tiles", "", fint(r.tiles)), mrow("Rows per tile", "", fint(r.tile_rows)), mrow("Scratch", "line", fint(r.scratch)), mrow("Share of the scratch ring", "%", fpct(r.scratch / ring))]));

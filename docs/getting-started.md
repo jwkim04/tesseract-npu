@@ -28,6 +28,14 @@ verify the result and find your way around the repository.
 
 ## Build and test
 
+`./quickstart.sh` in the top directory does the setup for a machine without a card. It installs the compiler of
+the firmware, builds the stack, runs `tsr-selftest --device sim`, downloads Qwen2.5 0.5B Instruct Q8_0 into
+`models/`, checks its size and sha256, and runs it on the simulator. It then writes the profile report of one decode
+token to `build/dev/quickstart/` ([prof-dbg.md](prof-dbg.md) §3.1). `./quickstart.sh chat` ends in a chat with the
+model on the simulator. Every step is idempotent, and `./quickstart.sh -h` lists the settings. The commands below are
+the full setup by hand; the script installs the compiler alone (`--steps xpack,check`), builds the five targets it
+needs and runs no `ctest`.
+
 llama.cpp is a git submodule pinned to one commit ([`docs/llama-pin.md`](llama-pin.md)). The backend hooks
 into it through the patch in `third_party/patches/`.
 

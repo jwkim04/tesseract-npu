@@ -19,6 +19,24 @@ A full-stack, open-source NPU for LLM inference.
 
 Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA. The U200 card holds 32 GiB of DDR4, four channels of 8 GiB. The design supports up to 16 GiB per channel.
 
+## Try it without a card
+
+The whole stack runs on the simulator, so trying it needs no FPGA. On Linux (x86-64) with git, CMake, a C++
+compiler, Python 3 and curl:
+
+```sh
+git clone --recurse-submodules https://github.com/jwkim04/tesseract-npu.git tesseract && cd tesseract
+./quickstart.sh          # builds, checks, downloads Qwen2.5 0.5B Q8_0 (0.7 GB), runs it and profiles one token
+./quickstart.sh chat     # chat with the model on the simulated NPU
+```
+
+The first command builds the firmware and the host stack, boots the firmware on the simulated core, and runs the
+model through llama.cpp with every layer on the device. It then writes `build/dev/quickstart/report.html`, the
+profile of one decode token: a timeline per unit, the records by layer and the device counters. The simulator
+computes the same bits as the hardware, and it is the reference that the RTL, the firmware and the host stack are
+checked against. Its cycle counts come from a cycle model of the core. `build/dev/bin/tsr-top` in a second
+terminal shows the simulated device while the chat runs.
+
 ## Demo
 
 [![Gemma 4 26B-A4B Q8_0 with multi-token prediction on one Alveo U200: llama.cpp chat on the left, tsr-top on the right](docs/demo/demo.gif)](docs/demo/demo.mp4)
@@ -184,6 +202,9 @@ right: how firmly each spin sits in the field of all the others.
 
 ## Quick start
 
+`./quickstart.sh` ([Try it without a card](#try-it-without-a-card)) does a shorter form of the steps below (the
+compiler alone, the targets it needs) and downloads the model. By hand:
+
 ```sh
 git clone --recurse-submodules https://github.com/jwkim04/tesseract-npu.git tesseract && cd tesseract
 third_party/apply-patches.sh                 # hooks ggml-tesseract into the pinned llama.cpp
@@ -191,7 +212,7 @@ sw/ctrl/tools/install-toolchain.sh           # RISC-V toolchain for the firmware
 cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release
 cmake --build build/dev -j4
 build/dev/bin/tsr-selftest --device sim      # boots the firmware on the simulator and checks it
-# put a GGUF in models/, then run it on the simulator:
+# put a GGUF in models/ (quickstart.sh downloads qwen2.5-0.5b-instruct-q8_0.gguf), then run it on the simulator:
 LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
     -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
 ```

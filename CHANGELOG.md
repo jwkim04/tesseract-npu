@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- `quickstart.sh` builds the stack, runs `tsr-selftest --device sim`, downloads Qwen2.5 0.5B Instruct Q8_0, runs it on
+  the simulator and writes the profile report of one decode token. `./quickstart.sh chat` ends in a chat on the simulator.
+- `sw/tools/prof/prof_report.py report --sim DIR --out OUT` reports a run of the simulator alone. `--card` is no longer
+  required. The page, the Perfetto file and `summary.json` say "Simulator", have no card comparison and no host-time
+  utilization factors (H, E, U). A run with `--card` gives the same output as before.
+
 ## [1.5.0] - 2026-11-17
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).
