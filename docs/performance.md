@@ -317,6 +317,12 @@ hf_check.py MODEL_DIR --full-mode --tokens 32
   Tesseract Basis 1.5.0 (ABI 1), image id `bf6b5290d341e94c`, 23 kinds, kind table signature 0x249c.
 - Software: this repository at commit 3f434d8, Release build with `TSR_WITH_XRT=ON`, llama.cpp
   pinned at e3797b184 (b11810) with `third_party/patches/0001-ggml-tesseract.patch`.
+- Tesseract Basis 1.6.0 (firmware sha256
+  `43cd40fc2e27e2fdc5483ab0c4a699f6861747fd88372d2d9bf43f1aaa783b61`, image id
+  `59571cb73181324e`) adds host tools. Its firmware, kinds, backend and transport are those of
+  Basis 1.5.0 apart from the version number. On the simulator a decode token of Qwen2.5 0.5B Q8_0
+  takes the same device cycles with both, and `tsr-selftest` passes with it on the card with the
+  Core 1.2.1 image. The numbers here were not measured again.
 - Mode: full mode (`TSR_KINDS` unset), the dual weight stream on (`TSR_MVM_DUAL` unset), Tesseract Pivot on
   (`TSR_PIVOT` unset), Q8_0 KV cache, flash attention on. The chat run uses greedy sampling.
 - Power: the card board power from the U200 sensors (`power1_input` of the hwmon node of the card's

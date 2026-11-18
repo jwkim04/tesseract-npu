@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
   <a href="rtl/CHANGELOG.md"><img alt="Core: 1.2.1" src="https://img.shields.io/badge/core-1.2.1-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.5.0" src="https://img.shields.io/badge/basis-1.5.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.6.0" src="https://img.shields.io/badge/basis-1.6.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -55,15 +55,18 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 
 ## Latest releases
 
-**Tesseract Basis 1.5.0** (2026-11-17), the firmware SDK and the host side
+**Tesseract Basis 1.6.0** (2026-11-18), the firmware SDK and the host side
 
-- Support for the QACT scale pipeline of Tesseract Core 1.2.0, which the core reports as `CAPS` bit `QACT_PIPE`. Every
-  kind keeps its numerics revision, so no output changes, and Basis 1.5.0 also runs on Core 1.1.0 and 1.0.0.
-- The simulator has the cycle model of the pipeline. `TSR_SIM_CARD=k4qpipe` with `TSR_SIM_GDN=1` configures it like the
-  release image, and `TSR_SIM_QACT_PIPE` sets the bit alone.
-- Tesseract Pivot reads the bit and charges QACT at the cost of the pipeline when it orders a graph.
-- `tsr-selftest` and the llama.cpp device list name the bit, and trace replay ignores it when it matches a trace to a
-  device.
+- `./quickstart.sh` takes a fresh clone to a model that generates text on the simulated NPU, with no card. It builds
+  the stack, checks it with `tsr-selftest`, downloads Qwen2.5 0.5B Q8_0 with a checksum, runs it and profiles one
+  decode token. `./quickstart.sh chat` is a chat on the simulator ([Try it without a card](#try-it-without-a-card)).
+- On a desktop with 16 logical CPUs and 8 build jobs, the first run after a fresh clone took 121 s, the 0.7 GB
+  model download included, and the build took 83 s of it. A second run took 5 s.
+- The profile report takes a simulator run alone: `sw/tools/prof/prof_report.py report --sim DIR --out OUT` gives the
+  timeline, the records and the counters of the simulated device without a card run to compare with.
+- The firmware, the kinds and the backend are those of Basis 1.5.0 apart from the version number. Every kind keeps its
+  numerics revision, and the decode token that `quickstart.sh` profiles takes the same device cycles on the simulator
+  with both versions. Basis 1.6.0 runs on Core 1.2.1, 1.2.0, 1.1.0 and 1.0.0.
 
 **Tesseract Core 1.2.1** (2026-11-18), the RTL and the Alveo U200 image
 
