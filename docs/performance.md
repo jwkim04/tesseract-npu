@@ -157,7 +157,8 @@ at the same ratio.
 ## Results
 
 Seven models on one Alveo U200 card with the Tesseract Core 1.2.0 image, in full mode, measured as
-described under Procedure. Prefill and decode rates are the mean ± the standard deviation of three
+described under Procedure. The Core 1.2.1 image runs at 0.999 to 1.001 times the rates of the Core
+1.2.0 image (Conditions). Prefill and decode rates are the mean ± the standard deviation of three
 repetitions.
 
 | Model | Quantization | File size | Device memory | Prefill tok/s (pp512, -ub 512) | Decode tok/s (tg64) | Decode power (W) | tok/s/W | Device cycles per token |
@@ -303,6 +304,15 @@ hf_check.py MODEL_DIR --full-mode --tokens 32
   `65e69091-1b5e-4f7f-443f-bf3b4c456199`. Core clock 200 MHz and RISC-V clock 100 MHz (the monitor's
   fit of the core clock against host time: 199.994 to 200.004 MHz). Tesseract Core 1.2.0 (capability
   1.0), `CAPS` 0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE), `NUM_CH` 4, `T_MAX` 4, 128 lanes, `K_MAX` 32768.
+- The Tesseract Core 1.2.1 image (sha256
+  `7f1223a6dd51b3c3adebb187cf85c7b5f22b05afef521f7d34fa067956b1a2d4`, UUID
+  `b35a35ad-1a16-d76e-ac75-d7ad01ea158f`) computes the same results. In simulation its RTL takes the
+  same cycles as the RTL of Core 1.2.0 while the trace writer is off. Both images ran the seven models
+  in one card session with the same binaries: the prefill and decode rates on Core 1.2.1 were 0.999 to
+  1.001 times those on Core 1.2.0, the chat text was identical, and the device cycles per decode token
+  differed by less than 0.015 %, no more than between two sessions on one image (0.016 %). The decode
+  power on Core 1.2.1 was 1.5 W lower to 0.1 W higher, about as much as the power of one image differs
+  between two sessions.
 - Firmware: `tsr-fw.elf`, sha256 `c097f843a2cc1d417232758514a39058aa5e185b4630312946c059b2ff48e84f`,
   Tesseract Basis 1.5.0 (ABI 1), image id `bf6b5290d341e94c`, 23 kinds, kind table signature 0x249c.
 - Software: this repository at commit 3f434d8, Release build with `TSR_WITH_XRT=ON`, llama.cpp

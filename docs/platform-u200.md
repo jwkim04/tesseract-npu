@@ -572,34 +572,34 @@ to see the margin at the target period.
 
 ## 9. Timing and resources
 
-The image of Tesseract Core 1.2.0 is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
+The image of Tesseract Core 1.2.1 is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
 
 | Item | Value |
 |---|---|
-| sha256 | `8e90db3b593edb16e867c5c637916d88dc7aca586048d0eb1a99a5c283685656` |
-| UUID | `65e69091-1b5e-4f7f-443f-bf3b4c456199` |
+| sha256 | `7f1223a6dd51b3c3adebb187cf85c7b5f22b05afef521f7d34fa067956b1a2d4` |
+| UUID | `b35a35ad-1a16-d76e-ac75-d7ad01ea158f` |
 | Clocks | core (`DATA_CLK`) 200 MHz, RISC-V (`KERNEL_CLK`) 100 MHz, `RV_FREQ` ratio 0.5 |
 | `CAPS` | 0x30121 (VU, attention, Gated DeltaNet op, dual weight stream, QACT scale pipeline) |
-| Timing | every constraint met at the link: setup WNS +0.017 ns, hold WHS +0.009 ns. The worst setup path is on the shell's host data clock (§8.3); the core clock has +0.053 ns |
+| Timing | every constraint met at the link: setup WNS +0.017 ns, hold WHS +0.009 ns. The worst setup path is on the shell's host data clock (§8.3); the core clock has +0.049 ns |
 
 Routed utilization of the kernel `tsr_k4`, from the link's kernel utilization report:
 
 | LUT | LUT as memory | FF | BRAM tiles | URAM | DSP |
 |---:|---:|---:|---:|---:|---:|
-| 406,288 (44.6 % of the budget) | 30,698 | 518,825 | 631 | 162 | 1,828 |
+| 402,384 (44.2 % of the budget) | 31,134 | 510,465 | 631 | 162 | 1,828 |
 
 The whole routed design with the shell, per SLR (SLR0 / SLR1 / SLR2):
 
 | Resource | SLR0 | SLR1 | SLR2 |
 |---|---:|---:|---:|
-| CLB sites in use | 42,019 (85.30 %) | 44,546 (90.43 %) | 45,185 (91.73 %) |
-| CLB LUTs | 208,488 | 233,070 | 235,672 |
-| CLB registers | 272,837 | 322,953 | 303,999 |
+| CLB sites in use | 41,290 (83.82 %) | 44,298 (89.93 %) | 44,947 (91.24 %) |
+| CLB LUTs | 206,331 | 233,153 | 233,742 |
+| CLB registers | 267,856 | 324,642 | 297,887 |
 | Block RAM tiles | 396 | 339.5 | 362 |
 | URAM | 0 | 148 | 34 |
-| DSP | 770 | 56 | 1,018 |
+| DSP | 761 | 65 | 1,018 |
 
-The design uses 16,482 SLLs: 7,739 between SLR0 and SLR1 and 8,743 between SLR1 and SLR2, of 17,280 on each boundary. The SLR1
+The design uses 15,679 SLLs: 7,073 between SLR0 and SLR1 and 8,606 between SLR1 and SLR2, of 17,280 on each boundary. The SLR1
 URAM is the SPM (128) and the shell. The SLR2 URAM is the Gated DeltaNet engine.
 
 Without the read-only bridge of the second weight stream, the adapter costs about 3.6 K LUT and 6.3 K FF per channel, mostly the

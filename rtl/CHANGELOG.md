@@ -6,9 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-18
+
+Core capability 1.0. The image is `tsr_u200_k4.xclbin` for the platform `xilinx_u200_gen3x16_xdma_2_202110_1`,
+with the core clock at 200 MHz, the control core at 100 MHz and `CAPS` 0x30121 (VU, ATT, GDN, MVM_DUAL, QACT_PIPE).
+
+| Item | Value |
+|---|---|
+| sha256 | `7f1223a6dd51b3c3adebb187cf85c7b5f22b05afef521f7d34fa067956b1a2d4` |
+| UUID | `b35a35ad-1a16-d76e-ac75-d7ad01ea158f` |
+
+The image needs Tesseract Basis 1.2.0 or later, as Core 1.2.0 does. It computes the same results as the Core 1.2.0
+image, and `CAPS` is the same.
+
 ### Changed
 
-- Structure changes for the wiring of the K4 image. None changes a result bit or a cycle count.
+- Structure changes for the wiring of the K4 image. None changes a result bit. None changes a cycle count of a run
+  without the trace writer. While the trace writer writes, its bursts and the DMA's bursts on channel 0 reach the
+  arbiter in a different order than before, so the cycle counts of a traced run can differ by a fraction of a percent.
   - The DMA read response of channels 0 and 3 (`DDR_LOCAL_PIPE`) is one valid and payload register (`tsr_vpipe`) without a
     skid entry: the DMA's read response ready is constant 1.
   - The VU command link (`XSLR_REG`) is a delay line of three register stages without a ready path, because the VU takes every
@@ -22,6 +37,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   - The VU's write link carries a 16-bit word mask to `tsr_core_dp`, which expands it to the SPM client port's byte enables.
   - The accumulator select and the P register's enable term of the MAC lane (`PVR`) are registers of their own.
   - `hw/u200/k4_floorplan.tcl` lists every broadcast head copy.
+- The routed kernel of the image has 402,384 LUT and 510,465 FF, where the Core 1.2.0 image has 406,288 and 518,825.
+  The design uses 15,679 SLLs, where it used 16,482.
 
 ## [1.2.0] - 2026-11-17
 
@@ -119,7 +136,8 @@ with the core clock at 200 MHz, the control core at 100 MHz and `CAPS` 0x121 (VU
   debug module.
 - The XRT platform adapter and the U200 kernel tops.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.2.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.2.1...HEAD
+[1.2.1]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.2.0...core-v1.2.1
 [1.2.0]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.1.0...core-v1.2.0
 [1.1.0]: https://github.com/jwkim04/tesseract-npu/compare/core-v1.0.0...core-v1.1.0
 [1.0.0]: https://github.com/jwkim04/tesseract-npu/releases/tag/core-v1.0.0

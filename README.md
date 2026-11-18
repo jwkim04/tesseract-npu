@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
-  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.2.0" src="https://img.shields.io/badge/core-1.2.0-green?style=flat"></a>
+  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.2.1" src="https://img.shields.io/badge/core-1.2.1-green?style=flat"></a>
   <a href="CHANGELOG.md"><img alt="Basis: 1.5.0" src="https://img.shields.io/badge/basis-1.5.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
@@ -47,21 +47,25 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 - `tsr-selftest` and the llama.cpp device list name the bit, and trace replay ignores it when it matches a trace to a
   device.
 
-**Tesseract Core 1.2.0** (2026-11-17), the RTL and the Alveo U200 image
+**Tesseract Core 1.2.1** (2026-11-18), the RTL and the Alveo U200 image
 
-- The QACT scale pipeline. QACT, the unit that quantizes the activations, computes the scales of its 32-element blocks in a
-  pipeline. A quantization takes about 2 cycles per block, where the two serial dividers took 16. No result bit changes.
-- Decode is 1.01 to 1.04 times as fast as on Core 1.1.0 and prefill 1.01 to 1.03 times, for the seven models of the table
-  below. Gemma 4 E2B decodes at 24.42 tok/s, from 23.55, and Gemma 4 26B-A4B at 14.83, from 14.48.
-- QACT is busy for 71 thousand cycles of a Gemma 4 E2B decode token, from 413 thousand.
-- The pipeline adds 442 LUT, 525 FF, 10 DSP and one RAMB18 to the QACT unit, and the image keeps the 200 MHz core clock.
-- `CAPS` bit `QACT_PIPE` reports the feature. The image needs Basis 1.2.0 or later, as Core 1.1.0 does.
+- A patch release for the wiring of the image. It computes the same results as Core 1.2.0 at the same speed: on the seven
+  models of the table below the prefill and decode rates are 0.999 to 1.001 times those on Core 1.2.0, and the chat text
+  is identical.
+- The kernel has 402,384 LUT, from 406,288, and 510,465 FF, from 518,825.
+- The design uses 15,679 SLLs, the connections between the three dies of the FPGA, from 16,482.
+- What changed are structures at the crossings between the dies and on nets with a wide fanout. The read response of the
+  DMA on two memory channels is one register stage without a skid entry. The command link of the vector unit is a delay
+  line without a ready path. The first broadcast stage of the MVM unit has two copies. The trace writer's write mux sits
+  behind the DMA's pipeline stages.
+- `CAPS` is unchanged, so Basis 1.5.0 runs on the image as it is. The image needs Basis 1.2.0 or later, as Core 1.2.0 does.
 
 All changes are in [CHANGELOG.md](CHANGELOG.md) (Basis) and [rtl/CHANGELOG.md](rtl/CHANGELOG.md) (Core).
 
 ## Performance
 
-Decode and prefill rates on one Alveo U200 card with the Tesseract Core 1.2.0 image, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
+Decode and prefill rates on one Alveo U200 card, batch 1, in full mode, measured with the Tesseract Core 1.2.0
+image. The Core 1.2.1 image runs at 0.999 to 1.001 times these rates. Prefill is 512 tokens at `-ub 512`
 and decode is 64 tokens, both from `llama-bench`. The last column is the decode rate per watt of card
 board power.
 

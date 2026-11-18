@@ -10,7 +10,7 @@ Tesseract has five version numbers. Each answers a separate question and each ch
 | Basis ABI, one integer | Whether a host and a firmware image speak the same protocol. | driver ABI |
 | Kind numerics revision, one integer per op list kind | Whether a kind still produces the same bits. | none |
 
-The current releases are Tesseract Core 1.2.0, with capability 1.0, and Tesseract Basis 1.5.0, with Basis ABI 1.
+The current releases are Tesseract Core 1.2.1, with capability 1.0, and Tesseract Basis 1.5.0, with Basis ABI 1.
 Normative text: [SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4
 and §7.5.
 
@@ -189,10 +189,10 @@ a backend that is newer than its image could send a shape the image refuses. The
 rule, so captured launch traces of other images still replay. An image that provides fewer kinds works: the ops it
 cannot run stay on the CPU, and `TSR_KINDS=m6` narrows the device to the matrix products the same way.
 
-Core 1.2.0 and Core 1.1.0 need Basis 1.2.0 or later, and Basis 1.5.0 runs on Core 1.2.0, on Core 1.1.0 and on Core
-1.0.0. Basis 1.2.0 to 1.4.0 do not know `CAPS` bit 17 of Core 1.2.0. They run models on that image, and their tools
-that build a simulator from the core's configuration refuse it: the shadow of `tsr-selftest`, which `--no-shadow`
-leaves out, `tsr-trace-replay` and `tsr-trace-conv`.
+Core 1.2.1, Core 1.2.0 and Core 1.1.0 need Basis 1.2.0 or later, and Basis 1.5.0 runs on all of them and on Core
+1.0.0. Basis 1.2.0 to 1.4.0 do not know `CAPS` bit 17 of Core 1.2.0 and Core 1.2.1. They run models on those images,
+and their tools that build a simulator from the core's configuration refuse them: the shadow of `tsr-selftest`, which
+`--no-shadow` leaves out, `tsr-trace-replay` and `tsr-trace-conv`.
 
 ## Identifiers that are not versions
 
