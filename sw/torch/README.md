@@ -148,7 +148,7 @@ planes came from the pool of dead caches), `kv_resync_rows` (rows stored again f
 `rt_graph_records`, `rt_graph_plan_hits`, `rt_graph_plan_misses`, `rt_consts`, `rt_kv_creates`, `rt_kv_stores`,
 `rt_kv_store_rows`, `rt_linears`, `rt_tokens`, `rt_execs`,
 `rt_prog_hits`, `rt_prog_misses`, `rt_perf_cycles`, `rt_perf_mvm_cycles`, `rt_dev_read_bytes`, `rt_h2d_bytes`,
-`rt_h2d_weight_bytes` and `rt_d2h_bytes` ([`sw/rt/README.md`](../rt/README.md)).
+`rt_h2d_weight_bytes`, `rt_d2h_bytes`, `rt_h2d_writes` and `rt_d2h_reads` ([`sw/rt/README.md`](../rt/README.md)).
 
 ## Tests
 

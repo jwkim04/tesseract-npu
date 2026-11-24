@@ -222,8 +222,10 @@ channels.
   (§3.7). A program is planned for each T on first use, and the plan is cached (16 plans per graph, least recently
   used out):
   - Values. The inputs, the positions, the KV cell indices and the mask summaries sit at the bottom of the IO
-    region (they are preload sources that no record writes). Every other value is placed above them by liveness,
-    so a value that is dead gives its bytes to a later one.
+    region (they are preload sources that no record writes). For a graph with KV slots the out values come next, as
+    one block: an out value is never released. Every other value is placed above by liveness, so a value that is
+    dead gives its bytes to a later one. When the plan with the out values first does not fit the IO region, the
+    graph is planned with every out value placed when its writer is reached, as a graph without KV slots always is.
   - KV planes. An `attn` op without a KV slot has its own two planes (K and V, `kv_size` cells), zero-filled at
     `graph_create` and placed at the top of the WEIGHT heap. The op writes the T new rows with SET_ROWS_KV and reads
     them with FLASH_ATTN (`n_kv = T`).
@@ -245,7 +247,14 @@ channels.
   - Records. Each op becomes the records of the `tsr-kinds` encoders, added to the same `tsr_opl_builder` as the
     ggml backend's, so hazards, JOINs and the deferred `MUL_MAT_BEGIN` / `MUL_MAT_END` pairs are the builder's. A
     list that reaches 4096 records (SW-29) is cut and the next one started, so a run is one launch per list.
-  - Run. The run writes the inputs and the static part, launches the lists in order and reads the outputs.
+  - Run. The run writes the inputs and the static part, launches the lists in order and reads the outputs. Writes
+    are made in address order (positions, cell indices, mask summaries and f32 masks, then the input rows), and writes
+    whose byte ranges touch go out as one transfer; a write of 64 KiB or more goes out on its own. Out values whose
+    byte ranges touch are read in one transfer. A gap is never written and never read: device memory that this open
+    of the device did not write must not be read ([xrt-host.md](xrt-host.md) §4.4). A decode step of a cached decoder
+    that hits its plan and the op list cache is one read (the new K and V rows of every layer and the logits) and,
+    when its mask needs no f32 copy, two writes (the static block, then the input row: the area of the f32 mask lies
+    between them). A chunked run reads once per chunk.
 
 ### 3.4 The extension `_tesseract_rt`
 
@@ -367,7 +376,8 @@ and shared by every graph that uses it (recompiles, graph breaks, tied weights).
 version counter, so for them a hit also needs the same raw bits in a sample of up to 64 x 64 elements taken at
 upload. Copies whose storage died are released on the next miss, by `sweep()` or by `tt.release_weights()`.
 Writes through `.data` do not bump `_version`, and an inference-tensor change can miss every sampled element.
-Call `release_weights()` after either.
+Call `release_weights()` after either. A region call decides the hit of a current entry itself, with the same rule, and
+asks the cache only for a miss, a changed weight, an inference tensor or a tensor of another type.
 
 ### 3.7 Numerics
 

@@ -22,6 +22,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   680 rows in chunks, and `graph_info` of such a graph answers with the plan the first chunk starts with. The counters
   `kv_creates`, `kv_stores` and `kv_store_rows`. In Python: `Device.kv_create`, `kv_free`, `kv_info`, `kv_store`,
   `kv_read`, `graph_run(h, inputs, kv=None, pos0=0)` and `graph_run_ref(...)`.
+- The counters `h2d_writes` and `d2h_reads` of `tsr_rt` (host to device and device to host transfers: calls of the
+  transport with a size above 0), `rt_h2d_writes` and `rt_d2h_reads` in `tt.counters()`.
 - `tt.kv_caches()` lists the device shadows of KV caches and the pool of free planes. The package counters `kv_caches`,
   `kv_pool_hits`, `kv_resync_rows` and `kv_region_calls`.
 - `sw/torch/tools/hf_check.py --generate` checks `generate` with a static cache: the region and launch counts, the
@@ -30,6 +32,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ### Changed
 
+- A graph run moves its data in fewer transfers. The inputs are written in address order and writes whose byte ranges
+  touch go out as one transfer; out values whose byte ranges touch are read in one transfer. A graph with KV slots
+  places its out values as one block, unless that plan does not fit the IO region, so a decode step with cached
+  attention reads its results in one transfer. The results are the same bits. The plan of a graph with KV slots uses
+  more of the IO region and can have more JOIN records. `docs/torch-backend.md` §3.3.
+- A region call of the PyTorch backend decides the cache hit of a weight or constant itself, without a call of the
+  cache per entry. The rules of `docs/torch-backend.md` §3.6 and the counter `cache_hits` are the same.
 - Full mode lowers a `slice` with step 1 that keeps the shape as an identity, so the head of a one-row forward with
   `logits_to_keep=1` joins the last region: fewer launches, the same bits.
 

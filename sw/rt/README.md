@@ -33,7 +33,7 @@ struct open_options   { const char * kind = nullptr; uint64_t io_bytes = 0; bool
 struct weight_options { uint32_t max_part_rows = 0; uint32_t max_part_k = 0; };
 struct weight_info    { uint32_t N, K; dtype src; uint32_t fmt, n_parts, n_part, k_parts, k_part; uint64_t dev_bytes; };
 struct counters       { linears, tokens, execs, prog_hits, prog_misses, perf_cycles, perf_mvm_cycles,
-                        dev_read_bytes, h2d_bytes, h2d_weight_bytes, d2h_bytes; };      // uint64_t (and the graph and KV counters below)
+                        dev_read_bytes, h2d_bytes, h2d_weight_bytes, d2h_bytes, h2d_writes, d2h_reads; };      // uint64_t (and the graph and KV counters below)
 using weight_handle = uint64_t;
 using kv_handle     = uint64_t;                                   // the planes of a cache (kv_create)
 
@@ -86,8 +86,11 @@ attention mask. The ops are `mul_mat` (with an addend), `add`, `mul`, `scale`, `
 `graph_create` allocates the KV planes of the attention ops that have no KV slot (two per op, zero-filled, at the top of
 the WEIGHT heap); the weights and constants must stay until `graph_free`. `graph_run(h, T, in, out)` runs T rows (`1 <= T <= kv_size`). A
 program is planned for each T (and mask shape) on first use, and the plan is cached (16 per graph). The
-values of a run are placed in the IO region by liveness, the records are the `tsr-kinds` encoders' through the ggml
-backend's builder, and a list that reaches 4096 records is cut, so a run is one launch per list. A T above
+values of a run are placed in the IO region by liveness (for a graph with KV slots the out values first, as one
+block, unless that plan does not fit the IO region), the records are the `tsr-kinds` encoders' through the ggml
+backend's builder, and a list that reaches 4096 records is cut, so a run is one launch per list. The inputs are
+written in address order, and writes whose byte ranges touch go out as one transfer (a write of 64 KiB or more on its
+own). Out values whose byte ranges touch are read in one transfer. A gap is never written and never read. A T above
 `kv_size` or above 680 with an attention op that has no KV slot, a run that does not fit the IO region and a mask value other than 0
 and -inf throw an error whose text contains "does not fit". The planner checks its own placement: a value that
 is read after its slot was released is an error ("value N is read after its slot was released"). The PyTorch
@@ -123,7 +126,8 @@ rows of that chunk, so a smaller `T` than asked means the run is chunked. `pos0`
 
 The counters are `execs` (`graph` launches), `prog_hits` and `prog_misses` (op lists found in or written to the OPL
 cache), `perf_cycles` and `perf_mvm_cycles` (sums of the PERF deltas of every launch), `dev_read_bytes`, `h2d_bytes` (of
-which `h2d_weight_bytes`) and `d2h_bytes`. The graph counters are `graphs`, `graph_runs`, `graph_launches`,
+which `h2d_weight_bytes`) and `d2h_bytes`, and `h2d_writes` and `d2h_reads` (the host to device and device to host
+transfers: calls of the transport with a size above 0). The graph counters are `graphs`, `graph_runs`, `graph_launches`,
 `graph_records`, `graph_plan_hits`, `graph_plan_misses` and `consts`. A run in chunks counts once in `graph_runs`, adds
 the lists of every chunk to `graph_launches`, and looks up the plan once per chunk. The KV counters are `kv_creates`,
 `kv_stores` (calls with at least one row) and `kv_store_rows`. `open_options.read_perf = false` skips the PERF CSR reads per launch.
