@@ -59,6 +59,20 @@ the forward is several regions (one per attention boundary). "one region" and "o
 on the device" (no CPU fallback, every region call verified) and the steady forward launches once per region; the
 matmuls between the regions stay device matmuls, so "no matmul node left" is only checked with attention on the device. The JSON
 records the region and launch counts. --attention device (the default) keeps the checks above.
+--generate: `model.generate(..., cache_implementation="static")` through `model.forward = tt.compile(model.forward)`
+(full mode, Hugging Face StaticCache, the K and V of earlier calls in the device's KV planes). Prompt: the first
+--tokens tokens, --gen new tokens (min_new_tokens forces them), TSR_TORCH_VERIFY on for every device run. Checks:
+the prefill is one region call; every decode step is one region call and one launch (no matmul node outside it);
+no CPU fallback; every region call verified against the reference executor, with the cache check (the cells a call
+stored against ggml's quantizer of the rows the region returned, and the cells below the call against the quantizer of
+the host cache rows, which finds a device shadow that went stale); the device's tokens are generated again by a second
+generate of the same prompt (same tokens, no upload, no plan miss, no row stored again); teacher forced with the
+tokens that eager float32 generated, the logits of every position (a prefill and one decode step per token) equal the
+stateless full-mode forward of that sequence within NMSE 1e-10 (the same quantized rows; bit-identical on
+the simulator), and against eager float32 (KL per position, top-1 >= 80 %, as --full-mode; the device's own greedy
+tokens against eager's are reported, not gated). Prints the launches, the device (PERF) cycles and the wall time per
+decode step. --save-logits / --expect as --full-mode: the logits of the teacher-forced run, bit for bit (a card
+against the simulator).
 --speed 1,8,32: timing only. Steady-state forwards of the first N prompt tokens for each N, with the PERF
 counters read after every launch and with them off.
 """
@@ -614,6 +628,168 @@ def run_regions(args, tok, model, res: dict) -> int:
     return 0 if res["pass"] else 1
 
 
+def run_generate(args, tok, model, res: dict) -> int:
+    """--generate: generation with a static KV cache through a compiled forward (full mode, cached attention)."""
+    from transformers import StaticCache  # noqa: PLC0415
+
+    torch._dynamo.config.cache_size_limit = 64
+    ids = tokenize(tok, args.prompt, args.tokens)
+    T0, G = int(ids.shape[1]), int(args.gen)
+    res["prompt_ids"] = ids[0].tolist()
+    am = torch.ones_like(ids)
+    gkw = dict(attention_mask=am, max_new_tokens=G, min_new_tokens=G, do_sample=False, cache_implementation="static",
+               pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id)
+    # eager float32 (the model's own forward): the tokens, then the logits of every position of that sequence
+    t0 = time.time()
+    with torch.no_grad():
+        ref_out = model.generate(input_ids=ids, **gkw)
+    seq = ref_out[:, :T0 + G]
+    N = T0 + G - 1                                    # positions that have a logit: the prompt and the generated tokens but the last
+    with torch.no_grad():
+        ref = model(input_ids=seq[:, :N], use_cache=False).logits[0].float().contiguous()
+        with Q8Attention():
+            ref_q8 = model(input_ids=seq[:, :N], use_cache=False).logits[0].float().contiguous()
+    log(f"eager float32: generated {G} tokens, {time.time() - t0:.1f} s")
+    eager_text = tok.decode(seq[0, T0:])
+
+    tt.set_verify(True)
+    fwd = tt.compile(model.forward, mode="full")
+    calls: list = []
+    seen: dict = {}
+
+    def traced(*a, **kw):
+        pkv = kw.get("past_key_values")
+        if pkv is not None and "cells" not in seen:
+            seen["cells"] = int(pkv.layers[0].max_cache_len)     # the length generate gave its StaticCache
+        c0 = tt.counters()
+        t1 = time.time()
+        out = fwd(*a, **kw)
+        wall = time.time() - t1
+        c1 = tt.counters()
+        calls.append({"rows": int(kw["input_ids"].shape[1]), "wall_s": wall,
+                      "launches": c1["rt_graph_launches"] - c0["rt_graph_launches"],
+                      "region_calls": c1["region_calls"] - c0["region_calls"],
+                      "verified": c1["verified_regions"] - c0["verified_regions"],
+                      "fallbacks": c1["region_cpu_fallback_calls"] - c0["region_cpu_fallback_calls"],
+                      "matmul_calls": c1["device_calls"] - c0["device_calls"],
+                      "perf_cycles": c1.get("rt_perf_cycles", 0) - c0.get("rt_perf_cycles", 0),
+                      "resync_rows": c1["kv_resync_rows"] - c0["kv_resync_rows"],
+                      "uploads": (c1["uploads"] + c1["consts_uploaded"]) - (c0["uploads"] + c0["consts_uploaded"]),
+                      "plan_misses": c1["rt_graph_plan_misses"] - c0["rt_graph_plan_misses"]})
+        return out
+
+    eager_forward = model.forward
+    model.forward = traced
+    tt.reset_counters()
+    t0 = time.time()
+    with torch.no_grad():
+        out1 = model.generate(input_ids=ids, **gkw)
+    wall1 = time.time() - t0
+    c1 = dict(tt.counters())
+    calls1 = list(calls)
+    pre, dec = calls1[0], calls1[1:]
+    dev_tokens = out1[0, T0:T0 + G].tolist()
+    # a second generation of the same prompt: a new cache, the same tokens, nothing uploaded, no plan made
+    calls.clear()
+    tt.reset_counters()
+    t0 = time.time()
+    with torch.no_grad():
+        out2 = model.generate(input_ids=ids, **gkw)
+    wall2 = time.time() - t0
+    c2 = dict(tt.counters())
+    calls2 = list(calls)
+    model.forward = eager_forward
+    # teacher forced with eager's tokens: a prefill of the prompt and one decode step per further token
+    calls.clear()
+    model.forward = traced
+    # a cache of the length that generate made: the teacher-forced pass then goes through the compiled graphs that
+    # generate made (a cache of another length is another shape for Dynamo, which compiles the length as a symbol), so
+    # the checks above read the same regions
+    cache = StaticCache(model.config, max_cache_len=seen["cells"])
+    rows = []
+    t0 = time.time()
+    with torch.no_grad():
+        rows.append(fwd(input_ids=seq[:, :T0], past_key_values=cache, use_cache=True).logits[0])
+        for i in range(T0, N):
+            rows.append(fwd(input_ids=seq[:, i:i + 1], past_key_values=cache, use_cache=True).logits[0])
+    wall_tf = time.time() - t0
+    model.forward = eager_forward
+    lg = torch.cat(rows, 0).float().contiguous()
+    c3 = dict(tt.counters())
+    # the stateless compiled forward of the same sequence (the existing, verified path)
+    stateless = tt.compile(model, mode="full")
+    with torch.no_grad():
+        full = stateless(input_ids=seq[:, :N], use_cache=False).logits[0].float().contiguous()
+    tt.set_verify(False)
+    d = (lg.double() - full.double())
+    nmse = float((d * d).sum() / (full.double() ** 2).sum())
+    cmp, cmp_q8 = compare(ref, lg), compare(ref_q8, lg)
+    cmp_stateless = compare(full, lg)
+    ndec = len(dec)
+    per_dec = lambda key: [r[key] for r in dec]  # noqa: E731
+    res["generation"] = {
+        "prompt_tokens": T0, "new_tokens": G, "positions": N, "cache_cells": seen["cells"], "eager_text": eager_text,
+        "device_text": tok.decode(dev_tokens), "device_tokens_equal_eager": dev_tokens == seq[0, T0:].tolist(),
+        "first_token_difference": next((i for i, (a, b) in enumerate(zip(dev_tokens, seq[0, T0:].tolist())) if a != b), None),
+        "regions": c1["regions"], "region_calls": c1["region_calls"], "launches": c1["rt_graph_launches"],
+        "verified_regions": c1["verified_regions"], "region_cpu_fallback_calls": c1["region_cpu_fallback_calls"],
+        "kv_caches": c1["kv_caches"], "kv_region_calls": c1["kv_region_calls"], "kv_resync_rows": c1["kv_resync_rows"],
+        "kv_stores": c1["rt_kv_stores"], "kv_creates": c1["rt_kv_creates"],
+        "prefill": {k: pre[k] for k in ("rows", "wall_s", "launches", "region_calls", "matmul_calls", "perf_cycles")},
+        "decode_steps": ndec,
+        "decode_launches": per_dec("launches"), "decode_region_calls": per_dec("region_calls"),
+        "decode_wall_s_mean": sum(per_dec("wall_s")) / max(ndec, 1),
+        "decode_perf_cycles_mean": sum(per_dec("perf_cycles")) / max(ndec, 1),
+        "decode_perf_cycles": per_dec("perf_cycles"),
+        "generate_wall_s": round(wall1, 2), "generate_wall_s_second": round(wall2, 2),
+        "second": {"tokens_equal": out2[0, T0:T0 + G].tolist() == dev_tokens, "uploads": c2["uploads"] + c2["consts_uploaded"],
+                   "plan_misses": c2["rt_graph_plan_misses"], "region_calls": c2["region_calls"],
+                   "launches": c2["rt_graph_launches"], "kv_resync_rows": c2["kv_resync_rows"],
+                   "kv_pool_hits": c2["kv_pool_hits"], "fallbacks": c2["region_cpu_fallback_calls"]},
+        "teacher_forced": {"wall_s": round(wall_tf, 2), "launches": c3["rt_graph_launches"],
+                           "region_calls": c3["region_calls"], "verified_regions": c3["verified_regions"],
+                           "fallbacks": c3["region_cpu_fallback_calls"], "kv_resync_rows": c3["kv_resync_rows"]},
+        "nmse_cached_vs_stateless": nmse, "nmse_max": 1e-10,
+    }
+    raw = lg.numpy()
+    res["logits_sha256"] = hashlib.sha256(raw.tobytes()).hexdigest()
+    res["kl"] = {"cpu_vs_device": cmp, "cpu_q8_attention_vs_device": cmp_q8, "stateless_vs_cached": cmp_stateless}
+    g = res["generation"]
+    n_calls = 1 + ndec
+    res["checks"] = {
+        "prefill is one region call": pre["region_calls"] == 1 and pre["fallbacks"] == 0,
+        "every decode step is one region call and one launch": ndec == G - 1 and all(
+            r["region_calls"] == 1 and r["launches"] == 1 and r["matmul_calls"] == 0 for r in dec),
+        "no CPU fallback": c1["region_cpu_fallback_calls"] == 0 and c3["region_cpu_fallback_calls"] == 0
+        and c2["region_cpu_fallback_calls"] == 0,
+        "every region call verified": c1["verified_regions"] == c1["region_calls"] == n_calls
+        and c3["verified_regions"] == c3["region_calls"],
+        "every attention cached": c1["kv_region_calls"] == c1["region_calls"] and c1["regions"] == 2,
+        "no row stored again": c1["kv_resync_rows"] == 0 and c3["kv_resync_rows"] == 0,
+        "second generate: same tokens, no upload, no plan miss": g["second"]["tokens_equal"] and g["second"]["uploads"] == 0
+        and g["second"]["plan_misses"] == 0 and g["second"]["region_calls"] == n_calls and g["second"]["kv_resync_rows"] == 0,
+        "cached = stateless (NMSE <= 1e-10)": nmse <= 1e-10,
+        "top-1 >= 80 %": cmp["top1"] >= 0.8,
+    }
+    if args.expect:
+        res["checks"]["bit-identical to --expect"] = save_and_expect(args, raw, res)
+    else:
+        save_and_expect(args, raw, res)
+    res["pass"] = all(res["checks"].values())
+    log(f"eager   : {eager_text!r}")
+    log(f"device  : {g['device_text']!r}" + ("" if g["device_tokens_equal_eager"] else
+                                              f" (differs from eager from token {g['first_token_difference']})"))
+    log("KL(eager f32 || device) per position: " + " ".join(f"{v:.2e}" for v in cmp["kl_per_position"]))
+    for name, c_ in (("KL(eager f32 || device)", cmp), ("KL(eager q8 attention || device)", cmp_q8),
+                     ("KL(stateless device || cached device)", cmp_stateless)):
+        log(f"{name}: mean {c_['kl_mean']:.2e} median {c_['kl_median']:.2e} max {c_['kl_max']:.2e} top-1 {c_['top1']:.3f}")
+    log(f"NMSE(cached, stateless) {nmse:.3g}")
+    log(f"prefill {pre['rows']} rows: {pre['wall_s']:.2f} s, {pre['launches']} launches, {pre['perf_cycles']} PERF cycles")
+    log(f"decode  {ndec} steps: {g['decode_wall_s_mean']:.3f} s each, 1 launch each, {g['decode_perf_cycles_mean']:.0f} "
+        f"PERF cycles each (device), generate {wall1:.1f} s, second generate {wall2:.1f} s")
+    return 0 if res["pass"] else 1
+
+
 def run_speed(args, tok, model, res: dict) -> int:
     """--speed 1,8,32: steady-state compiled forwards of the first N prompt tokens, for each N in the list, with the
     PERF counters read after every launch (the default) and again with them off (`open_device(read_perf=False)`: the 12
@@ -908,7 +1084,9 @@ def summary(res: dict) -> str:
         p = res["perf"]
         L.append(f"  PERF cycles / token {p['perf_cycles_per_token']:.0f} (MVM {p['perf_mvm_cycles_per_token']:.0f}), "
                  f"{p['execs']} execs, device calls {p['device_call_s']} s + CPU ops {p['cpu_ops_s']} s per forward")
-    if "checks" in res:
+    if "checks" in res and res.get("mode") == "generate":
+        L.extend(f"  check {'OK  ' if v else 'FAIL'} {k}" for k, v in res["checks"].items())
+    elif "checks" in res:
         L.append("  checks: " + ", ".join(f"{k} {'OK' if v else 'FAIL'}" for k, v in res["checks"].items()))
     L.append(f"  {'PASS' if res.get('pass') else 'FAIL'}")
     return "\n".join(L)
@@ -940,22 +1118,27 @@ def main() -> int:
     ap.add_argument("--attention", choices=["device", "cpu"], default="device",
                     help="(--full-mode) where attention runs: device (q8_0, one region, one launch) or cpu (float32; "
                     "several regions, every one on the device)")
+    ap.add_argument("--generate", action="store_true", help="full mode: model.generate(cache_implementation=\"static\") "
+                    "through a compiled forward, the attention over the static KV cache on the device (--tokens prompt, "
+                    "--gen new tokens)")
     ap.add_argument("--speed", metavar="N,N,...", help="timing mode: steady-state forwards of the first N prompt tokens "
                     "(e.g. 1,8,32), PERF counters on and off; 169 device calls each, no comparison")
-    ap.add_argument("--save-logits", help="(--forward-only, --full-mode) write the logits as .npy")
-    ap.add_argument("--expect", help="(--forward-only, --full-mode) logits .npy that must be bit-identical")
+    ap.add_argument("--save-logits", help="(--forward-only, --full-mode, --generate) write the logits as .npy")
+    ap.add_argument("--expect", help="(--forward-only, --full-mode, --generate) logits .npy that must be bit-identical")
     ap.add_argument("--json", help="write the results here")
     args = ap.parse_args()
     if args.tokens < 1 or args.gen < 1:
         die("--tokens and --gen must be >= 1")
     # the other modes tap the per-matmul device calls: they test matmul mode
-    os.environ["TSR_TORCH_MODE"] = "full" if args.full_mode else "matmul"
+    if args.generate and (args.full_mode or args.forward_only or args.speed):
+        die("--generate cannot be combined with --full-mode, --forward-only or --speed")
+    os.environ["TSR_TORCH_MODE"] = "full" if (args.full_mode or args.generate) else "matmul"
     if args.threads:
         torch.set_num_threads(args.threads)
 
     model_dir = Path(args.model_dir)
     t_start = time.time()
-    res: dict = {"model_dir": str(model_dir), "mode": "speed" if args.speed else ("forward-only" if args.forward_only else ("full-mode" if args.full_mode else "full"))}
+    res: dict = {"model_dir": str(model_dir), "mode": "speed" if args.speed else ("forward-only" if args.forward_only else ("generate" if args.generate else ("full-mode" if args.full_mode else "full")))}
     if args.download:
         model_dir.mkdir(parents=True, exist_ok=True)
         res["downloaded"] = download(args.download, model_dir, args.revision)
@@ -974,7 +1157,8 @@ def main() -> int:
     if args.speed:
         rc = run_speed(args, tok, model, res)
     else:
-        rc = (run_regions if args.full_mode else run_forward_only if args.forward_only else run_full)(args, tok, model, res)
+        rc = (run_regions if args.full_mode else run_generate if args.generate else run_forward_only if args.forward_only
+              else run_full)(args, tok, model, res)
     res["wall_s"] = round(time.time() - t_start, 1)
     res["peak_rss_gb"] = round(rss_gb(), 2)
     res["counters_end"] = tt.counters()

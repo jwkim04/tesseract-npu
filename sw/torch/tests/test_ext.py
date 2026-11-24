@@ -266,3 +266,338 @@ def test_errors(dev):
     with pytest.raises(ValueError, match="unknown weight handle"):
         dev.linear(h, torch.ones(1, 64))
     assert isinstance(_C.TesseractError("x"), RuntimeError)
+
+
+# ---------------------------------------------------------------------------------------------
+# KV objects and cached attention (the graph API with kv_slots)
+# ---------------------------------------------------------------------------------------------
+# Measured on the simulator (the shapes and seeds below): the relative NMSE of the cached steps against the stateless run of the same
+# rows is 0 for a causal mask and at most 3.2e-15 for a given mask; a run at a wrong pos0 is about 2e-2. The gate is 1e-10.
+NMSE_CACHED = 1e-10
+
+
+def _nmse(y: torch.Tensor, ref: torch.Tensor) -> float:
+    y, ref = y.double(), ref.double()
+    den = float((ref ** 2).sum())
+    return float(((y - ref) ** 2).sum()) / den if den > 0 else float(((y - ref) ** 2).sum())
+
+
+def _att_prog(nh, nkv, d, cells=None, mask=False, kv_size=0):
+    """One attn op: in q, k, v [, mask] -> out. cells: a cached attention over a KV slot of that many cells."""
+    values = [{"kind": "in", "n": nh * d}, {"kind": "in", "n": nkv * d}, {"kind": "in", "n": nkv * d}]
+    if mask:
+        values.append({"kind": "mask", "cols": cells} if cells else {"kind": "mask"})
+    values.append({"kind": "tmp", "n": nh * d, "out": True})
+    op = {"op": "attn", "q": 0, "k": 1, "v": 2, "dst": len(values) - 1, "n_head": nh, "n_head_kv": nkv, "d": d,
+          "scale": 1.0 / float(d) ** 0.5}
+    if mask:
+        op["mask"] = 3
+    prog = {"values": values, "ops": [op], "kv_size": kv_size}
+    if cells:
+        op["kv"] = 0
+        prog["kv_slots"] = [cells]
+    return prog
+
+
+def _cached_mask(T, pos0, cells, seed, holes=0.0):
+    g = torch.Generator().manual_seed(seed)
+    m = torch.full((T, cells), float("-inf"))
+    for t in range(T):
+        m[t, : pos0 + t + 1] = 0.0
+        if holes:
+            hole = torch.rand(pos0 + t, generator=g) < holes
+            m[t, : pos0 + t][hole] = float("-inf")
+    return m
+
+
+def _tmax_device(monkeypatch, tmax):
+    if tt.device().transport != "sim":
+        pytest.skip("needs the sim transport")
+    if tmax:
+        monkeypatch.setenv("TSR_SIM_TMAX", str(tmax))
+    return _C.Device("sim")
+
+
+def test_kv_object_store_read(dev):
+    """kv_create / kv_store / kv_read / kv_info / kv_free: the stored cells are the q8_0 blocks of an independent quantizer."""
+    E, cells = 128, 100
+    free0 = dev.memory()["weight_free"]
+    dev.reset_counters()
+    h = dev.kv_create(E, cells)
+    try:
+        info = dev.kv_info(h)
+        assert (info["E"], info["cells"]) == (E, cells) and info["bytes"] > 0
+        assert info["k_off"] % 4096 == 0 and info["v_off"] % 4096 == 0 and info["k_off"] != info["v_off"]
+        assert dev.memory()["weight_free"] <= free0 - info["bytes"]
+        k0, v0 = dev.kv_read(h, 0, cells)
+        assert k0.dtype == torch.uint8 and tuple(k0.shape) == (cells, E // 32 * 34) and tuple(v0.shape) == tuple(k0.shape)
+        assert not k0.any() and not v0.any(), "a new object is zero-filled"
+        n, c0 = 40, 13
+        base_k, base_v = _rand((n, E + 7), 3, scale=2.0), _rand((n, E + 7), 4, scale=2.0)
+        k, v = base_k[:, :E], base_v[:, :E]                      # a row stride above E
+        assert k.stride(0) == E + 7
+        dev.kv_store(h, c0, k, v)
+        kb, vb = dev.kv_read(h, c0, n)
+        assert np.array_equal(kb.numpy(), sm.q8_0_ref_blocks(k.contiguous().numpy()))
+        assert np.array_equal(vb.numpy(), sm.q8_0_ref_blocks(v.contiguous().numpy()))
+        ka, va = dev.kv_read(h, 0, cells)
+        outside = np.ones(cells, bool)
+        outside[c0:c0 + n] = False
+        assert not ka.numpy()[outside].any() and not va.numpy()[outside].any(), "the other cells stay zero"
+        # one row, overwriting; an empty store is a no-op
+        k1, v1 = _rand((1, E), 5, scale=9.0), _rand((1, E), 6, scale=9.0)
+        dev.kv_store(h, c0 + 3, k1, v1)
+        dev.kv_store(h, 0, torch.zeros(0, E), torch.zeros(0, E))
+        kb2, vb2 = dev.kv_read(h, c0 + 3, 1)
+        assert np.array_equal(kb2.numpy(), sm.q8_0_ref_blocks(k1.numpy())) and np.array_equal(vb2.numpy(), sm.q8_0_ref_blocks(v1.numpy()))
+        kb3, _ = dev.kv_read(h, c0, n)
+        assert np.array_equal(kb3.numpy()[:3], kb.numpy()[:3]) and np.array_equal(kb3.numpy()[4:], kb.numpy()[4:])
+        c = dev.counters()
+        assert (c["kv_creates"], c["kv_stores"], c["kv_store_rows"]) == (1, 2, n + 1)
+        # errors
+        with pytest.raises(ValueError, match="beyond"):
+            dev.kv_store(h, cells - 1, k[:2], v[:2])
+        with pytest.raises(ValueError, match="beyond"):
+            dev.kv_read(h, cells - 1, 2)
+        with pytest.raises(ValueError, match="same shape"):
+            dev.kv_store(h, 0, k[:3], v[:2])
+        with pytest.raises(ValueError, match="float32"):
+            dev.kv_store(h, 0, k[:2].half(), v[:2].half())
+        with pytest.raises(ValueError, match="KV object E"):
+            dev.kv_store(h, 0, torch.zeros(2, 64), torch.zeros(2, 64))
+        with pytest.raises(ValueError, match="multiple of 64"):
+            dev.kv_create(100, 16)
+        with pytest.raises(ValueError, match="cells"):
+            dev.kv_create(64, 0)
+        with pytest.raises(_C.TesseractError, match="does not fit"):
+            dev.kv_create(511 * 64, 16 * 16 * 65535)
+    finally:
+        dev.kv_free(h)
+    assert dev.memory()["weight_free"] == free0
+    for f in (lambda: dev.kv_free(h), lambda: dev.kv_info(h), lambda: dev.kv_read(h, 0, 1), lambda: dev.kv_store(h, 0, k, v)):
+        with pytest.raises(ValueError, match="unknown KV handle"):
+            f()
+
+
+def test_kv_arguments_are_checked(dev):
+    """A handle that is negative or above 64 bits, a bool where an int is meant, and cells beyond the planes are ValueErrors."""
+    E, cells = 64, 32
+    h = dev.kv_create(E, cells)
+    hg = dev.graph_create(_att_prog(2, 1, 64, cells))
+    try:
+        a = [_rand((1, 128), 41), _rand((1, E), 42), _rand((1, E), 43)]
+        for bad in (-1, 2 ** 64, 2 ** 70, -(2 ** 70)):
+            for run in (dev.graph_run, dev.graph_run_ref):
+                with pytest.raises(ValueError, match="kv handle"):
+                    run(hg, a, kv=[bad], pos0=0)
+            for f in (lambda: dev.kv_free(bad), lambda: dev.kv_info(bad), lambda: dev.kv_read(bad, 0, 1),
+                      lambda: dev.kv_store(bad, 0, torch.zeros(1, E), torch.zeros(1, E))):
+                with pytest.raises(ValueError, match="handle"):
+                    f()
+        with pytest.raises(ValueError, match="bool"):
+            dev.graph_run(hg, a, kv=[h], pos0=True)
+        with pytest.raises(ValueError, match="bool"):
+            dev.graph_run_ref(hg, a, kv=[h], pos0=True)
+        with pytest.raises(ValueError, match="bool"):
+            dev.kv_create(True, cells)
+        with pytest.raises(ValueError, match="bool"):
+            dev.kv_create(E, True)
+        with pytest.raises(ValueError, match="bool"):
+            dev.kv_read(h, True, 1)
+        with pytest.raises(ValueError, match="bool"):
+            dev.kv_read(h, 0, True)
+        with pytest.raises(ValueError, match="bool"):
+            dev.kv_store(h, True, torch.zeros(1, E), torch.zeros(1, E))
+        for f in (lambda: dev.kv_free(True), lambda: dev.kv_info(True), lambda: dev.kv_read(True, 0, 1)):
+            with pytest.raises(ValueError, match="bool"):
+                f()
+        with pytest.raises(ValueError, match="int"):
+            dev.kv_read(h, 0.5, 1)
+        # a run with a numpy int for pos0 and a numpy handle behaves like the Python ints
+        assert dev.kv_read(h, np.int64(0), np.int64(1))[0].shape == (1, E // 32 * 34)
+        # no rows: cell0 is still checked against the cells
+        assert dev.kv_read(h, cells, 0)[0].shape == (0, E // 32 * 34)
+        assert dev.kv_read(h, 0, 0)[0].shape == (0, E // 32 * 34)
+        with pytest.raises(ValueError, match="beyond"):
+            dev.kv_read(h, cells + 1, 0)
+        with pytest.raises(ValueError, match="beyond"):
+            dev.kv_store(h, cells + 1, torch.zeros(0, E), torch.zeros(0, E))
+        dev.kv_store(h, cells, torch.zeros(0, E), torch.zeros(0, E))
+    finally:
+        dev.graph_free(hg)
+        dev.kv_free(h)
+
+
+def test_graph_info_of_a_graph_that_runs_in_chunks(dev):
+    """graph_info(h, T) is the plan the first chunk of a run of T rows starts with; pos0 plays no part."""
+    nh, nkv, d, cells = 2, 1, 64, 800
+    E = nkv * d
+    h = dev.graph_create(_att_prog(nh, nkv, d, cells))
+    kvh = dev.kv_create(E, cells)
+    try:
+        R = 700
+        dev.reset_counters()
+        dev.graph_run(h, [_rand((R, nh * d), 25), _rand((R, E), 26), _rand((R, E), 27)], kv=[kvh], pos0=0)
+        misses = dev.counters()["graph_plan_misses"]
+        info = dev.graph_info(h, R)
+        assert info["T"] == 680 and info["T"] < R
+        assert {k: v for k, v in info.items()} == dev.graph_info(h, 680)
+        assert dev.counters()["graph_plan_misses"] == misses, "no second plan for what the run planned"
+        for key in ("T", "records", "lists", "by_kind", "io_bytes"):
+            assert key in info
+        # a run at the last cell leaves graph_info of two rows answerable
+        dev.graph_run(h, [_rand((1, nh * d), 28), _rand((1, E), 29), _rand((1, E), 30)], kv=[kvh], pos0=cells - 1)
+        assert dev.graph_info(h, 2)["T"] == 2
+        with pytest.raises(_C.TesseractError, match="does not fit"):
+            dev.graph_info(h, cells + 1)
+    finally:
+        dev.graph_free(h)
+        dev.kv_free(kvh)
+
+
+@pytest.mark.parametrize("given", [False, True])
+@pytest.mark.parametrize("request_tmax", [0, 4, 8])
+def test_cached_attention_program(monkeypatch, given, request_tmax):
+    """A cached attention through the bindings: device == reference, the cells are the quantizer's blocks, the steps are the
+    stateless run of the same rows (tiny NMSE), a wrong pos0 is not."""
+    dev = tt.device() if request_tmax == 0 else _tmax_device(monkeypatch, request_tmax)
+    nh, nkv, d, cells = 4, 2, 64, 64
+    E = nkv * d
+    steps = [5, 1, 1, 3, 1]
+    R = sum(steps)
+    h = h2 = kvh = None
+    try:
+        h = dev.graph_create(_att_prog(nh, nkv, d, cells, mask=given))
+        sh = dev.graph_shape(h)
+        assert sh["kv_slots"] == [cells] and sh["kv_bytes"] == 0
+        assert [a["kind"] for a in sh["args"]] == ["in", "in", "in"] + (["mask"] if given else [])
+        if given:
+            assert sh["args"][3]["n"] == cells
+        kvh = dev.kv_create(E, cells)
+        q, k, v = _rand((R, nh * d), 11, scale=2.0), _rand((R, E), 12, scale=2.0), _rand((R, E), 13, scale=2.0)
+        M = _cached_mask(R, 0, cells, 14, holes=0.2 if given else 0.0)
+        pos0, outs = 0, []
+        for T in steps:
+            sl = slice(pos0, pos0 + T)
+            args = [q[sl], k[sl], v[sl]] + ([M[sl].reshape(1, 1, T, cells)] if given else [])
+            y = dev.graph_run(h, args, kv=[kvh], pos0=pos0)[0]
+            yr = dev.graph_run_ref(h, args, kv=[kvh], pos0=pos0)[0]
+            assert _same_bits(y, yr), f"step pos0 {pos0}: device != reference"
+            outs.append(y)
+            pos0 += T
+        got = torch.cat(outs)
+        kb, vb = dev.kv_read(kvh, 0, R)
+        assert np.array_equal(kb.numpy(), sm.q8_0_ref_blocks(k.numpy())) and np.array_equal(vb.numpy(), sm.q8_0_ref_blocks(v.numpy()))
+        # the stateless run of the same rows (own planes, [R, R] mask)
+        h2 = dev.graph_create(_att_prog(nh, nkv, d, None, mask=given, kv_size=R))
+        args2 = [q, k, v] + ([M[:, :R].reshape(1, 1, R, R).contiguous()] if given else [])
+        ref = dev.graph_run(h2, args2)[0]
+        assert _nmse(got, ref) < NMSE_CACHED, _nmse(got, ref)
+        print(f"cached steps vs stateless run (given mask {given}, T_MAX {request_tmax}): NMSE {_nmse(got, ref):.3g}")
+        if not given:
+            # a causal run at another pos0 (rows 0 .. 6 of the cache are earlier cells for it) is another result: the control of the above
+            wrong = dev.graph_run(h, [q[:3], k[:3], v[:3]], kv=[kvh], pos0=7)[0]
+            right = dev.graph_run(h, [q[:3], k[:3], v[:3]], kv=[kvh], pos0=0)[0]
+            assert _nmse(wrong, right) > 1e-4
+    finally:
+        for g in (h, h2):
+            if g is not None:
+                dev.graph_free(g)
+        if kvh is not None:
+            dev.kv_free(kvh)
+        if request_tmax:
+            dev.close()
+
+
+def test_cached_attention_refusals_and_program_errors(dev):
+    nh, nkv, d, cells = 2, 1, 64, 32
+    E = nkv * d
+    h = dev.graph_create(_att_prog(nh, nkv, d, cells, mask=True))
+    kvh = dev.kv_create(E, cells)
+    try:
+        q, k, v = _rand((2, nh * d), 21), _rand((2, E), 22), _rand((2, E), 23)
+        ok = _cached_mask(2, 10, cells, 24)
+        dev.graph_run(h, [q, k, v, ok], kv=[kvh], pos0=10)
+        with pytest.raises(_C.TesseractError, match="does not fit"):
+            dev.graph_run(h, [q, k, v, ok], kv=[kvh], pos0=31)                  # pos0 + T above the cells
+        bad = ok.clone()
+        bad[1, 20] = 0.0                                                        # a cell at or above pos0 + T
+        with pytest.raises(_C.TesseractError, match=r"does not fit.*mask row 1 shows cell 20|mask row 1 shows cell 20.*does not fit"):
+            dev.graph_run(h, [q, k, v, bad], kv=[kvh], pos0=10)
+        with pytest.raises(ValueError, match=r"\[T, 32\]"):
+            dev.graph_run(h, [q, k, v, torch.zeros(2, 2)], kv=[kvh], pos0=10)   # the [T, T] form of an own-planes mask
+        with pytest.raises(ValueError, match="KV handles given"):
+            dev.graph_run(h, [q, k, v, ok], pos0=10)
+        with pytest.raises(ValueError, match="KV handles given"):
+            dev.graph_run(h, [q, k, v, ok], kv=[kvh, kvh], pos0=10)
+        with pytest.raises(ValueError, match="unknown KV handle"):
+            dev.graph_run(h, [q, k, v, ok], kv=[kvh + 1000], pos0=10)
+        with pytest.raises(ValueError, match="list of KV handles"):
+            dev.graph_run(h, [q, k, v, ok], kv=kvh, pos0=10)
+        other = dev.kv_create(E, cells + 16)
+        try:
+            with pytest.raises(ValueError, match="KV slot 0 needs E"):
+                dev.graph_run(h, [q, k, v, ok], kv=[other], pos0=10)
+        finally:
+            dev.kv_free(other)
+        # the bool form of a cached mask is taken
+        yb = dev.graph_run(h, [q, k, v, (ok == 0).reshape(1, 1, 2, cells)], kv=[kvh], pos0=10)[0]
+        yf = dev.graph_run(h, [q, k, v, ok], kv=[kvh], pos0=10)[0]
+        assert _same_bits(yb, yf)
+        # T above graph_max_attn_tokens runs in chunks for a graph whose attn ops all have a slot
+        c0 = dev.counters()
+        big = dev.kv_create(E, 800)
+        try:
+            hb = dev.graph_create(_att_prog(nh, nkv, d, 800))
+            try:
+                R = 700
+                ys = dev.graph_run(hb, [_rand((R, nh * d), 25), _rand((R, E), 26), _rand((R, E), 27)], kv=[big], pos0=0)[0]
+                assert ys.shape == (R, nh * d) and torch.isfinite(ys).all()
+                c1 = dev.counters()
+                assert c1["graph_runs"] - c0["graph_runs"] == 1 and c1["graph_launches"] - c0["graph_launches"] >= 2
+                with pytest.raises(_C.TesseractError, match="does not fit"):
+                    dev.graph_run(hb, [_rand((R, nh * d), 25), _rand((R, E), 26), _rand((R, E), 27)], kv=[big], pos0=101)
+            finally:
+                dev.graph_free(hb)
+        finally:
+            dev.kv_free(big)
+        # graph_info keeps working for a graph with slots
+        assert dev.graph_info(h, 2)["lists"] >= 1
+    finally:
+        dev.graph_free(h)
+        dev.kv_free(kvh)
+    # a graph without slots takes no handles
+    hn = dev.graph_create(_att_prog(nh, nkv, d, None, kv_size=8))
+    try:
+        a = [_rand((2, nh * d), 28), _rand((2, E), 29), _rand((2, E), 30)]
+        assert dev.graph_shape(hn)["kv_slots"] == []
+        dev.graph_run(hn, a)
+        dev.graph_run(hn, a, kv=None, pos0=5)
+        kvh = dev.kv_create(E, 16)
+        try:
+            with pytest.raises(ValueError, match="no KV slots"):
+                dev.graph_run(hn, a, kv=[kvh])
+        finally:
+            dev.kv_free(kvh)
+    finally:
+        dev.graph_free(hn)
+    # the program dict
+    def bad(edit, match):
+        p = _att_prog(nh, nkv, d, cells, mask=True)
+        edit(p)
+        with pytest.raises(ValueError, match=match):
+            dev.graph_unsupported(p)
+    bad(lambda p: p.update(kv_slots=cells), "'kv_slots' must be a list")
+    bad(lambda p: p.update(kv_slots=[True]), "must be an int")
+    bad(lambda p: p.update(kv_slots=[0]), "out of range")
+    bad(lambda p: p["ops"][0].update(kv="0"), "must be an int")
+    bad(lambda p: p["values"][3].update(cols="x"), "must be an int")
+    bad(lambda p: p["values"][3].update(extra=1), "unknown|extra")
+    with pytest.raises(ValueError, match="out of range"):
+        p = _att_prog(nh, nkv, d, cells, mask=True)
+        p["ops"][0]["kv"] = 1
+        dev.graph_create(p)
+    with pytest.raises(ValueError, match="cols = 7"):
+        p = _att_prog(nh, nkv, d, cells, mask=True)
+        p["values"][3]["cols"] = 7
+        dev.graph_create(p)

@@ -74,3 +74,32 @@ def test_hf_model_full_mode_attention_on_the_cpu(tmp_path):
     assert "one region" not in res["checks"] and res["checks"]["every region ran on the device"]
     assert res["kl"]["cpu_vs_device"]["top1"] >= 0.8
     assert res["pass"] and r.returncode == 0
+
+
+@pytest.mark.skipif(not MODEL, reason="set TSR_TORCH_HF_MODEL=<local HF model directory> to run")
+def test_hf_model_generate_with_a_static_cache(tmp_path):
+    """``model.generate(cache_implementation="static")`` through ``model.forward = tt.compile(model.forward)``: the
+    attention runs on the device over the K and V in the device's KV planes. The prefill is one region call, every
+    decode step one region call and one launch, no CPU fallback, every call verified (with the cache check); a second
+    generate of the same prompt needs no upload and no plan; teacher forced with eager's tokens the logits equal the
+    stateless full-mode forward of the sequence (NMSE <= 1e-10) and agree with eager float32 (top-1 >= 80 %).
+    A few minutes on the simulator."""
+    pytest.importorskip("transformers")
+    out = tmp_path / "hf_generate.json"
+    cmd = [sys.executable, "-I", str(REPO / "sw" / "torch" / "tools" / "hf_check.py"), MODEL, "--generate",
+           "--tokens", "24", "--gen", "8", "--json", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    assert out.exists(), r.stdout[-4000:] + r.stderr[-4000:]
+    res = json.loads(out.read_text())
+    g = res["generation"]
+    print(json.dumps({"checks": res["checks"], "nmse": g["nmse_cached_vs_stateless"], "top1": res["kl"]["cpu_vs_device"]["top1"],
+                      "kl_mean": res["kl"]["cpu_vs_device"]["kl_mean"], "decode_perf_cycles_mean": g["decode_perf_cycles_mean"],
+                      "decode_wall_s_mean": g["decode_wall_s_mean"]}, indent=1))
+    assert g["prefill"]["region_calls"] == 1
+    assert g["decode_steps"] == 7 and g["decode_launches"] == [1] * 7 and g["decode_region_calls"] == [1] * 7
+    assert g["region_cpu_fallback_calls"] == 0 and g["verified_regions"] == g["region_calls"] == 8
+    assert g["kv_resync_rows"] == 0 and g["regions"] == 2
+    assert g["second"]["tokens_equal"] and g["second"]["uploads"] == 0 and g["second"]["plan_misses"] == 0
+    assert g["nmse_cached_vs_stateless"] <= g["nmse_max"]
+    assert res["kl"]["cpu_vs_device"]["top1"] >= 0.8
+    assert res["pass"] and r.returncode == 0

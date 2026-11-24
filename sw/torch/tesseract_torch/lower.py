@@ -12,6 +12,9 @@ Concepts
                  ``n`` and the heads (layout rules in ``LowerCtx.view_of``).
   Cand           one device op (an IR op) with the aten nodes it replaces.
   Region         a convex set of at least two ops; ``Region.to_program()`` is the program of DESIGN.md §3.
+  KVCache        a cached attention: an SDPA whose k / v are ``index_copy(base, 2, pos, rows)`` (the cache update
+                 of a static cache), seen through the grouped-KV expansion. The op reads and writes a KV slot that
+                 outlives the call; see ``KVCache`` and ``LowerCtx._cached_views``.
 
 Program placeholders (what ``to_program`` writes for things only known at call time)
   {"kind": "const", "n": n, "rows": 1, "source": i}   i indexes ``Region.consts`` (the runtime uploads that
@@ -20,6 +23,13 @@ Program placeholders (what ``to_program`` writes for things only known at call t
   {"op": "mul_mat", "w": i, ...}                      i indexes ``Region.weights`` (the runtime resolves
                                                        the weight handle)
   "in" / "pos" / "mask" values are given at every call, in the order of ``Region.inputs``.
+  "kv_slots": [cells, ...]   (only when the region has a cached attention) one entry per KV slot, in op order;
+                             the attn op of a cached attention carries "kv": slot, and its mask value carries
+                             "cols": cells (the mask is [T, cells] instead of [T, T]).
+                             A cache length that is a symbol of the graph is not known when the region is formed:
+                             the cells of the program come from ``Region.to_program(.., cells=..)`` (the lengths
+                             of the cache tensors of the call), and the program of the region's own values carries
+                             an example length.
 """
 from __future__ import annotations
 
@@ -32,6 +42,7 @@ from typing import Any, Callable
 import sympy
 import torch
 import torch.fx as fx
+from torch.fx.experimental.symbolic_shapes import hint_int
 
 aten = torch.ops.aten
 
@@ -82,6 +93,9 @@ except (AttributeError, RuntimeError):
     pass
 _SDPA_CPU = _targets("_scaled_dot_product_flash_attention_for_cpu.default")
 _SDPA = _targets("scaled_dot_product_attention.default")
+_INDEX_COPY = _targets("index_copy.default")
+_COPY_ = _targets("copy_.default")
+_ZEROS = _targets("zeros.default")
 _LINEAR_BLOCKS = _custom("tesseract::linear_blocks")
 
 
@@ -125,6 +139,19 @@ def _x(d):
 def _int(d) -> int | None:
     e = _x(d)
     return int(e) if e.is_Integer else None
+
+
+def _hint(d) -> int | None:
+    """The example value of a dimension (the integer itself, or the hint of a SymInt), or None. It adds no guard."""
+    i = _int(d)
+    if i is not None:
+        return i
+    if isinstance(d, torch.SymInt):
+        try:
+            return int(hint_int(d))
+        except Exception:  # noqa: BLE001 - no hint (data-dependent size)
+            return None
+    return None
 
 
 def _eq(a, b) -> bool:
@@ -260,6 +287,9 @@ class P:
 class M:
     node: fx.Node
     form: str            # "bool" (True keeps) or "additive" (0 / -inf)
+    cols: Any = 0        # 0: the mask is [T, T]; else [T, cols] (cached attention: the cells of its slot, an int or,
+                         # for a cache length that is a symbol, that expression)
+    hint: int = 0        # an example value of ``cols`` when it is an expression
 
 
 @dataclass(frozen=True)
@@ -292,6 +322,59 @@ def _v(view: View) -> V:
     return V(view, view.key())
 
 
+@dataclass(frozen=True)
+class KVCache:
+    """A cached attention (static KV cache): ``Kall = index_copy(k_base, 2, pos, k_rows)`` and the same for v feed
+    the SDPA, through the grouped-KV expansion. The device keeps the K and V planes of the slot across calls; the
+    op stores the T new rows at the cells ``pos`` and attends over the cells of the slot.
+
+    cells      L, the sequence length of the cache tensors ([1, Hkv, L, D]) as an int; None when the length is a symbol
+               of the graph (a Dynamo graph that serves several cache lengths): the cells are then read from the cache
+               tensors at each call (``Region.to_program(.., cells=..)``)
+    length     L as a sympy value (an integer or the expression of the symbol): what the K base, the V base, the
+               expanded cache and the mask's last dimension are compared with
+    hint       an example value of L (``cells`` when it is static): the probe of the device sees this one
+    hkv, d     the KV heads and the head size
+    form       "existing": the bases are graph inputs, updated in place by an epilogue ``copy_(base, Kall)``;
+               "fresh": the bases are ``aten.zeros`` of the graph and ``Kall`` is a graph output
+    pos        the int64 [T] node of the cells (the same for k and v)
+    k_base, v_base   the base nodes (placeholders, or the zeros nodes); they stay in the graph
+    k_copy, v_copy   the ``index_copy`` nodes (``Kall``, ``Vall``). They are NOT replaced by the region: they stay
+                     in the graph reading the region's k / v outputs, and the rewrite turns them into the cache
+                     writes. The expansion chains and the SDPA after them are region nodes.
+    k_rows, v_rows   the head-major [1, Hkv, T, D] source nodes of the two ``index_copy`` nodes
+    epilogue   the ``copy_`` nodes of the existing form (k then v), () for the fresh form; not region nodes
+    slot       the index in ``Region.kv`` (-1 in a Cand)
+    k_out, v_out   the index in ``Region.outputs`` of the output whose node is ``k_rows`` / ``v_rows``, or None
+               when that node is not made by the region (it stays in the graph; read it there)
+    causal0    the attention reads the first T cells of the cache (``slice(cache, 2, 0, T)``) with ``is_causal`` and no
+               mask (what Hugging Face emits for the prefill of a fresh static cache): the op has no mask (causal from
+               the first cell of the call), and the call is on the device only when that cell is 0
+    """
+    cells: "int | None"
+    hkv: int
+    d: int
+    form: str
+    pos: fx.Node
+    k_base: fx.Node
+    v_base: fx.Node
+    k_copy: fx.Node
+    v_copy: fx.Node
+    k_rows: fx.Node
+    v_rows: fx.Node
+    epilogue: tuple = ()
+    slot: int = -1
+    k_out: int | None = None
+    v_out: int | None = None
+    causal0: bool = False
+    length: Any = None
+    hint: int = 0
+
+    def seeds(self):
+        """The nodes the attn op reads besides its operands (they must not come out of the region)."""
+        return (self.pos, self.k_base, self.v_base)
+
+
 @dataclass(eq=False)
 class Cand:
     """One device op: its fields (operands as references), the layout of its result, and the aten nodes."""
@@ -305,6 +388,7 @@ class Cand:
     addend_of: "Cand | None" = None              # folded: the mul_mat Cand and the add Cand it came from
     parts: tuple = ()
     reason: str = ""
+    kv: "KVCache | None" = None                  # attn over a KV cache (see KVCache)
 
     def operands(self):
         for v in self.fields.values():
@@ -321,6 +405,8 @@ class Input:
                                                            x = x.reshape(-1, n)
       "pos":  {"reshape": [-1]}                            integer positions (int64 / int32), one per row
       "mask": {"form": "bool" | "additive", "reshape": "TxT"}   the mask as a [T, T] tensor (T = rows)
+              of a cached attention: {"form": ..., "reshape": "TxL", "cols": L}   the mask as a [T, L] tensor
+              (``cols`` is None when L is a symbol of the graph)
     """
     value: int
     node: fx.Node
@@ -366,10 +452,22 @@ class Region:
     op_nodes: list                    # the aten node each op came from (its root), parallel to ops
     touching: dict = field(default_factory=dict)   # CPU node next to the region -> reason
     scalars: list = field(default_factory=list)    # 0-dim graph inputs the program's floats depend on
+    kv: list = field(default_factory=list)         # [KVCache], one per KV slot, in op order (slot = index)
 
-    def to_program(self, scalar_values=None) -> dict:
+    def to_program(self, scalar_values=None, cells=None) -> dict:
         """The program of DESIGN.md §3. ``scalar_values`` are the current Python floats of
-        ``self.scalars`` (the 0-dim tensors, read at call time); a region without scalars needs none."""
+        ``self.scalars`` (the 0-dim tensors, read at call time); a region without scalars needs none.
+        ``cells``: one integer per KV slot, the cells of the slot's cache tensors at this call. It is required when a
+        slot's length is a symbol (``KVCache.cells is None``); the program then has these cells as ``kv_slots`` and
+        as ``cols`` of the mask values that cached attention ops read. Without it a static region gives its
+        compile-time cells."""
+        if self.kv:
+            if cells is None and any(k.cells is None for k in self.kv):
+                raise ValueError("lower: a KV slot has a cache length that is a symbol; pass cells= to to_program")
+            if cells is not None and len(cells) != len(self.kv):
+                raise ValueError(f"lower: {len(self.kv)} KV slots, {len(cells)} cells given")
+        elif cells is not None and len(cells):
+            raise ValueError("lower: cells given for a region without KV slots")
         if self.scalars and scalar_values is None:
             raise ValueError("lower: this region has runtime scalars; pass their values")
         sv = dict(zip(self.scalars, scalar_values or ()))
@@ -380,7 +478,22 @@ class Region:
                 if isinstance(v, Scalar):
                     d[k] = v.apply(float(sv[v.node]))
             ops.append(d)
-        return {"values": [dict(v) for v in self.values], "ops": ops, "kv_size": self.kv_size}
+        prog = {"values": [dict(v) for v in self.values], "ops": ops, "kv_size": self.kv_size}
+        if self.kv:
+            if cells is None:
+                prog["kv_slots"] = [k.cells for k in self.kv]
+            else:
+                cells = [int(c) for c in cells]
+                prog["kv_slots"] = cells
+                seen: dict = {}
+                for o in ops:
+                    if o["op"] == "attn" and o.get("kv", -1) >= 0 and o.get("mask") is not None:
+                        m, c = o["mask"], cells[o["kv"]]
+                        if seen.setdefault(m, c) != c:
+                            raise ValueError(f"lower: one mask value is read by cached attentions of different cells "
+                                             f"({seen[m]} and {c})")
+                        prog["values"][m]["cols"] = c
+        return prog
 
     def op_counts(self) -> dict:
         out: dict = {}
@@ -390,8 +503,13 @@ class Region:
 
     def describe(self) -> str:
         c = ", ".join(f"{k} x{v}" for k, v in sorted(self.op_counts().items()))
+        kv = ""
+        if self.kv:
+            sym = [k for k in self.kv if k.cells is None]
+            kv = f", {len(self.kv)} kv slots" + (f" ({', '.join(sorted({str(k.length) for k in sym}))} cells, length known "
+                                                 "at the call)" if sym else "")
         return (f"region {self.id}: {len(self.ops)} ops ({c}), {len(self.inputs)} inputs, "
-                f"{len(self.outputs)} outputs, {len(self.weights)} weights, {len(self.consts)} consts")
+                f"{len(self.outputs)} outputs, {len(self.weights)} weights, {len(self.consts)} consts{kv}")
 
 
 @dataclass
@@ -399,12 +517,13 @@ class LowerOpts:
     kv_size: int = 4096        # cells of every KV plane of a region
     min_ops: int = 2           # D2: a region has at least two ops
     attention: str = "device"  # "cpu": scaled_dot_product_attention is not lowered (it stays on the CPU in float32)
+    kv_cache: bool = True      # False: an attention over a static KV cache stays on the CPU
 
     @staticmethod
     def from_dict(d: dict | None) -> "LowerOpts":
         d = dict(d or {})
         return LowerOpts(kv_size=int(d.get("kv_size", 4096)), min_ops=int(d.get("min_ops", 2)),
-                         attention=str(d.get("attention", "device")))
+                         attention=str(d.get("attention", "device")), kv_cache=bool(d.get("kv_cache", True)))
 
 
 # ------------------------------------------------------------------------------------------
@@ -419,6 +538,7 @@ class _Builder:
         self.consts: list[ConstSpec] = []
         self.weights: list[WeightSpec] = []
         self.scalars: list = []
+        self.kv: list[KVCache] = []
         self.produced: dict = {}        # root node -> value id
         self._in: dict = {}
         self._const: dict = {}
@@ -454,12 +574,18 @@ class _Builder:
             self._pos[node] = vid
         return self._pos[node]
 
-    def mask(self, node, form) -> int:
-        if (node, form) not in self._mask:
-            vid = self._new({"kind": "mask"})
-            self.inputs.append(Input(vid, node, "mask", {"form": form, "reshape": "TxT"}))
-            self._mask[(node, form)] = vid
-        return self._mask[(node, form)]
+    def mask(self, node, form, cols=0, hint=0) -> int:
+        if (node, form, cols) not in self._mask:
+            if _x(cols) != 0:
+                ci = _int(cols)       # None: the length is a symbol; the value carries an example, the call gives the cells
+                vid = self._new({"kind": "mask", "cols": ci if ci is not None else hint})
+                recipe = {"form": form, "reshape": "TxL", "cols": ci}
+            else:
+                vid = self._new({"kind": "mask"})
+                recipe = {"form": form, "reshape": "TxT"}
+            self.inputs.append(Input(vid, node, "mask", recipe))
+            self._mask[(node, form, cols)] = vid
+        return self._mask[(node, form, cols)]
 
     def weight(self, spec: WeightSpec) -> int:
         if spec not in self._weight:
@@ -477,7 +603,7 @@ class _Builder:
         if isinstance(ref, P):
             return self.pos(ref.node)
         if isinstance(ref, M):
-            return self.mask(ref.node, ref.form)
+            return self.mask(ref.node, ref.form, ref.cols, ref.hint)
         if isinstance(ref, W):
             return self.weight(ref.spec)
         if isinstance(ref, Scalar):
@@ -490,6 +616,9 @@ class _Builder:
         op = {"op": c.kind}
         for k, v in c.fields.items():
             op[k] = self.resolve(v)
+        if c.kv is not None:
+            op["kv"] = len(self.kv)
+            self.kv.append(replace(c.kv, slot=len(self.kv)))
         dst = self._new({"kind": "tmp", "n": c.out.n, "out": False})
         self.produced[c.root] = dst
         op["dst"] = dst
@@ -597,8 +726,9 @@ class LowerCtx:
             return None
         if t is aten.slice.Tensor:
             src = node.args[0]
-            full = (_arg(node, 2, "start", 0) in (0, None) and _arg(node, 4, "step", 1) == 1
-                    and _is_f32(src) and _same_shape(_shape(src), s))
+            # a slice that keeps the shape (step 1) keeps every row, whatever its start is written as
+            # (Hugging Face's logits_to_keep = 1 gives slice(-1, None), which is the whole of a one-row value)
+            full = (_arg(node, 4, "step", 1) == 1 and _is_f32(src) and _same_shape(_shape(src), s))
             if full:
                 p, _ = self.view_of(src, want)
                 if p is not None:
@@ -658,8 +788,10 @@ class LowerCtx:
             return self._wrap(p, node, form="tm", rows=_x(b))
         return None
 
-    def _gqa(self, node) -> View | None:
-        """[1, Hkv * g, T, D] from a head-major [1, Hkv, T, D] by repeating every head g times."""
+    def _gqa_split(self, node):
+        """(y, g, chain) when ``node`` [1, Hkv * g, T, D] repeats every head of the 4D node ``y`` g times
+        (unsqueeze, expand, clone, reshape; or repeat_interleave); ``chain`` is the expansion nodes, ``node``
+        first. None for anything else."""
         s = _shape(node)
         if s is None or len(s) != 4 or _int(s[0]) != 1:
             return None
@@ -691,6 +823,15 @@ class LowerCtx:
         sy = _shape(y)
         if sy is None or len(sy) != 4 or not isinstance(g, int) or g < 1:
             return None
+        return y, g, chain
+
+    def _gqa(self, node) -> View | None:
+        """[1, Hkv * g, T, D] from a head-major [1, Hkv, T, D] by repeating every head g times."""
+        sp = self._gqa_split(node)
+        if sp is None:
+            return None
+        y, g, chain = sp
+        s = _shape(node)
         p, _ = self.view_of(y, "hm")
         if p is None or p.form != "hm" or p.rep != 1:
             return None
@@ -1323,14 +1464,30 @@ class LowerCtx:
         why = self._attn_check(node, sd, getitem, dropout, causal, mask, gqa)
         if why:
             return self._attn_fail(node, sd, why)
+        ks, vs = self._kv_side(k), self._kv_side(v)
+        cached = ks is not None or vs is not None
+        if cached and not self.opts.kv_cache:
+            return self._attn_fail(node, sd, "attention over a KV cache stays on the CPU by the option kv_cache=False",
+                                   self._kv_copies(ks, vs))
         qv, wq = self.dev(q, "hm")
-        kv, wk = self.dev(k, "hm", rep_ok=True)
-        vv, wv = self.dev(v, "hm", rep_ok=True)
-        for nm, vw, w in (("q", qv, wq), ("k", kv, wk), ("v", vv, wv)):
+        if cached:
+            kv, vv, kvc = None, None, None
+            if qv is not None and qv.form == "hm" and qv.rep == 1:
+                res = self._cached_views(sd, ks, vs, qv, causal, mask)
+                if isinstance(res, str):
+                    return self._attn_fail(node, sd, res, self._kv_copies(ks, vs))
+                kv, vv, kvc = res
+            ws = [("q", qv, wq)]
+        else:
+            kv, wk = self.dev(k, "hm", rep_ok=True)
+            vv, wv = self.dev(v, "hm", rep_ok=True)
+            ws = [("q", qv, wq), ("k", kv, wk), ("v", vv, wv)]
+        for nm, vw, w in ws:
             if vw is None or vw.form != "hm":
-                return self._attn_fail(node, sd, f"{nm} is not a head-major [1, H, T, D] device value ({w})")
+                return self._attn_fail(node, sd, f"{nm} is not a head-major [1, H, T, D] device value ({w})",
+                                       self._kv_copies(ks, vs))
         if qv.rep != 1:
-            return self._attn_fail(node, sd, "q is a grouped-KV expansion")
+            return self._attn_fail(node, sd, "q is a grouped-KV expansion", self._kv_copies(ks, vs))
         if not (_eq(qv.rows, kv.rows) and _eq(qv.rows, vv.rows)):
             return self._attn_fail(node, sd, "k / v are not fresh rows: their row count differs from q's "
                                              "(cache or cross attention)")
@@ -1340,7 +1497,8 @@ class LowerCtx:
         if kv.rep > 1:
             heads_ok = kv.heads == n_head
         else:
-            heads_ok = kv.heads == n_head or (gqa and n_head % kv.heads == 0)
+            # the CPU flash kernel takes fewer KV heads than heads (Hugging Face passes enable_gqa that way)
+            heads_ok = kv.heads == n_head or ((gqa or (cached and sd.target in _SDPA_CPU)) and n_head % kv.heads == 0)
         if not heads_ok:
             return self._attn_fail(node, sd, "q and k differ in head count")
         n_kv = kv.heads // kv.rep
@@ -1352,10 +1510,13 @@ class LowerCtx:
             sc = f32(scale)
         mref, bypass, owned_extra = None, [], []
         if mask is not None:
-            mr = self._attn_mask(mask, qv)
+            mr = self._attn_mask(mask, qv, kvc.length if cached else 0, kvc.hint if cached else 0)
             if isinstance(mr, str):
-                return self._attn_fail(node, sd, mr)
+                return self._attn_fail(node, sd, mr, self._kv_copies(ks, vs))
             mref, bypass = mr
+        elif cached and not kvc.causal0:
+            return self._attn_fail(node, sd, "cached k / v: attention without a mask (is_causal does not see the cells "
+                                             "of the cache)", self._kv_copies(ks, vs))
         elif not causal:
             return self._attn_fail(node, sd, "attention without a mask and not causal")
         owned = [node] if not getitem else [node, sd]
@@ -1368,12 +1529,173 @@ class LowerCtx:
              "mask": mref}
         out = View(node, True, "hm", qv.n, n_head, d, 1, qv.rows)
         chain = list(qv.chain) + list(kv.chain) + list(vv.chain)
-        return Cand("attn", node, f, out, owned, bypass, chain)
+        return Cand("attn", node, f, out, owned, bypass, chain, kv=kvc if cached else None)
 
-    def _attn_fail(self, node, sd, why):
+    def _attn_fail(self, node, sd, why, extra=()):
         self.note(node, why)
         self.why[sd] = why                  # the call is visited before its getitem: replace the generic reason
+        for n in extra:                     # the cache updates stay on the CPU with the attention
+            self.why[n] = f"cache update of an attention that stays on the CPU ({why})"
         return None
+
+    # -- attention over a static KV cache
+    def _kv_side(self, node):
+        """(index_copy node, chain, g, S) when ``node`` is ``index_copy(base, ..)``, directly, through the grouped-KV
+        expansion, or through ``slice(.., 2, 0, S)`` of the cache (S is None without the slice); chain: the nodes
+        between the index_copy and ``node``, ``node`` first. Else None."""
+        if not isinstance(node, fx.Node):
+            return None
+        if _is_call(node, _INDEX_COPY):
+            return node, [], 1, None
+        g, chain, cur = 1, [], node
+        if cur.op == "call_function" and cur.target in _VIEW_RESHAPE:
+            sp = self._gqa_split(cur)
+            if sp is None:
+                return None
+            cur, g, chain = sp
+        S = None
+        if _is_call(cur, _targets("slice.Tensor")) and _is_call(cur.args[0], _INDEX_COPY):
+            sl = cur
+            s4 = _shape(sl)
+            if _arg(sl, 1, "dim") not in (2, -2) or _arg(sl, 2, "start", 0) not in (0, None) or _arg(sl, 4, "step", 1) != 1 \
+                    or s4 is None or len(s4) != 4:
+                return None
+            S = s4[2]
+            chain = list(chain) + [sl]
+            cur = sl.args[0]
+        if _is_call(cur, _INDEX_COPY):
+            return cur, chain, g, S
+        return None
+
+    @staticmethod
+    def _kv_copies(ks, vs) -> list:
+        return [x[0] for x in (ks, vs) if x is not None]
+
+    def _kv_base(self, ic, B, L, hkv, d):
+        """("existing" | "fresh", epilogue copy_ nodes) for the base ``B`` of ``ic``, or a reason."""
+        tv = _tensor(B)
+        s = _shape(B)
+        if tv is None or tv.dtype != torch.float32 or tv.device.type != "cpu":
+            return "cached k / v: the cache base is not a float32 CPU tensor"
+        if s is None or len(s) != 4 or _int(s[0]) != 1 or _int(s[1]) != hkv or _int(s[3]) != d or not _eq(s[2], L):
+            return f"cached k / v: the cache base is not [1, {hkv}, {L}, {d}]"
+        if B.op == "placeholder":
+            others = [u for u in B.users if u is not ic]
+            if not others:
+                return "cached k / v: the cache base is not updated in place (no copy_ of the new cache into it)"
+            if len(others) != 1 or not _is_call(others[0], _COPY_) or others[0].args[0] is not B \
+                    or others[0].args[1] is not ic:
+                return "cached k / v: the cache base has another user"
+            if others[0].users:
+                return "cached k / v: the epilogue copy_ of the cache has users"
+            return "existing", (others[0],)
+        if _is_call(B, _ZEROS):
+            if set(B.users) != {ic}:
+                return "cached k / v: the cache base has another user"
+            return "fresh", ()
+        return "cached k / v: the cache base is neither a graph input nor aten.zeros"
+
+    def _cached_views(self, sd, ks, vs, qv: View, causal: bool = False, mask=None):
+        """Check the cache idiom of ``_kv_side`` results (DESIGN: lowering of a cached attention). Returns
+        (k view, v view, KVCache) or a reason. The views are those of the new rows k and v with the grouped-KV
+        expansion (the index_copy nodes and the expansion are seen through)."""
+        if ks is None or vs is None:
+            return "cached k / v: only one of k and v is a cache update (index_copy)"
+        (ick, chk, gk, Sk), (icv, chv, gv, Sv) = ks, vs
+        if gk != gv:
+            return "cached k / v: k and v are expanded differently"
+        if (Sk is None) != (Sv is None) or (Sk is not None and not _eq(Sk, Sv)):
+            return "cached k / v: k and v are sliced differently"
+        causal0 = Sk is not None
+        if causal0 and not (causal and mask is None and _eq(Sk, qv.rows)):
+            return ("cached k / v: the keys are the first cells of the cache (a slice) and the attention is not the "
+                    "plain causal one over the rows of q")
+        for ic in (ick, icv):
+            if _arg(ic, 1, "dim") not in (2, -2):
+                return "cached k / v: the cache is not written along the sequence dimension (dim 2)"
+        pos = ick.args[2]
+        if icv.args[2] is not pos:
+            return "cached k / v: k and v use different positions"
+        tp = _tensor(pos) if isinstance(pos, fx.Node) else None
+        if tp is None or tp.dtype != torch.int64 or tp.dim() != 1 or not _eq(tp.shape[0], qv.rows):
+            return "cached k / v: the positions are not an int64 [T] value (T = rows of q)"
+        xk, xv = ick.args[3], icv.args[3]
+        views = []
+        for nm, x in (("k", xk), ("v", xv)):
+            vw, why = self.dev(x, "hm")
+            if vw is None or vw.form != "hm":
+                return f"cached k / v: the new {nm} rows are not a head-major [1, H, T, D] device value ({why})"
+            views.append(vw)
+        kw, vw = views
+        if not (_eq(kw.rows, qv.rows) and _eq(vw.rows, qv.rows)):
+            return "cached k / v: the new k / v rows differ in count from q's rows"
+        if kw.heads != vw.heads or kw.hd != vw.hd or kw.hd != qv.hd:
+            return "cached k / v: q, k and v differ in head size or head count"
+        Bk, Bv = ick.args[0], icv.args[0]
+        if Bk is Bv:
+            return "cached k / v: k and v share one cache tensor"
+        sk, sv = _shape(Bk), _shape(Bv)
+        if sk is None or len(sk) != 4:
+            return "cached k / v: the cache base is not a 4-dimensional tensor"
+        # L is compared as an expression: an integer, or the symbol of a graph that serves several cache lengths
+        L = _x(sk[2])
+        cells = _int(sk[2])
+        hint = cells if cells is not None else _hint(sk[2])
+        if hint is None:
+            return "cached k / v: the cache length is symbolic and has no example value"
+        if sv is None or len(sv) != 4:
+            return "cached k / v: the cache base is not a 4-dimensional tensor"
+        # Dynamo gives the K and the V tensor of a cache each its own symbol for the length, and nothing in the graph says
+        # they are equal. The mask and K's expanded cache are compared with K's length; V's base and expanded cache with
+        # V's own. When the two lengths are different expressions the call checks V's shape against K's (the runtime does:
+        # a V of another length is refused and runs on the CPU). Two different integers are a refusal here.
+        Lv = _x(sv[2])
+        if not _eq(L, Lv) and _int(sv[2]) is not None and cells is not None:
+            return "cached k / v: k and v caches differ in length"
+        res = []
+        for ic, B, Lb in ((ick, Bk, L), (icv, Bv, Lv)):
+            r = self._kv_base(ic, B, Lb, kw.heads, kw.hd)
+            if isinstance(r, str):
+                return r
+            res.append(r)
+        if res[0][0] != res[1][0]:
+            return "cached k / v: the k and v caches are made differently (a graph input and a fresh tensor)"
+        form = res[0][0]
+        epi = res[0][1] + res[1][1]
+        # the users: the expansion that only this attention reads, the epilogue, the graph output of a fresh cache
+        for ic, ch, (_, ep) in ((ick, chk, res[0]), (icv, chv, res[1])):
+            reader = ch[-1] if ch else sd
+            allowed = set(ep) | {reader}
+            for u in ic.users:
+                if u in allowed or (form == "fresh" and u.op == "output"):
+                    continue
+                return "cached k / v: the cache update result has another user"
+            if reader not in ic.users:
+                return "cached k / v: the attention does not read the cache update"
+            for c_ in ch:
+                if not all(u in set(ch) | {sd} for u in c_.users):
+                    return "cached k / v: the expanded cache has another reader"
+        for e in epi:
+            if self.index[e] < self.index[sd]:
+                return "cached k / v: the cache is overwritten before the attention"
+        for ic, ch, x, Lb in ((ick, chk, kw, L), (icv, chv, vw, Lv)):
+            sx = _shape(ch[0] if ch else ic)
+            if sx is None or len(sx) != 4 or _int(sx[1]) != x.heads * gk or _x(sx[2]) != _x(Sk if causal0 else Lb) \
+                    or _int(sx[3]) != x.hd:
+                return "cached k / v: the expanded cache is not [1, Hkv * g, L, D]"
+        rep = gk
+        Hq = qv.heads
+        if rep > 1:
+            if Hq != kw.heads * rep:
+                return "q and k differ in head count"
+            kview = replace(kw, heads=Hq, rep=rep, chain=tuple(chk) + kw.chain)
+            vview = replace(vw, heads=Hq, rep=rep, chain=tuple(chv) + vw.chain)
+        else:
+            # one KV head per head, or enable_gqa (the checks of _m_attn decide); the slice is the chain, if any
+            kview, vview = replace(kw, chain=tuple(chk) + kw.chain), replace(vw, chain=tuple(chv) + vw.chain)
+        kvc = KVCache(cells, kw.heads, kw.hd, form, pos, Bk, Bv, ick, icv, xk, xv, epi, causal0=causal0, length=L,
+                      hint=hint)
+        return kview, vview, kvc
 
     def _attn_check(self, node, sd, getitem, dropout, causal, mask, gqa) -> str:
         if _num(dropout) != 0.0:
@@ -1393,8 +1715,10 @@ class LowerCtx:
             return "attention output is not float32"
         return ""
 
-    def _attn_mask(self, mask, qv: View):
-        """(mask reference, bypassed nodes) or a reason."""
+    def _attn_mask(self, mask, qv: View, cols=0, hint: int = 0):
+        """(mask reference, bypassed nodes) or a reason. ``cols`` is the cells of a cached attention's slot, an int or
+        the expression of a symbolic length (the mask is [.., T, cols]); 0: the mask is [.., T, T]. ``hint``: an
+        example value of a symbolic ``cols``."""
         if not isinstance(mask, fx.Node):
             return "attention mask is not a tensor"
         T = qv.rows
@@ -1417,6 +1741,10 @@ class LowerCtx:
             else:
                 return f"attention mask dtype {tv.dtype}"
         s = _shape(node)
+        if _x(cols) != 0:
+            if s is None or len(s) < 2 or not _eq(s[-1], cols) or not _eq(s[-2], T) or any(_int(d) != 1 for d in s[:-2]):
+                return f"cached k / v: the attention mask is not [T, {cols}] (batch or heads in it)"
+            return M(node, form, cols, hint), bypass
         if s is None or len(s) < 2 or not (_eq(s[-1], T) and _eq(s[-2], T)) or any(_int(d) != 1 for d in s[:-2]):
             return "attention mask is not [T, T] (batch, heads or a cache length in it)"
         return M(node, form), bypass
@@ -1532,7 +1860,10 @@ class LowerCtx:
         ops = [{k: (v.apply(1.0) if isinstance(v, Scalar) else v) for k, v in o.items()} for o in b.ops]
         prog = {"values": b.values, "ops": ops, "kv_size": self.opts.kv_size,
                 "weights": [{"N": w.N, "K": w.K, "kind": w.kind, "fmt": w.fmt} for w in b.weights]}
-        key = repr([{k: v for k, v in o.items() if k != "tag"} for o in b.ops] + [b.values, prog["weights"]])
+        if b.kv:
+            prog["kv_slots"] = [k.hint for k in b.kv]       # a symbolic length: its example value
+        key = repr([{k: v for k, v in o.items() if k != "tag"} for o in b.ops] + [b.values, prog["weights"],
+                                                                                    prog.get("kv_slots")])
         if key not in memo:
             memo[key] = self.probe(prog)
         return memo[key]
@@ -1623,6 +1954,8 @@ class LowerCtx:
                 for f in b.fields.values():
                     if isinstance(f, (P, M)):
                         seeds.append(f.node)
+                if b.kv is not None:
+                    seeds.extend(b.kv.seeds())
                 for s in seeds:
                     for a in self._read_through(s, S, own, prod, lo):
                         if a is not b:
@@ -1692,6 +2025,8 @@ class LowerCtx:
         for b in gid:
             seeds = [v.view.base for v in b.operands()]
             seeds += [f.node for f in b.fields.values() if isinstance(f, (P, M))]
+            if b.kv is not None:
+                seeds += list(b.kv.seeds())
             for s in seeds:
                 for a in reach.get(s, ()):
                     if gid[a] != gid[b]:
@@ -1840,8 +2175,10 @@ class LowerCtx:
                     bypassed.append(n)
         nodes = sorted(S, key=lambda n: self.index[n])
         outputs.sort(key=lambda o: (o.value, self.index[o.node]))
+        out_of = {o.node: i for i, o in enumerate(outputs)}
+        kvs = [replace(k, k_out=out_of.get(k.k_rows), v_out=out_of.get(k.v_rows)) for k in b.kv]
         r = Region(-1, b.values, b.ops, b.inputs, b.consts, b.weights, outputs, nodes, bypassed,
-                   g[0].out.rows, self.opts.kv_size, b.op_nodes, scalars=list(b.scalars))
+                   g[0].out.rows, self.opts.kv_size, b.op_nodes, scalars=list(b.scalars), kv=kvs)
         r.touching = self._touching(r)
         return r, []
 
@@ -1905,6 +2242,10 @@ class LowerCtx:
             for u in o.node.users:
                 if u.op == "call_function" and u not in inside:
                     out[u] = None
+        for k in r.kv:          # the cache updates, positions, fresh bases and epilogues beside the region
+            for n in (k.k_copy, k.v_copy, k.pos, *k.epilogue, *((k.k_base, k.v_base) if k.form == "fresh" else ())):
+                if n.op == "call_function" and n not in inside:
+                    out[n] = None
         return out
 
 
@@ -1919,7 +2260,7 @@ def form_regions(gm: fx.GraphModule, weights: dict, probe: Callable | None = Non
     probe     probe(program) -> None | reason, asked once per candidate op on a one-op program (the
               program of ``Region.to_program`` plus the key "weights": [{"N", "K", "kind", "fmt"}] that
               the op's "w" indexes). None accepts everything.
-    opts      LowerOpts or a dict (kv_size, min_ops, attention)
+    opts      LowerOpts or a dict (kv_size, min_ops, attention, kv_cache)
 
     Returns (regions, cpu_reasons). A region is convex and has at least ``min_ops`` ops. cpu_reasons maps
     every call_function node that is not in a region to the reason it stays on the CPU.
@@ -1945,5 +2286,15 @@ def form_regions(gm: fx.GraphModule, weights: dict, probe: Callable | None = Non
         reasons[n] = ctx.why.get(n) or ("view or value computed on the CPU" if n.target in _VIEW_RESHAPE
                                         or n.target in _IDENT else f"no lowering for {_name(n)}")
     for r in regions:
+        for k in r.kv:
+            for n in k.epilogue:
+                reasons[n] = "cache update of a region's cached attention: the rewrite replaces it by the cache write"
+            for n in (k.k_copy, k.v_copy):
+                reasons[n] = "cache update of a region's cached attention: the rewrite turns it into the cache write"
+            if k.pos.op == "call_function":
+                reasons[k.pos] = reasons.get(k.pos) or "cache positions of a region's cached attention (computed on the CPU)"
+            if k.form == "fresh":
+                for n in (k.k_base, k.v_base):
+                    reasons[n] = "fresh cache tensor of a region's cached attention (made on the CPU)"
         r.touching = {n: reasons.get(n, "") for n in r.touching}
     return regions, reasons

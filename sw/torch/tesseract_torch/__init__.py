@@ -13,6 +13,7 @@ the partition of every compiled graph (which matmuls go to the device) and the c
 chooses the execution mode (default full: regions of ops, one launch per region; matmul: one launch
 per weight matmul). TSR_TORCH_ATTENTION=device|cpu chooses where full mode computes attention (default
 device: q8_0 Q, K and V inside the regions; cpu: scaled_dot_product_attention stays on the CPU in float32).
+TSR_TORCH_KV_CACHE=0|1 chooses whether attention over a static KV cache runs on the device (default 1).
 
 Numerics are the llama.cpp path's: float32 / float16 / bfloat16 weights become Q8_0 when uploaded
 (ggml's quantize_row_q8_0_ref), activations are quantized on the device (QACT A32), the products are
@@ -23,7 +24,7 @@ from __future__ import annotations
 import torch
 
 from ._ext import _C
-from .backend import ATTENTIONS, MODES, Options, resolve_attention, resolve_mode, specs, tesseract_backend
+from .backend import ATTENTIONS, MODES, Options, resolve_attention, resolve_kv_cache, resolve_mode, specs, tesseract_backend
 from .quant import QuantLinear, linear_blocks
 from .runtime import (
     SUPPORTED_DTYPES,
@@ -34,6 +35,7 @@ from .runtime import (
     debug_level,
     device,
     format_counters,
+    kv_caches,
     linear,
     linear_ref,
     open_device,
@@ -50,7 +52,7 @@ from .runtime import (
 
 __all__ = [
     "ATTENTIONS", "BACKEND_NAME", "MODES", "Options", "QuantLinear", "SUPPORTED_DTYPES", "TesseractError", "WeightCache", "close_device", "compile",
-    "counters", "debug_level", "device", "format_counters", "linear", "linear_blocks", "linear_ref", "open_device",
+    "counters", "debug_level", "device", "format_counters", "kv_caches", "linear", "linear_blocks", "linear_ref", "open_device",
     "reference_linears", "regions", "release_weights", "reset_counters", "set_debug", "set_verify", "specs", "supported_weight",
     "tesseract_backend", "verify_enabled", "weight_cache", "_C",
 ]
@@ -70,13 +72,16 @@ _register()
 
 def compile(model, *, mode: str | None = None, kv_size: int | None = None, strict: bool = False,  # noqa: A001
             debug: int | None = None, verify: bool | None = None, offload: bool = True,
-            attention: str | None = None, **kwargs):
+            attention: str | None = None, kv_cache: bool | None = None, **kwargs):
     """``torch.compile(model, backend="tesseract", ...)``. mode: "full" (regions of ops: a decoder
     forward is one launch) or "matmul" (one launch per weight matmul); default TSR_TORCH_MODE, else
     full. kv_size: cells of the KV planes of a region in full mode (default 4096; a call with more rows
     runs on the CPU). attention: "device" (default; attention runs in the regions with q8_0 Q, K and V) or
     "cpu" (full mode keeps scaled_dot_product_attention on the CPU in float32; regions end at each attention);
-    default TSR_TORCH_ATTENTION, else device. strict: raise instead of running graphs that need autograd eagerly; debug:
+    default TSR_TORCH_ATTENTION, else device. kv_cache: attention over a Hugging Face static KV cache
+    (``cache_implementation="static"``, ``StaticCache``) runs on the device: the K and V of earlier calls stay in
+    the device's KV planes (q8_0) and every decode step is one region call; False keeps that attention on the
+    CPU; default TSR_TORCH_KV_CACHE (0 | 1), else True. strict: raise instead of running graphs that need autograd eagerly; debug:
     override TSR_TORCH_DEBUG; verify: override TSR_TORCH_VERIFY (check every device call against the
     reference); offload=False: partition report only. Other keyword arguments (dynamic, fullgraph, ...)
     go to torch.compile."""
@@ -89,6 +94,8 @@ def compile(model, *, mode: str | None = None, kv_size: int | None = None, stric
         opts["attention"] = attention
     if kv_size is not None:
         opts["kv_size"] = int(kv_size)
+    if kv_cache is not None:
+        opts["kv_cache"] = bool(kv_cache)
     if strict:
         opts["strict"] = True
     if debug is not None:

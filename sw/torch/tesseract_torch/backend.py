@@ -30,6 +30,17 @@ float32 only, and anything the lowering does not cover stays on the CPU around i
 is not in a region is a ``device_mm`` node as in matmul mode. In matmul mode (``mode="matmul"``) no
 region is formed and the graph is rewritten as described above.
 
+Attention over a static KV cache (a Hugging Face ``StaticCache``: ``index_copy`` of the new rows into the cache
+tensors, then attention over the cache) is a cached attention in a region: the device keeps a q8_0 shadow of the
+cache in KV planes across calls, the region stores the new rows there and attends over them, and the host cache
+tensors are updated in place by ``kv_rows_write`` nodes that the rewrite puts after the region call (in place of
+the ``index_copy`` nodes and of the ``copy_`` of the new cache into its input). ``runtime.py`` keeps the state of
+each cache (how many cells of the shadow equal the host rows, and the tensors' versions) and stores again what a
+change of the host cache, or a call that ran on the CPU, left out of the shadow. Option ``kv_cache`` (default on,
+``TSR_TORCH_KV_CACHE``) switches it off. The cache length may be a symbol of the graph (Dynamo compiles one graph for
+the cache lengths that follow a change of length): the cells are read from the cache tensors at each call, and a call
+with another length makes the device graph of that length (one device graph per region at a time).
+
 The run-time state of a device node (uploads in a row, CPU fallback) is kept per weight, because one
 node can see many weights: regional compilation (``layer.compile()`` per block) and compiled helpers
 called per layer reuse one graph, and a shared HOP body runs once per layer.
@@ -56,7 +67,7 @@ import torch.fx as fx
 from torch.multiprocessing.reductions import StorageWeakRef
 
 from . import runtime as _rt
-from .runtime import SUPPORTED_DTYPES, BLOCK, device_region, log
+from .runtime import SUPPORTED_DTYPES, BLOCK, device_region, kv_rows_write, log
 
 aten = torch.ops.aten
 
@@ -108,6 +119,19 @@ def resolve_attention(attention: str | None) -> str:
     return a
 
 
+def resolve_kv_cache(value: bool | None) -> bool:
+    """Whether full mode puts the attention over a static KV cache on the device: ``value`` if given, else
+    TSR_TORCH_KV_CACHE (0 | 1), else True."""
+    if value is not None:
+        return bool(value)
+    v = os.environ.get("TSR_TORCH_KV_CACHE")
+    if v is None or v == "":
+        return True
+    if v not in ("0", "1"):
+        raise ValueError(f"tesseract backend: unknown TSR_TORCH_KV_CACHE {v!r} (0, 1)")
+    return v == "1"
+
+
 @dataclass
 class Options:
     strict: bool = False        # raise instead of running training graphs / failed partitions eagerly
@@ -119,13 +143,16 @@ class Options:
     kv_size: int = 4096         # full mode: cells of every KV plane of a region (the longest sequence it takes)
     attention: str | None = None  # full mode: "device" (q8_0 attention in the regions) | "cpu" (attention stays on the
                                   # CPU in float32); None: TSR_TORCH_ATTENTION, else device
+    kv_cache: bool | None = None  # full mode: attention over a static KV cache (a Hugging Face StaticCache) runs on the
+                                  # device with the K and V of earlier calls in its KV planes; False: it stays on the
+                                  # CPU. None: TSR_TORCH_KV_CACHE (0 | 1), else True
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Options:
         o = cls()
         for k, v in (d or {}).items():
             if not hasattr(o, k):
-                raise ValueError(f"tesseract backend: unknown option {k!r} (strict, debug, verify, offload, mode, kv_size, attention)")
+                raise ValueError(f"tesseract backend: unknown option {k!r} (strict, debug, verify, offload, mode, kv_size, attention, kv_cache)")
             setattr(o, k, v)
         if o.mode is not None:
             resolve_mode(o.mode)
@@ -623,6 +650,8 @@ def _probe(prog: dict):
     """lower.form_regions' probe: why the device cannot run a one-op program, or None. Handles are not
     known yet: constants and weights are given as handle 0, which the device checks by shape."""
     p = {"values": [], "ops": [], "kv_size": prog["kv_size"]}
+    if prog.get("kv_slots"):
+        p["kv_slots"] = list(prog["kv_slots"])
     for v in prog["values"]:
         v = dict(v)
         if v["kind"] == "const":
@@ -664,6 +693,8 @@ def _dying(g: fx.Graph, r, replaced: dict | None = None) -> list[fx.Node]:
     rep = (replaced or {}).get
     keep = {rep(n, n) for n in (*(i.node for i in r.inputs), *(c.node for c in r.consts),
                                 *(w.node for w in r.weights), *r.scalars) if isinstance(n, fx.Node)}
+    for kvc in r.kv:         # the cache updates stay: the rewrite turns them into the cache writes (and reads them)
+        keep.update((kvc.k_copy, kvc.v_copy))
     D = set(S)
     cand = set()
     for b in r.bypassed:
@@ -768,7 +799,8 @@ def _first_mutation(g: fx.Graph, reads: set, skip: set):
     return None
 
 
-def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None = None) -> RegionDecision:
+def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None = None,
+                   bumped: set | None = None) -> RegionDecision:
     """Replace region r of aten graph g by one device_region call (DESIGN: flattened inputs, getitem and
     shape-restoring nodes for the outputs). ``replaced`` maps nodes that earlier rewrites replaced to
     their new nodes; the roots that a later region may read are rebuilt from the rows and listed in ``spare``
@@ -777,11 +809,21 @@ def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None 
     rep = lambda n: replaced.get(n, n)  # noqa: E731
     aten_ = torch.ops.aten
     S = set(r.nodes)
+    # the epilogue copy_(cache, new cache) of a cached attention is replaced by the in-place cache write
+    # (kv_rows_write); it goes first, so that it is not taken for the node that changes the cache in place
+    for kvc in r.kv:
+        for e in kvc.epilogue:
+            if e.graph is g:
+                g.erase_node(e)
     dying = _dying(g, r, replaced)
     out_nodes = [o.node for o in r.outputs]
     fb, ext = _fallback_graph(g, dying, out_nodes)
     name = f"region {gid}.{r.id} ({len(r.ops)} ops: " + ", ".join(f"{k} x{v}" for k, v in sorted(r.op_counts().items())) + ")"
     rg = _rt.RegionRT(r, fb, len(ext), gid, name)
+    # the wrapper of AOTAutograd bumps the version of a cache input that the graph mutates, once per call, before the
+    # graph runs (``bumped``: the placeholders it does that to; None: not known, then 0: a cache that looks changed is
+    # stored again, never the other way round)
+    rg.kv_bumps = [(int(kvc.k_base in (bumped or ())), int(kvc.v_base in (bumped or ()))) for kvc in r.kv]
     rid = _rt.register_region(rg)
 
     inputs = [rep(i.node) for i in r.inputs]
@@ -789,7 +831,8 @@ def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None 
     weights = [rep(w.node) for w in r.weights]
     scalars = [rep(s_) for s_ in r.scalars]
     ext = [rep(e) for e in ext]
-    needed = inputs + consts + weights + scalars + ext
+    kvargs = [rep(n) for kvc in r.kv for n in (kvc.k_base, kvc.v_base, kvc.pos)]   # per slot: K base, V base, positions
+    needed = inputs + consts + weights + scalars + kvargs + ext
 
     # the call goes before the first user of an output and before the first node that changes in place
     # a value it reads (AOT puts the update of an input or a buffer, a copy_, at the end of the graph);
@@ -818,7 +861,7 @@ def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None 
             elif inp.kind == "pos":
                 x = g.call_function(aten_.reshape.default, (x, list(inp.recipe["reshape"])))
             flat.append(x)
-        call = g.call_function(device_region, (rid, *flat, *consts, *weights, *scalars, *ext))
+        call = g.call_function(device_region, (rid, *flat, *consts, *weights, *scalars, *kvargs, *ext))
         new_outs = []
         for k, o in enumerate(r.outputs):     # the call returns one tensor per output (device_region)
             y = g.call_function(operator.getitem, (call, k))
@@ -857,9 +900,38 @@ def rewrite_region(g: fx.Graph, r, gid: int, replaced: dict, spare: list | None 
     for o, y in zip(r.outputs, new_outs):
         o.node.replace_all_uses_with(y, delete_user_cb=lambda u: u not in dset)
         replaced[o.node] = y
+    # the cache updates: each index_copy(base, 2, pos, rows) becomes the in-place write after the call (it returns
+    # the base, so a graph output or any other reader of the updated cache gets it)
+    writes = []
+    with g.inserting_before(anchor):
+        for s_, kvc in enumerate(r.kv):
+            for which, ic, rows, out_i in (("k", kvc.k_copy, kvc.k_rows, kvc.k_out), ("v", kvc.v_copy, kvc.v_rows, kvc.v_out)):
+                x = new_outs[out_i] if out_i is not None else rep(rows)
+                base = kvargs[3 * s_ + (0 if which == "k" else 1)]
+                w = g.call_function(kv_rows_write, (rid, s_, which, base, kvargs[3 * s_ + 2], x))
+                w.meta = dict(ic.meta)
+                writes.append((ic, w))
+    for ic, w in writes:
+        ic.replace_all_uses_with(w)
+        g.erase_node(ic)
     for n in reversed(dying):
         g.erase_node(n)
     return RegionDecision(r, rg, call)
+
+
+def _wrapper_bumped(aot_gm: fx.GraphModule) -> set | None:
+    """The placeholders of the AOT graph whose version counter the runtime wrapper of AOTAutograd bumps before every
+    call (the inputs that the graph mutates, with ``keep_inference_input_mutations``), or None when torch does not say."""
+    try:
+        ctx = torch._guards.TracingContext.try_get()
+        md = ctx.fw_metadata if ctx is not None else None
+        idx = getattr(md, "mutated_graph_handled_indices_seen_by_autograd", None)
+        phs = [n for n in aot_gm.graph.nodes if n.op == "placeholder"]
+        if idx is None or len(md.input_info) != len(phs):
+            return None
+        return {phs[i] for i in idx}
+    except Exception:  # noqa: BLE001 - a torch internal that moved: the caches are then stored again on a change
+        return None
 
 
 def partition_regions(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) -> list[RegionDecision]:
@@ -868,12 +940,14 @@ def partition_regions(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid:
     from . import lower
 
     regions, why = lower.form_regions(aot_gm, weights, _probe, lower.LowerOpts(kv_size=int(opts.kv_size),
-                                                                        attention=resolve_attention(opts.attention)))
+                                                                        attention=resolve_attention(opts.attention),
+                                                                        kv_cache=resolve_kv_cache(opts.kv_cache)))
     out = []
     replaced: dict = {}
     spare: list = []
+    bumped = _wrapper_bumped(aot_gm) if any(r.kv for r in regions) else None
     for r in regions:
-        out.append(rewrite_region(aot_gm.graph, r, gid, replaced, spare))
+        out.append(rewrite_region(aot_gm.graph, r, gid, replaced, spare, bumped))
     for z in reversed(spare):          # a rebuilt root that no region reads
         if not z.users:
             aot_gm.graph.erase_node(z)
@@ -895,8 +969,19 @@ def _report(gid: int, aot_gm: fx.GraphModule, decisions: list[_Decision], rdecs:
         log(f"             {len(r.inputs)} input(s) [" + ", ".join(f"{i.node.name}:{i.kind}" for i in r.inputs)
             + f"], {len(r.outputs)} output(s) [" + ", ".join(o.node.name for o in r.outputs)
             + f"], {len(r.weights)} weight(s), {len(r.consts)} constant(s), kv_size {r.kv_size}")
+        groups: dict = {}
+        for k in r.kv:       # a symbolic length (cells None) is one group: the cells are read from the tensors at each call
+            groups.setdefault((k.cells, k.hkv, k.d, k.form), []).append(k)
+        for (cells, hkv, d, form), ks in groups.items():
+            cs = f"{cells} cells" if cells is not None else \
+                f"{', '.join(sorted({str(k.length) for k in ks})[:3])} cells (length known at the call)"
+            log(f"             {len(ks)} kv slot(s) {ks[0].slot}..{ks[-1].slot}: {cs}, {hkv} x {d}, {form} cache")
+        book = [n for n, why in r.touching.items() if why and "cached attention" in why]
         for n, why in r.touching.items():
-            log(f"             cpu beside the region: {n.name}: {why or 'no lowering'}")
+            if n not in book:
+                log(f"             cpu beside the region: {n.name}: {why or 'no lowering'}")
+        if book:    # the cache updates, positions and fresh tensors of the cached attentions: one line
+            log(f"             cache bookkeeping of the cached attentions: {len(book)} node(s) (updates, positions, fresh caches)")
     for d in decisions:
         if d.device:
             s = d.spec
@@ -926,7 +1011,9 @@ def tesseract_backend(gm: fx.GraphModule, example_inputs, options: dict | None =
     """torch.compile backend: ``torch.compile(model, backend="tesseract")`` (after ``import
     tesseract_torch``). options: strict (bool), debug (int), verify (bool), offload (bool), mode ("full" |
     "matmul"; default TSR_TORCH_MODE, else full), kv_size (int, full mode), attention ("device" | "cpu";
-    default TSR_TORCH_ATTENTION, else device; full mode only)."""
+    default TSR_TORCH_ATTENTION, else device; full mode only), kv_cache (bool: attention over a static KV cache
+    runs on the device with the K and V of earlier calls in KV planes; default TSR_TORCH_KV_CACHE, else True; full
+    mode only)."""
     from functorch.compile import make_boxed_func
     from torch._dynamo.backends.common import aot_autograd
 
@@ -935,6 +1022,7 @@ def tesseract_backend(gm: fx.GraphModule, example_inputs, options: dict | None =
     mode = resolve_mode(opts.mode or (mode if mode in MODES else None))
     if mode == "full":
         resolve_attention(opts.attention)     # an unknown TSR_TORCH_ATTENTION is an error, not a matmul-mode graph
+        resolve_kv_cache(opts.kv_cache)       # the same for TSR_TORCH_KV_CACHE
     if opts.debug is not None:
         _rt.set_debug(opts.debug)
     if opts.verify is not None:

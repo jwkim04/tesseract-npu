@@ -672,8 +672,8 @@ def test_bf16_gets_matmul_nodes_only():
 def _program_edit(monkeypatch, edit):
     orig = LW.Region.to_program
 
-    def to_program(self, scalar_values=None):
-        p = orig(self, scalar_values)
+    def to_program(self, scalar_values=None, cells=None):
+        p = orig(self, scalar_values, cells)
         edit(p)
         return p
 

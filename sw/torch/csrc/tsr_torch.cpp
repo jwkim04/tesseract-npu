@@ -8,8 +8,9 @@
 // torch.compile backend on top of this module.
 //
 // Graphs (whole-graph lowering, full mode): const_upload / graph_unsupported / graph_create / graph_run / graph_run_ref /
-// graph_info bind the graph API of tsr_rt.h. A program is the Python dict of docs/torch-backend.md (values, ops, kv_size),
-// parsed strictly here.
+// graph_info bind the graph API of tsr_rt.h. A program is the Python dict of docs/torch-backend.md (values, ops, kv_size, and for a
+// cached attention kv_slots, an attn op's kv, a mask value's cols), parsed strictly here. kv_create / kv_free / kv_info / kv_store /
+// kv_read bind the KV objects (the planes of a cached attention); graph_run takes their handles and pos0.
 //
 // Errors: tsr::rt::error -> _tesseract_rt.TesseractError (a RuntimeError); std::invalid_argument ->
 // ValueError (pybind11's translation).
@@ -65,6 +66,41 @@ const char * fmt_name(uint32_t fmt) { return fmt == TSR_FMT_Q4_K ? "q4_k" : "q8_
 uint32_t to_u32(int64_t v, const char * what) {
     if (v < 0 || v > (int64_t) UINT32_MAX) throw std::invalid_argument(std::string("tesseract: ") + what + " out of range");
     return (uint32_t) v;
+}
+
+// An integer argument of the KV functions: not a bool, anything with __index__, and in 64 bits (ValueError otherwise).
+int64_t int_arg(const py::handle & o, const char * what) {
+    if (py::isinstance<py::bool_>(o)) throw std::invalid_argument(std::string("tesseract: ") + what + " must be an int, not a bool");
+    PyObject * i = PyNumber_Index(o.ptr());
+    if (i == nullptr) {
+        PyErr_Clear();
+        throw std::invalid_argument(std::string("tesseract: ") + what + " must be an int");
+    }
+    int overflow = 0;
+    const long long v = PyLong_AsLongLongAndOverflow(i, &overflow);
+    Py_DECREF(i);
+    if (overflow != 0 || (v == -1 && PyErr_Occurred())) {
+        PyErr_Clear();
+        throw std::invalid_argument(std::string("tesseract: ") + what + " does not fit 64 bits");
+    }
+    return (int64_t) v;
+}
+
+// A KV handle: a non-negative int below 2^64.
+uint64_t kv_handle_arg(const py::handle & o, const char * what) {
+    if (py::isinstance<py::bool_>(o)) throw std::invalid_argument(std::string("tesseract: ") + what + " must be an int, not a bool");
+    PyObject * i = PyNumber_Index(o.ptr());
+    if (i == nullptr) {
+        PyErr_Clear();
+        throw std::invalid_argument(std::string("tesseract: ") + what + " must be an int");
+    }
+    const unsigned long long v = PyLong_AsUnsignedLongLong(i);
+    Py_DECREF(i);
+    if (v == (unsigned long long) -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::invalid_argument(std::string("tesseract: ") + what + " is out of range (a KV handle is an int from 0 to 2^64 - 1)");
+    }
+    return (uint64_t) v;
 }
 
 void check_cpu(const at::Tensor & t, const char * what) {
@@ -162,9 +198,24 @@ private:
 rt::graph_desc parse_program(const py::object & prog) {
     if (!py::isinstance<py::dict>(prog)) bad_prog("must be a dict with 'values', 'ops' and 'kv_size'");
     const py::dict top = py::reinterpret_borrow<py::dict>(prog);
-    Fields tf(top, "program", { "values", "ops", "kv_size" }, {});
+    Fields tf(top, "program", { "values", "ops", "kv_size" }, { "kv_slots" });
     rt::graph_desc g;
     g.kv_size = tf.u32("kv_size");
+    if (tf.has("kv_slots")) {
+        if (!py::isinstance<py::list>(top["kv_slots"])) bad_prog("'kv_slots' must be a list of cell counts");
+        size_t si = 0;
+        for (const py::handle & hs : py::reinterpret_borrow<py::list>(top["kv_slots"])) {
+            const std::string label = "kv_slots[" + std::to_string(si++) + "]";
+            if (!py::isinstance<py::int_>(hs) || py::isinstance<py::bool_>(hs)) bad_prog(label + ": must be an int");
+            long long c = -1;
+            try {
+                c = hs.cast<long long>();
+            } catch (const py::cast_error &) {
+            }
+            if (c < 1 || c > (long long) UINT32_MAX) bad_prog(label + ": out of range");
+            g.kv_slots.push_back((uint32_t) c);
+        }
+    }
     if (!py::isinstance<py::list>(top["values"]) || !py::isinstance<py::list>(top["ops"])) bad_prog("'values' and 'ops' must be lists");
     const py::list values = py::reinterpret_borrow<py::list>(top["values"]);
     const py::list ops = py::reinterpret_borrow<py::list>(top["ops"]);
@@ -196,8 +247,9 @@ rt::graph_desc parse_program(const py::object & prog) {
             Fields f(d, label + " (pos)", { "kind" }, {});
             v.kind = rt::gv::pos;
         } else if (kind == "mask") {
-            Fields f(d, label + " (mask)", { "kind" }, {});
+            Fields f(d, label + " (mask)", { "kind" }, { "cols" });
             v.kind = rt::gv::mask;
+            v.cols = f.has("cols") ? f.u32("cols") : 0u;
         } else {
             bad_prog(label + ": unknown kind '" + kind + "' (in, tmp, const, pos, mask)");
         }
@@ -256,10 +308,11 @@ rt::graph_desc parse_program(const py::object & prog) {
             o.x = f.id("x"); o.dst = f.id("dst"); o.n_heads = f.u32("n_heads"); o.head_dim = f.u32("head_dim"); o.n_dims = f.u32("n_dims");
             o.table = f.id("table"); o.pos = f.id("pos"); o.factor = f.real("factor");
         } else if (name == "attn") {
-            Fields f(d, label, { "op", "q", "k", "v", "dst", "n_head", "n_head_kv", "d", "scale" }, { "mask", "tag" });
+            Fields f(d, label, { "op", "q", "k", "v", "dst", "n_head", "n_head_kv", "d", "scale" }, { "mask", "kv", "tag" });
             o.op = rt::gop::attn;
             o.q = f.id("q"); o.k = f.id("k"); o.v = f.id("v"); o.dst = f.id("dst"); o.n_head = f.u32("n_head");
             o.n_head_kv = f.u32("n_head_kv"); o.d = f.u32("d"); o.scale = f.real("scale"); o.mask = f.opt_id("mask");
+            o.kv = f.opt_id("kv");
         } else if (name == "cpy") {
             Fields f(d, label, { "op", "x", "dst" }, { "tag" });
             o.op = rt::gop::cpy;
@@ -592,6 +645,9 @@ public:
         r["outs"] = outs;
         r["kv_size"] = s.kv_size;
         r["kv_bytes"] = s.kv_bytes;
+        py::list slots;
+        for (uint32_t c : s.kv_slots) slots.append(c);
+        r["kv_slots"] = slots;
         return r;
     }
 
@@ -629,7 +685,7 @@ public:
         if (T < 0) {
             for (size_t i = 0; i < ts.size() && T < 0; ++i) {
                 if (s.arg_kind[i] == rt::gv::pos) T = ts[i].numel();
-                else if (s.arg_kind[i] == rt::gv::mask && ts[i].dim() >= 2) T = ts[i].size(-1);
+                else if (s.arg_kind[i] == rt::gv::mask && ts[i].dim() >= 2) T = ts[i].size(-2);
             }
         }
         if (T < 1 || T > (int64_t) UINT32_MAX) throw std::invalid_argument("tesseract: graph_run: T must be >= 1");
@@ -658,16 +714,19 @@ public:
                 a.keep.push_back(c);
                 ga.data = c.data_ptr<int32_t>();
             } else {
-                // [.., T, T] with leading dimensions of 1; float32 additive (0 / -inf) or bool (True: visible)
+                // [.., T, T] (a cached attention's mask: [.., T, cols]) with leading dimensions of 1; float32 additive
+                // (0 / -inf) or bool (True: visible)
                 const at::Tensor & m = ts[i];
-                bool shape_ok = m.dim() >= 2 && m.size(-1) == T && m.size(-2) == T;
+                const int64_t C = s.arg_n[i] != 0 ? (int64_t) s.arg_n[i] : T;
+                const std::string shape = s.arg_n[i] != 0 ? "[T, " + std::to_string(C) + "]" : std::string("[T, T]");
+                bool shape_ok = m.dim() >= 2 && m.size(-1) == C && m.size(-2) == T;
                 for (int64_t d = 0; shape_ok && d < m.dim() - 2; ++d) shape_ok = m.size(d) == 1;
-                if (!shape_ok) throw std::invalid_argument("tesseract: graph_run: " + name + " (mask) must be [T, T] (leading dimensions of 1 allowed)");
+                if (!shape_ok) throw std::invalid_argument("tesseract: graph_run: " + name + " (mask) must be " + shape + " (leading dimensions of 1 allowed)");
                 at::Tensor f;
                 if (m.scalar_type() == at::kBool) {
-                    f = torch::zeros({T, T}, torch::dtype(torch::kFloat)).masked_fill(~m.reshape({T, T}), -INFINITY);
+                    f = torch::zeros({T, C}, torch::dtype(torch::kFloat)).masked_fill(~m.reshape({T, C}), -INFINITY);
                 } else if (m.scalar_type() == at::kFloat) {
-                    f = m.reshape({T, T}).contiguous();
+                    f = m.reshape({T, C}).contiguous();
                 } else {
                     throw std::invalid_argument("tesseract: graph_run: " + name + " (mask) must be float32 (0 / -inf) or bool (True: visible)");
                 }
@@ -685,17 +744,104 @@ public:
     }
 
     // The out values of a run: float32 [T, n] tensors in value order
-    py::list graph_run(uint64_t h, const py::list & inputs, bool ref) {
+    py::list graph_run(uint64_t h, const py::list & inputs, bool ref, const py::object & kv, const py::object & pos0_) {
         run_args a = graph_args(h, inputs);
+        rt::graph_state st;
+        if (!kv.is_none()) {
+            if (!py::isinstance<py::list>(kv) && !py::isinstance<py::tuple>(kv)) throw std::invalid_argument("tesseract: graph_run: kv must be a list of KV handles (ints) or None");
+            for (const py::handle & e : kv) {
+                if (!py::isinstance<py::int_>(e) || py::isinstance<py::bool_>(e)) throw std::invalid_argument("tesseract: graph_run: kv must be a list of KV handles (ints)");
+                st.kv.push_back(kv_handle_arg(e, "graph_run: kv handle"));
+            }
+        }
+        st.pos0 = to_u32(int_arg(pos0_, "pos0"), "pos0");
         {
             lease l(*this);
             py::gil_scoped_release nogil;
-            if (ref) l->graph_run_ref(h, a.T, a.in, a.go);
-            else l->graph_run(h, a.T, a.in, a.go);
+            if (ref) l->graph_run_ref(h, a.T, a.in, a.go, st);
+            else l->graph_run(h, a.T, a.in, a.go, st);
         }
         py::list r;
         for (const at::Tensor & t : a.out) r.append(t);
         return r;
+    }
+
+    // ---- KV objects (the planes of a cached attention) ----
+    uint64_t kv_create(const py::object & E, const py::object & cells) {
+        const uint32_t e = to_u32(int_arg(E, "E"), "E"), c = to_u32(int_arg(cells, "cells"), "cells");
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        return l->kv_create(e, c);
+    }
+
+    void kv_free(const py::object & h_) {
+        const uint64_t h = kv_handle_arg(h_, "kv_free: handle");
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        l->kv_free(h);
+    }
+
+    py::dict kv_info(const py::object & h_) const {
+        const uint64_t h = kv_handle_arg(h_, "kv_info: handle");
+        rt::kv_info i;
+        {
+            lease l(*this);
+            i = l->kv_info_of(h);
+        }
+        py::dict r;
+        r["E"] = i.E;
+        r["cells"] = i.cells;
+        r["bytes"] = i.bytes;
+        r["k_off"] = i.k_off;
+        r["v_off"] = i.v_off;
+        return r;
+    }
+
+    // float32 [n, E] CPU tensors (a row stride above E is taken as it is) into the cells [cell0, cell0 + n)
+    void kv_store(const py::object & h_, const py::object & cell0, const at::Tensor & k, const at::Tensor & v) {
+        const uint64_t h = kv_handle_arg(h_, "kv_store: handle");
+        check_cpu(k, "k");
+        check_cpu(v, "v");
+        if (k.scalar_type() != at::kFloat || v.scalar_type() != at::kFloat || k.dim() != 2 || v.dim() != 2 || k.sizes() != v.sizes()) {
+            throw std::invalid_argument("tesseract: kv_store: k and v must be float32 tensors of the same shape [n, E]");
+        }
+        const uint32_t c0 = to_u32(int_arg(cell0, "cell0"), "cell0"), n = to_u32(k.size(0), "n");
+        uint32_t E = 0;
+        {
+            lease l(*this);
+            E = l->kv_info_of(h).E;
+        }
+        if (k.size(1) != (int64_t) E) {
+            throw std::invalid_argument("tesseract: kv_store: the rows have " + std::to_string(k.size(1)) + " values, the KV object E = " + std::to_string(E));
+        }
+        // no rows: the runtime still checks cell0 against the cells
+        const at::Tensor kc = n != 0 ? rows_contiguous(k) : k, vc = n != 0 ? rows_contiguous(v) : v;
+        const size_t ks = n > 1 ? (size_t) kc.stride(0) : 0, vs = n > 1 ? (size_t) vc.stride(0) : 0;
+        const float * kp = n != 0 ? kc.data_ptr<float>() : nullptr;
+        const float * vp = n != 0 ? vc.data_ptr<float>() : nullptr;
+        lease l(*this);
+        py::gil_scoped_release nogil;
+        l->kv_store(h, c0, n, kp, vp, ks, vs);
+    }
+
+    // (K, V): uint8 [n, E / 32 * 34] ggml block_q8_0 rows of the cells [cell0, cell0 + n)
+    py::tuple kv_read(const py::object & h_, const py::object & cell0, const py::object & n) const {
+        const uint64_t h = kv_handle_arg(h_, "kv_read: handle");
+        const uint32_t c0 = to_u32(int_arg(cell0, "cell0"), "cell0"), cnt = to_u32(int_arg(n, "n"), "n");
+        uint32_t E = 0;
+        {
+            lease l(*this);
+            E = l->kv_info_of(h).E;
+        }
+        const int64_t rb = (int64_t) (E / 32) * 34;
+        at::Tensor k = torch::zeros({(int64_t) cnt, rb}, torch::dtype(torch::kUInt8)), v = torch::zeros({(int64_t) cnt, rb}, torch::dtype(torch::kUInt8));
+        {
+            // no rows: the runtime still checks cell0 against the cells
+            lease l(*this);
+            py::gil_scoped_release nogil;
+            l->kv_read(h, c0, cnt, cnt != 0 ? k.data_ptr<uint8_t>() : nullptr, cnt != 0 ? v.data_ptr<uint8_t>() : nullptr);
+        }
+        return py::make_tuple(k, v);
     }
 
     py::dict graph_info(uint64_t h, int64_t T) {
@@ -748,6 +894,9 @@ public:
         r["graph_plan_hits"] = c.graph_plan_hits;
         r["graph_plan_misses"] = c.graph_plan_misses;
         r["consts"] = c.consts;
+        r["kv_creates"] = c.kv_creates;
+        r["kv_stores"] = c.kv_stores;
+        r["kv_store_rows"] = c.kv_store_rows;
         return r;
     }
 
@@ -873,15 +1022,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
              "ValueError: malformed; TesseractError: the device cannot run it, or the planes do not fit")
         .def("graph_free", &Device::graph_free, py::arg("handle"))
         .def("graph_shape", &Device::graph_shape, py::arg("handle"),
-             "{'args': [{'kind': 'in' | 'pos' | 'mask', 'n': int}], 'outs': [n], 'kv_size', 'kv_bytes'}")
-        .def("graph_run", [](Device & d, uint64_t h, const py::list & inputs) { return d.graph_run(h, inputs, false); },
-             py::arg("handle"), py::arg("inputs"),
+             "{'args': [{'kind': 'in' | 'pos' | 'mask', 'n': int}], 'outs': [n], 'kv_size', 'kv_bytes', 'kv_slots': [cells]}; "
+             "n of a mask is its cols (0: [T, T])")
+        .def("kv_create", &Device::kv_create, py::arg("E"), py::arg("cells"),
+             "K and V planes of `cells` cells of E values (E a multiple of 64), zero-filled, from the top of the weight heap; "
+             "returns a KV handle. TesseractError 'does not fit': the heap is full")
+        .def("kv_free", &Device::kv_free, py::arg("handle"))
+        .def("kv_info", &Device::kv_info, py::arg("handle"), "{'E', 'cells', 'bytes' (per channel, both planes), 'k_off', 'v_off'}")
+        .def("kv_store", &Device::kv_store, py::arg("handle"), py::arg("cell0"), py::arg("k"), py::arg("v"),
+             "float32 [n, E] CPU tensors into the cells [cell0, cell0 + n) of both planes, quantized by the device as a cached "
+             "attention stores its rows")
+        .def("kv_read", &Device::kv_read, py::arg("handle"), py::arg("cell0"), py::arg("n"),
+             "(K, V) uint8 [n, E / 32 * 34]: the stored cells as ggml block_q8_0 rows")
+        .def("graph_run", [](Device & d, uint64_t h, const py::list & inputs, const py::object & kv, const py::object & pos0) { return d.graph_run(h, inputs, false, kv, pos0); },
+             py::arg("handle"), py::arg("inputs"), py::arg("kv") = py::none(), py::arg("pos0") = 0,
              "Run the graph: inputs = the tensors of the in, pos and mask values in value order (in: float32 [T, n]; pos: "
-             "int32 / int64 [T]; mask: float32 0 / -inf or bool True = visible, [T, T]); T is the row count of the in "
-             "tensors. Returns the out values as float32 [T, n] tensors, in value order. TesseractError whose text "
-             "contains 'does not fit': this T cannot be placed")
-        .def("graph_run_ref", [](Device & d, uint64_t h, const py::list & inputs) { return d.graph_run(h, inputs, true); },
-             py::arg("handle"), py::arg("inputs"),
+             "int32 / int64 [T]; mask: float32 0 / -inf or bool True = visible, [T, T], or [T, cols] for a cached "
+             "attention's mask); T is the row count of the in tensors. kv: one KV handle (kv_create) per kv slot of the "
+             "program, pos0: the cell of row 0 (row t is cell pos0 + t of every slot; a program without slots takes "
+             "kv=None). Returns the out values as float32 [T, n] tensors, in value order. TesseractError whose text "
+             "contains 'does not fit': this T (or pos0 + T, or a mask that shows a cell the call does not write) cannot "
+             "be placed")
+        .def("graph_run_ref", [](Device & d, uint64_t h, const py::list & inputs, const py::object & kv, const py::object & pos0) { return d.graph_run(h, inputs, true, kv, pos0); },
+             py::arg("handle"), py::arg("inputs"), py::arg("kv") = py::none(), py::arg("pos0") = 0,
              "The same result on the host: the plan's op lists executed with the per-kind references on an image of the "
              "device's memory (bit-identical to graph_run on a correct device)")
         .def("graph_info", &Device::graph_info, py::arg("handle"), py::arg("T"),

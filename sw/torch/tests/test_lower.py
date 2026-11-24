@@ -53,9 +53,9 @@ def _dynamo_weights(gm, example_inputs) -> dict:
     return out
 
 
-def capture(model, calls, dynamic=None):
+def capture(model, calls, dynamic=None, before=None):
     """Compile ``model`` with a capturing AOTAutograd backend, call it with every (args, kwargs) of
-    ``calls`` and return (aten graph of the last compile, {weight node: name})."""
+    ``calls`` and return (aten graph of the last compile, {weight node: name}). ``before(i)``: called before call i."""
     from torch._functorch._aot_autograd import descriptors as D
 
     res = {}
@@ -82,7 +82,9 @@ def capture(model, calls, dynamic=None):
     torch._dynamo.reset()
     cm = torch.compile(model, backend=backend, dynamic=dynamic)
     with torch.no_grad():
-        for call in calls:
+        for i, call in enumerate(calls):
+            if before is not None:
+                before(i)
             if len(call) == 2 and isinstance(call[1], dict):
                 args, kwargs = call
             elif len(call) == 1 and isinstance(call[0], tuple):
@@ -130,11 +132,11 @@ OP_KEYS = {
     "glu": {"gate", "up", "dst", "variant", "tag"},
     "unary": {"x", "dst", "func", "tag"},
     "rope": {"x", "dst", "n_heads", "head_dim", "n_dims", "table", "pos", "factor", "tag"},
-    "attn": {"q", "k", "v", "dst", "n_head", "n_head_kv", "d", "scale", "mask", "tag"},
+    "attn": {"q", "k", "v", "dst", "n_head", "n_head_kv", "d", "scale", "mask", "tag"},     # + "kv" over a cache
     "cpy": {"x", "dst", "tag"},
 }
 VALUE_KEYS = {"in": {"kind", "n"}, "tmp": {"kind", "n", "out"}, "const": {"kind", "n", "rows", "source"},
-              "pos": {"kind"}, "mask": {"kind"}}
+              "pos": {"kind"}, "mask": {"kind"}}      # a mask over a cache also has "cols"
 
 
 def _is_f32(x) -> bool:
@@ -143,12 +145,20 @@ def _is_f32(x) -> bool:
 
 def check_program(prog: dict, region=None):
     """Raise AssertionError unless ``prog`` is a well formed program of DESIGN.md §3."""
-    assert set(prog) == {"values", "ops", "kv_size"}, set(prog)
+    slots = prog.get("kv_slots")
+    assert set(prog) == {"values", "ops", "kv_size"} | ({"kv_slots"} if slots is not None else set()), set(prog)
     assert isinstance(prog["kv_size"], int) and prog["kv_size"] > 0
+    if slots is not None:                       # only a region with a cached attention has the key
+        assert slots and all(isinstance(c, int) and not isinstance(c, bool) and c > 0 for c in slots)
+        assert [o["kv"] for o in prog["ops"] if o["op"] == "attn" and "kv" in o] == list(range(len(slots)))
+    else:
+        assert all("kv" not in o for o in prog["ops"]) and all("cols" not in v for v in prog["values"])
     vals, ops = prog["values"], prog["ops"]
     for i, v in enumerate(vals):
         assert v["kind"] in VALUE_KEYS, v
-        assert set(v) == VALUE_KEYS[v["kind"]], v
+        assert set(v) == VALUE_KEYS[v["kind"]] | ({"cols"} if v["kind"] == "mask" and "cols" in v else set()), v
+        if "cols" in v:
+            assert slots is not None and v["cols"] in slots
         if "n" in v:
             assert isinstance(v["n"], int) and v["n"] >= 1
         if v["kind"] == "tmp":
@@ -172,7 +182,8 @@ def check_program(prog: dict, region=None):
 
     for o in ops:
         assert o["op"] in OP_KEYS, o["op"]
-        assert set(o) == OP_KEYS[o["op"]] | {"op"}, (o["op"], set(o) ^ (OP_KEYS[o["op"]] | {"op"}))
+        want = OP_KEYS[o["op"]] | {"op"} | ({"kv"} if "kv" in o else set())
+        assert set(o) == want and ("kv" not in o or o["op"] == "attn"), (o["op"], set(o) ^ want)
         assert isinstance(o["tag"], int)
         d = val(o["dst"], "tmp")
         assert o["dst"] not in written, "dst written twice"
@@ -232,7 +243,8 @@ def check_program(prog: dict, region=None):
 
 
 def check_region(r, gm=None):
-    prog = r.to_program([1.0] * len(r.scalars)) if r.scalars else r.to_program()
+    cells = [k.hint for k in r.kv] if any(k.cells is None for k in r.kv) else None     # symbolic slots: an example
+    prog = r.to_program([1.0] * len(r.scalars) if r.scalars else None, cells)
     check_program(prog, r)
     # inputs are the values of kind in / pos / mask, in value order
     kinds = [(i, v["kind"]) for i, v in enumerate(prog["values"]) if v["kind"] in ("in", "pos", "mask")]
@@ -1190,3 +1202,663 @@ def test_hf_qwen_with_cache_outputs(hf_graph_cache):
     assert len(hm) == 48 and all(o.recipe["dims"][2:] == [2, 64] for o in hm)
     assert _no_cpu_inside(gm, r) == []
     check_region(r)
+
+
+# ------------------------------------------------------------------------------------------
+# 7. attention over a static KV cache (the Hugging Face idiom: index_copy into the cache, then attention
+#    over the whole cache with a [T, L] mask)
+# ------------------------------------------------------------------------------------------
+class KVLayer(nn.Module):
+    """QLayer with a static cache. The cache is two plain tensors of the module (Dynamo lifts them to graph
+    inputs, as it does for the tensors of a Hugging Face StaticCache) and the number of cells in use. ``fresh``: the
+    cache is made inside the call (``torch.zeros``), as the first call of a lazily initialised cache does, and is
+    returned. ``variant`` selects the near misses."""
+
+    def __init__(self, hid=256, heads=4, kv=2, ff=512, L=32, fresh=False, variant="ok", batch=1, sym=False):
+        super().__init__()
+        self.H, self.Hkv, self.D, self.L, self.fresh, self.variant = heads, kv, hid // heads, L, fresh, variant
+        self.sym = sym
+        self.ln1, self.ln2 = RMSNorm(hid), RMSNorm(hid)
+        self.q = nn.Linear(hid, hid)
+        self.k = nn.Linear(hid, kv * self.D)
+        self.v = nn.Linear(hid, kv * self.D)
+        self.o = nn.Linear(hid, hid, bias=False)
+        self.gate = nn.Linear(hid, ff, bias=False)
+        self.up = nn.Linear(hid, ff, bias=False)
+        self.down = nn.Linear(ff, hid, bias=False)
+        self.n = torch.tensor(0, dtype=torch.int64)
+        if not fresh:
+            self.kc = torch.zeros(batch, kv, L, self.D)
+            self.vc = torch.zeros(batch, kv, L, self.D)
+
+    def forward(self, x, cos, sin, mask, extras, ruler=None):
+        B, T, _ = x.shape
+        va = self.variant
+        # the cache length: the module's, or (``ruler``, a [L] tensor) the length of a tensor that the call gives, or the
+        # lengths of the cache tensors themselves (``sym``: K's and V's own, as Hugging Face's expansion reads them)
+        Lk = Lv = self.L
+        if ruler is not None:
+            Lk = Lv = ruler.shape[0]
+        elif self.sym and not self.fresh:
+            Lk, Lv = self.kc.shape[2], self.vc.shape[2]
+        h = self.ln1(x)
+        q = self.q(h).view(B, T, -1, self.D).transpose(1, 2)
+        k = self.k(h).view(B, T, -1, self.D).transpose(1, 2)
+        v = self.v(h).view(B, T, -1, self.D).transpose(1, 2)
+        q = q * cos + rotate_half(q) * sin
+        k = k * cos + rotate_half(k) * sin
+        if va == "cpu_rows":
+            k, v = torch.erf(k), torch.erf(v)                  # no firmware kind: the rows are made on the CPU
+        pos = torch.arange(T) + self.n
+        if va == "short_pos":
+            pos, k, v = torch.arange(T - 1) + self.n, k[:, :, : T - 1], v[:, :, : T - 1]
+        pos_v = pos.flip(0).flip(0) if va == "pos_differ" else pos
+        if self.fresh:
+            zk = torch.zeros(B, self.Hkv, Lk, self.D)
+            zv = zk if va == "shared_base" else torch.zeros(B, self.Hkv, Lv, self.D)
+            if va == "base_user":
+                extras.append(zk.sum())
+            ka, vaa = zk.index_copy(2, pos, k), zv.index_copy(2, pos_v, v)
+            extras += [ka, vaa]
+        elif va == "no_inplace":
+            ka, vaa = self.kc.index_copy(2, pos, k), self.vc.index_copy(2, pos_v, v)
+        else:
+            if va == "base_user":
+                extras.append(self.kc.sum())
+            self.kc.index_copy_(2, pos, k)
+            self.vc.index_copy_(2, pos_v, v)
+            ka, vaa = self.kc, self.vc
+            self.n.add_(T)
+        if va == "kall_user":
+            extras.append(ka.sum())
+        if va == "v_concat":
+            vaa = torch.cat([torch.zeros(B, self.Hkv, self.L - T, self.D), v], 2)
+        g = self.H // self.Hkv
+        if va in ("slice", "slice_short", "slice_mask", "slice_native", "slice_start"):
+            # the first cells of the cache, causal (what Hugging Face emits for the prefill of a fresh cache);
+            # slice_start: the cells [1, T + 1) instead
+            n = T - 1 if va == "slice_short" else T
+            a0 = 1 if va == "slice_start" else 0
+            ks, vs = ka[:, :, a0:a0 + n], vaa[:, :, a0:a0 + n]
+            if va == "slice_native":
+                a = F.scaled_dot_product_attention(q, ks, vs, is_causal=True, scale=self.D ** -0.5, enable_gqa=True)
+            else:
+                ke = ks[:, :, None].expand(B, self.Hkv, g, n, self.D).reshape(B, self.H, n, self.D)
+                ve = vs[:, :, None].expand(B, self.Hkv, g, n, self.D).reshape(B, self.H, n, self.D)
+                if va == "slice_mask":
+                    a = F.scaled_dot_product_attention(q, ke, ve, attn_mask=mask[..., :n], scale=self.D ** -0.5)
+                else:
+                    a = F.scaled_dot_product_attention(q, ke, ve, is_causal=True, scale=self.D ** -0.5)
+            x = x + self.o(a.transpose(1, 2).reshape(B, T, -1))
+            h = self.ln2(x)
+            return x + self.down(F.silu(self.gate(h)) * self.up(h))
+        ke = ka[:, :, None].expand(B, self.Hkv, g, Lk, self.D).reshape(B, self.H, Lk, self.D)
+        ve = vaa[:, :, None].expand(B, self.Hkv, g, Lv, self.D).reshape(B, self.H, Lv, self.D)
+        if va == "expanded_user":
+            extras.append(ke.sum())
+        if va == "mask_heads":
+            mask = mask.expand(B, self.H, T, Lk)
+        if va == "mask_row":
+            mask = mask[:, :, -1:, :]                 # [1, 1, 1, L]: one row for every query row
+        if va == "causal":
+            a = F.scaled_dot_product_attention(q, ke, ve, is_causal=True, scale=self.D ** -0.5)
+        else:
+            a = F.scaled_dot_product_attention(q, ke, ve, attn_mask=mask, scale=self.D ** -0.5)
+        x = x + self.o(a.transpose(1, 2).reshape(B, T, -1))
+        h = self.ln2(x)
+        return x + self.down(F.silu(self.gate(h)) * self.up(h))
+
+
+class KVQwen(nn.Module):
+    def __init__(self, vocab=256, hid=256, layers=2, mask="where", mask_len="k", **kw):
+        super().__init__()
+        self.sym = kw.get("sym", False)
+        self.mask_len = mask_len            # the mask's last dimension: "k" the cache length, "even" 2 * (L // 2), "one" 1
+        self.embed = nn.Embedding(vocab, hid)
+        self.layers = nn.ModuleList(KVLayer(hid, **kw) for _ in range(layers))
+        self.norm = RMSNorm(hid)
+        self.mask, self.L = mask, kw.get("L", 32)
+        D = hid // 4
+        self.register_buffer("inv_freq", 1.0 / (1e6 ** (torch.arange(0, D, 2).float() / D)), persistent=False)
+
+    def forward(self, ids, ruler=None, mask_ruler=None):
+        T = ids.shape[1]
+        x = self.embed(ids)
+        L = self.L
+        if mask_ruler is not None:          # the mask's length is the one of another tensor than the cache's
+            L = mask_ruler.shape[0]
+        elif ruler is not None:
+            L = ruler.shape[0]
+        elif self.sym and not self.layers[0].fresh:
+            if self.mask_len == "one":
+                L = 1
+            elif self.mask_len == "even":     # equal to the cache length for an even one, another expression of it
+                L = 2 * (self.layers[0].kc.shape[2] // 2)
+            else:
+                L = self.layers[0].kc.shape[2]
+        n0 = self.layers[0].n
+        pos = (torch.arange(T) + n0)[None, :]
+        freqs = pos[:, :, None].float() * self.inv_freq
+        emb = torch.cat([freqs, freqs], -1)
+        cos, sin = emb.cos()[:, None], emb.sin()[:, None]
+        q_idx = (torch.arange(T) + n0)[None, None, :, None]
+        kv_idx = torch.arange(L)[None, None, None, :]
+        allowed = kv_idx <= q_idx
+        if self.mask == "where":
+            mask = torch.where(allowed, 0.0, float("-inf"))
+        elif self.mask == "additive":
+            mask = torch.zeros(1, 1, T, L).masked_fill(~allowed, float("-inf"))
+        else:
+            mask = allowed
+        extras: list = []
+        for layer in self.layers:
+            x = layer(x, cos, sin, mask, extras, ruler)
+        return F.linear(self.norm(x), self.embed.weight), tuple(extras)           # tied head
+
+
+KV_LAYER_OPS = ["rms_norm", "mul_mat", "mul_mat", "mul_mat", "rope", "rope", "attn", "mul_mat",
+                "rms_norm", "mul_mat", "mul_mat", "glu", "mul_mat"]
+
+
+def kv_capture(model, T=6, decode=False, dynamic=None, lengths=None, **kw):
+    """The aten graph of the call that the test looks at: the prefill of T rows, or (decode) one row after a
+    prefill of T rows; ``lengths``: prefills of these lengths, the last one is captured."""
+    calls = [(ids(t),) for t in (lengths or [T])]
+    if decode:
+        calls.append((ids(1),))
+    return capture(model.eval(), calls, dynamic)
+
+
+def kv_lower(model, probe=None, opts=None, **kw):
+    gm, w = kv_capture(model, **kw)
+    regions, why = L.form_regions(gm, w, probe, opts)
+    return gm, w, regions, why
+
+
+def check_kv_region(gm, r, n_layers=2, form="existing", T=None, cells=32, hkv=2, d=64):
+    """What the cached region has to look like, and what the rewrite needs from it."""
+    prog = check_region(r)
+    assert ops_of(r) == KV_LAYER_OPS * n_layers + ["rms_norm", "mul_mat"]
+    assert prog["kv_slots"] == [cells] * n_layers
+    assert len(r.kv) == n_layers
+    attn = [o for o in prog["ops"] if o["op"] == "attn"]
+    assert [o["kv"] for o in attn] == list(range(n_layers))
+    # the mask is one value with the cells of the slots; it is an input with a [T, L] recipe
+    masks = [i for i in r.inputs if i.kind == "mask"]
+    assert len(masks) == 1 and masks[0].recipe["reshape"] == "TxL" and masks[0].recipe["cols"] == cells
+    assert prog["values"][masks[0].value] == {"kind": "mask", "cols": cells}
+    assert all(o["mask"] == masks[0].value for o in attn)
+    gidx = {n: i for i, n in enumerate(gm.graph.nodes)}
+    out_nodes = [o.node for o in r.outputs]
+    inside = set(r.nodes)
+    for s, k in enumerate(r.kv):
+        assert k.slot == s and k.cells == cells and (k.hkv, k.d) == (hkv, d) and k.form == form
+        assert k.k_copy.target is aten.index_copy.default and k.v_copy.target is aten.index_copy.default
+        assert k.k_copy.args[0] is k.k_base and k.v_copy.args[0] is k.v_base
+        assert k.k_copy.args[2] is k.pos and k.v_copy.args[2] is k.pos
+        assert k.k_copy.args[3] is k.k_rows and k.v_copy.args[3] is k.v_rows
+        # the index_copy nodes and the bases stay in the graph: the rewrite changes them
+        assert k.k_copy not in inside and k.v_copy not in inside
+        assert k.k_base not in inside and k.v_base not in inside and k.pos not in inside
+        if form == "existing":
+            assert k.k_base.op == "placeholder" and k.v_base.op == "placeholder"
+            assert [e.target for e in k.epilogue] == [aten.copy_.default] * 2
+            assert [e.args for e in k.epilogue] == [(k.k_base, k.k_copy), (k.v_base, k.v_copy)]
+            assert not any(e in inside for e in k.epilogue)
+        else:
+            assert k.k_base.target is aten.zeros.default and k.v_base.target is aten.zeros.default
+            assert k.epilogue == ()
+        # k and v of the slot are outputs of the region (head-major), made by the op that is the k / v operand
+        assert k.k_out is not None and k.v_out is not None and k.k_out != k.v_out
+        assert out_nodes[k.k_out] is k.k_rows and out_nodes[k.v_out] is k.v_rows
+        for i in (k.k_out, k.v_out):
+            assert r.outputs[i].recipe["transpose12"] and r.outputs[i].recipe["dims"][2:] == [hkv, d]
+        assert r.outputs[k.k_out].value != r.outputs[k.v_out].value
+        a = attn[s]
+        assert prog["values"][r.outputs[k.k_out].value]["out"] and prog["values"][r.outputs[k.v_out].value]["out"]
+        assert (a["k"], a["v"]) == (r.outputs[k.k_out].value, r.outputs[k.v_out].value)
+    # nothing but the cache nodes of the slots and the mask arithmetic runs between the first op and the last
+    cache_nodes = {n for k in r.kv for n in (k.k_copy, k.v_copy, k.pos, *k.epilogue, k.k_base, k.v_base)}
+    assert [n for n in _no_cpu_inside(gm, r) if n not in cache_nodes and n.target is not aten.arange.default
+            and n.target is not aten.add.Tensor] == []
+    return prog
+
+
+@pytest.mark.parametrize("mask,form", [("where", "bool"), ("bool", "bool"), ("additive", "additive")])
+def test_cached_attention_existing_cache(mask, form):
+    gm, w, regions, why = kv_lower(KVQwen(mask=mask), T=6, decode=True)
+    assert len(regions) == 1
+    r = regions[0]
+    check_kv_region(gm, r)
+    assert r.inputs[[i.kind for i in r.inputs].index("mask")].recipe["form"] == form
+    assert "kv_slots" in r.to_program()
+    # the reasons of the cache nodes beside the region name the rewrite
+    for k in r.kv:
+        for n in (k.k_copy, k.v_copy, *k.epilogue):
+            assert "cache" in why[n]
+        assert n.target is aten.copy_.default
+
+
+def test_cached_attention_fresh_cache():
+    gm, w, regions, why = kv_lower(KVQwen(fresh=True), T=6)
+    assert len(regions) == 1
+    r = regions[0]
+    check_kv_region(gm, r, form="fresh")
+    # the new caches are graph outputs: the index_copy results stay in the graph for them
+    out = [n for n in gm.graph.nodes if n.op == "output"][0]
+    flat = list(out.args[0][0]) if isinstance(out.args[0][0], (list, tuple)) else list(out.args[0])
+    assert all(k.k_copy in flat and k.v_copy in flat for k in r.kv)
+
+
+def test_cached_attention_program_is_unchanged_without_a_cache():
+    # a region without a cached attention: no new key anywhere
+    gm, w, r, why = one_region(QwenLike().eval(), [(ids(6),)])
+    assert r.kv == []
+    prog = r.to_program()
+    assert set(prog) == {"values", "ops", "kv_size"}
+    assert all("kv" not in o for o in prog["ops"]) and all("cols" not in v for v in prog["values"])
+    assert [i.recipe["reshape"] for i in r.inputs if i.kind == "mask"] == ["TxT"]
+    assert "kv slot" not in r.describe()
+
+
+@pytest.mark.parametrize("kw", [dict(heads=4, kv=4), dict(L=64)])
+def test_cached_attention_one_kv_head_per_head_and_other_lengths(kw):
+    gm, w, regions, why = kv_lower(KVQwen(layers=1, **kw), T=6, decode=True)
+    assert len(regions) == 1
+    r = regions[0]
+    a = [o for o in r.ops if o["op"] == "attn"][0]
+    assert r.kv[0].cells == kw.get("L", 32) and r.to_program()["kv_slots"] == [kw.get("L", 32)]
+    assert (a["n_head"], a["n_head_kv"]) == (4, kw.get("kv", 2)) and a["kv"] == 0
+
+
+class RowsIn(nn.Module):
+    """A cached attention whose new k / v rows are graph inputs (made outside the region)."""
+
+    def __init__(self, hid=256, heads=4, kv=2, L=32):
+        super().__init__()
+        self.H, self.Hkv, self.D, self.L = heads, kv, hid // heads, L
+        self.q = nn.Linear(hid, hid, bias=False)
+        self.o = nn.Linear(hid, hid, bias=False)
+        self.kc = torch.zeros(1, kv, L, self.D)
+        self.vc = torch.zeros(1, kv, L, self.D)
+        self.n = torch.tensor(0)
+
+    def forward(self, x, k, v):
+        B, T, _ = x.shape
+        q = self.q(x).view(B, T, self.H, self.D).transpose(1, 2)
+        pos = torch.arange(T) + self.n
+        self.kc.index_copy_(2, pos, k)
+        self.vc.index_copy_(2, pos, v)
+        self.n.add_(T)
+        g = self.H // self.Hkv
+        ke = self.kc[:, :, None].expand(B, self.Hkv, g, self.L, self.D).reshape(B, self.H, self.L, self.D)
+        ve = self.vc[:, :, None].expand(B, self.Hkv, g, self.L, self.D).reshape(B, self.H, self.L, self.D)
+        mask = (torch.arange(self.L)[None, None, None, :] <= pos[None, None, :, None])
+        a = F.scaled_dot_product_attention(q, ke, ve, attn_mask=mask, scale=self.D ** -0.5)
+        return self.o(a.transpose(1, 2).reshape(B, T, -1))
+
+
+def test_cached_attention_rows_that_are_inputs_are_not_outputs():
+    # k and v come from outside the region: they are region inputs, and the update reads those nodes in the graph
+    m = RowsIn().eval()
+    args = (torch.randn(1, 6, 256), torch.randn(1, 2, 6, 64), torch.randn(1, 2, 6, 64))
+    gm, w = capture(m, [(args,)])
+    regions, why = L.form_regions(gm, w)
+    assert len(regions) == 1 and len(regions[0].kv) == 1
+    r = regions[0]
+    k = r.kv[0]
+    assert (k.k_out, k.v_out) == (None, None)
+    assert k.k_rows.op == "placeholder" and k.v_rows.op == "placeholder"
+    ins = {i.node: i for i in r.inputs}
+    assert k.k_rows in ins and k.v_rows in ins and ins[k.k_rows].recipe["transpose12"] is True
+    assert len(r.outputs) == 1                 # the attention result of the o projection only: k and v are not outputs
+    prog = check_region(r)
+    assert prog["kv_slots"] == [32]
+
+
+def test_cached_attention_dynamic_prefill_length():
+    gm, w, regions, why = kv_lower(KVQwen(), lengths=[6, 9], dynamic=None)
+    assert len(regions) == 1
+    r = regions[0]
+    assert str(r.rows).startswith("s") and r.to_program()["kv_slots"] == [32, 32]
+    assert [i.recipe["cols"] for i in r.inputs if i.kind == "mask"] == [32]
+    # the outputs k / v rebuild their sequence length from the first input
+    k = r.kv[0]
+    assert any(isinstance(d, dict) for d in r.outputs[k.k_out].recipe["dims"])
+    check_region(r)
+
+
+# -- a cache length that is a symbol of the graph (Dynamo recompiles for the second cache length and keeps one graph
+#    for the others): the cells are known at the call, from the cache tensors
+SYM_LENGTHS = (32, 40, 48)       # the second call makes the graph symbolic; the example value is that call's length
+
+
+def sym_capture(model, fresh):
+    """The aten graph that serves several cache lengths. Existing form: decode steps over caches of the three lengths
+    (the module's cache tensors are swapped before each call). Fresh form: prefills that take a [L] tensor, whose length
+    is the cache length."""
+    if fresh:
+        return capture(model.eval(), [((ids(6)[0], torch.zeros(n)), {}) for n in SYM_LENGTHS])
+
+    def before(i):
+        for ly in model.layers:
+            ly.kc, ly.vc = torch.zeros(1, ly.Hkv, SYM_LENGTHS[i], ly.D), torch.zeros(1, ly.Hkv, SYM_LENGTHS[i], ly.D)
+
+    return capture(model.eval(), [ids(1) for _ in SYM_LENGTHS], before=before)
+
+
+def sym_lower(model, fresh, probe=None):
+    gm, w = sym_capture(model, fresh)
+    regions, why = L.form_regions(gm, w, probe)
+    return gm, w, regions, why
+
+
+@pytest.mark.parametrize("fresh", [False, True], ids=["existing", "fresh"])
+@pytest.mark.parametrize("mask,form", [("where", "bool"), ("additive", "additive")])
+def test_cached_attention_symbolic_cache_length(fresh, mask, form):
+    if fresh and mask == "additive":
+        pytest.skip("the fresh prefill has no mask (causal over the first cells)")
+    gm, w, regions, why = sym_lower(KVQwen(sym=True, fresh=fresh, mask=mask, variant="slice" if fresh else "ok"), fresh)
+    assert len(regions) == 1, [r.describe() for r in regions]
+    r = regions[0]
+    assert len(r.kv) == 2 and all(k.cells is None and k.hint == SYM_LENGTHS[1] for k in r.kv)
+    assert all(isinstance(k.length, L.sympy.Symbol) for k in r.kv) and ops_of(r) == KV_LAYER_OPS * 2 + ["rms_norm", "mul_mat"]
+    assert all(k.form == ("fresh" if fresh else "existing") for k in r.kv)
+    # a symbolic region needs the cells of its call; the cells are taken as given, not guessed
+    with pytest.raises(ValueError, match="symbol"):
+        r.to_program()
+    with pytest.raises(ValueError, match="2 KV slots"):
+        r.to_program(cells=[40])
+    for cells in ([40, 40], [48, 48], [32, 32], [8, 8]):
+        prog = r.to_program(cells=cells)
+        assert prog["kv_slots"] == cells
+        attn = [o for o in prog["ops"] if o["op"] == "attn"]
+        assert [o["kv"] for o in attn] == [0, 1]
+        masks = [i.value for i in r.inputs if i.kind == "mask"]
+        if fresh:
+            assert masks == [] and all(o["mask"] is None for o in attn)       # causal from the first cell
+        else:
+            assert len(masks) == 1 and all(o["mask"] == masks[0] for o in attn)
+            assert prog["values"][masks[0]] == {"kind": "mask", "cols": cells[0]}
+            assert [i.recipe["cols"] for i in r.inputs if i.kind == "mask"] == [None]    # the length is not in the recipe
+            assert r.inputs[[i.kind for i in r.inputs].index("mask")].recipe["form"] == form
+        # the region itself is not changed by a call
+        assert all(v.get("cols") in (None, SYM_LENGTHS[1]) for v in r.values)
+    assert "2 kv slots (" in r.describe() and "length known at the call" in r.describe()
+    check_region(r)
+    # the cache nodes: the same rewrite inputs as for a static length
+    for k in r.kv:
+        assert k.k_out is not None and k.v_out is not None and k.pos is not None
+        assert k.k_base is not k.v_base and k.k_copy.args[0] is k.k_base
+
+
+def test_cached_attention_symbolic_mask_cells_per_slot_conflict():
+    """Two cached attentions that read one mask value get one ``cols``; different cells for them are an error (the
+    lowering never forms such a region)."""
+    gm, w, regions, why = sym_lower(KVQwen(sym=True), False)
+    r = regions[0]
+    with pytest.raises(ValueError, match="one mask value"):
+        r.to_program(cells=[40, 48])
+    assert r.to_program(cells=[40, 40])["kv_slots"] == [40, 40]
+
+
+@pytest.mark.parametrize("fresh", [False, True], ids=["existing", "fresh"])
+def test_cached_attention_symbolic_probe_sees_the_example_value(fresh):
+    seen = []
+    gm, w, regions, why = sym_lower(KVQwen(layers=1, sym=True, fresh=fresh, variant="slice" if fresh else "ok"), fresh,
+                                    probe=lambda p: seen.append(p))
+    a = [p for p in seen if any(o["op"] == "attn" for o in p["ops"])]
+    assert len(a) == 1 and a[0]["kv_slots"] == [SYM_LENGTHS[1]] and len(regions) == 1
+    if not fresh:
+        assert any(v == {"kind": "mask", "cols": SYM_LENGTHS[1]} for v in a[0]["values"])
+
+
+@pytest.mark.parametrize("mask_len", ["even", "one"])
+def test_cached_attention_symbolic_mask_of_another_length_is_refused(mask_len):
+    """The mask's last dimension must be the cache length as an expression: another expression that has the same value
+    for the lengths of the calls (2 * (L // 2) of an even L) and a constant (a mask of one column that broadcasts) are
+    refused."""
+    gm, w, regions, why = sym_lower(KVQwen(layers=1, sym=True, mask_len=mask_len), False)
+    assert not any(r.kv for r in regions) and not attn_op_present(regions)
+    assert "cached k / v: the attention mask is not [T, s" in _attn_reason(gm, why), _attn_reason(gm, why)
+
+
+def test_cached_attention_static_region_program_is_unchanged_by_cells():
+    """A static region gives the same program with and without ``cells`` (its own cells), and the program is the
+    plain one: ``kv_slots`` and ``cols`` of the static cells."""
+    gm, w, regions, why = kv_lower(KVQwen(), T=6, decode=True)
+    r = regions[0]
+    prog = r.to_program()
+    assert set(prog) == {"values", "ops", "kv_size", "kv_slots"} and prog["kv_slots"] == [32, 32]
+    mv = [v for v in prog["values"] if v["kind"] == "mask"]
+    assert mv == [{"kind": "mask", "cols": 32}]
+    assert r.to_program(cells=[32, 32]) == prog
+    assert all(k.cells == 32 and k.hint == 32 for k in r.kv)
+    with pytest.raises(ValueError, match="without KV slots"):
+        one_region(QwenLike().eval(), [(ids(6),)])[2].to_program(cells=[32])
+
+
+def _attn_reason(gm, why):
+    sd = [n for n in gm.graph.nodes if n.op == "call_function" and "scaled_dot" in str(n.target)]
+    assert len(sd) >= 1
+    return why[sd[0]]
+
+
+# (variant, kwargs, text of the reason). Every one of them leaves the attention on the CPU (no cached op) and
+# gives the reason; the cache nodes stay beside it.
+KV_NEAR = [
+    ("base_user", {}, "the cache base has another user"),
+    ("base_user", {"fresh": True}, "the cache base has another user"),
+    ("kall_user", {}, "the cache update result has another user"),
+    ("kall_user", {"fresh": True}, "the cache update result has another user"),
+    ("expanded_user", {}, "the expanded cache has another reader"),
+    ("pos_differ", {}, "k and v use different positions"),
+    ("short_pos", {}, "not an int64 [T] value"),
+    ("shared_base", {"fresh": True}, "share one cache tensor"),
+    ("v_concat", {}, "only one of k and v is a cache update"),
+    ("no_inplace", {}, "not updated in place"),
+    ("mask_heads", {}, "attention mask is not [T, 32]"),
+    ("mask_row", {"fresh": True}, "attention mask is not [T, 32]"),
+    ("slice_start", {"fresh": True}, "no lowering for aten._scaled_dot_product"),
+    ("causal", {}, "is_causal"),
+    ("slice_short", {"fresh": True}, "not the plain causal one over the rows of q"),
+    ("slice_mask", {"fresh": True}, "not the plain causal one over the rows of q"),
+    ("ok", {"batch": 2}, "batch"),
+]
+
+
+@pytest.mark.parametrize("variant,kw,text", KV_NEAR, ids=[f"{v}-{'fresh' if k.get('fresh') else 'existing'}" +
+                                                         ("-b2" if k.get("batch") else "") for v, k, _ in KV_NEAR])
+def test_cached_attention_near_misses(variant, kw, text):
+    batch = kw.get("batch", 1)
+    m = KVQwen(layers=1, variant=variant, **{k: v for k, v in kw.items()})
+    calls = [(torch.randint(0, 256, (batch, 6)),)]
+    if not kw.get("fresh"):
+        calls.append((torch.randint(0, 256, (batch, 1)),))
+    gm, w = capture(m.eval(), calls)
+    regions, why = L.form_regions(gm, w)
+    if text is None:
+        assert any(r.kv for r in regions)
+        return
+    assert not any(r.kv for r in regions) and not attn_op_present(regions)
+    assert text in _attn_reason(gm, why), _attn_reason(gm, why)
+    for n in gm.graph.nodes:
+        if n.op == "call_function" and n.target is aten.index_copy.default and variant not in ("no_inplace",):
+            assert "stays on the CPU" in why[n] or "no lowering" in why[n]
+
+
+def test_cached_attention_mask_of_one_row_for_several_query_rows_is_refused():
+    """A mask [1, 1, 1, L] over T > 1 query rows broadcasts one row to all of them: not a cached attention (the device
+    takes a [T, L] mask). With one query row it is the mask of a decode step and the attention is cached."""
+    gm, w, regions, why = kv_lower(KVQwen(layers=1, variant="mask_row"), T=6)
+    assert not any(r.kv for r in regions) and not attn_op_present(regions)
+    assert "attention mask is not [T, 32]" in _attn_reason(gm, why), _attn_reason(gm, why)
+    gm, w, regions, why = kv_lower(KVQwen(layers=1, variant="mask_row"), T=1)
+    assert len(regions) == 1 and len(regions[0].kv) == 1 and attn_op_present(regions)
+
+
+@pytest.mark.parametrize("variant", ["slice", "slice_native"])
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "existing"])
+def test_cached_attention_causal_over_the_first_cells(variant, fresh):
+    """``is_causal`` over ``cache[:, :, :T]`` (the prefill of a fresh Hugging Face cache, with or without the grouped
+    expansion in front of the attention): a cached attention with no mask, causal from the first cell of the call."""
+    m = KVQwen(layers=2, variant=variant, fresh=fresh)
+    calls = [(torch.randint(0, 256, (1, 6)),)] + ([] if fresh else [(torch.randint(0, 256, (1, 1)),)])
+    gm, w = capture(m.eval(), calls)
+    regions, why = L.form_regions(gm, w)
+    assert len(regions) == 1 and len(regions[0].kv) == 2, [r.describe() for r in regions]
+    r = regions[0]
+    assert all(k.causal0 and k.form == ("fresh" if fresh else "existing") for k in r.kv)
+    prog = r.to_program()
+    attn = [o for o in prog["ops"] if o["op"] == "attn"]
+    assert [o["kv"] for o in attn] == [0, 1] and all(o["mask"] is None for o in attn)
+    assert not any(v["kind"] == "mask" for v in prog["values"])
+    check_region(r)
+    # the slice is a node of the region (it must not stay behind reading the cache update)
+    sl = [n for n in gm.graph.nodes if n.target is aten.slice.Tensor and n.args[0] in {k.k_copy for k in r.kv} | {k.v_copy for k in r.kv}]
+    assert len(sl) == 4 and all(n in set(r.nodes) for n in sl)
+
+
+class LastRow(nn.Module):
+    """mm -> ``[:, -1:]`` (Hugging Face's ``logits_to_keep = 1``) -> rms_norm -> mm."""
+
+    def __init__(self, d=128):
+        super().__init__()
+        self.fc1 = nn.Linear(d, d, bias=False)
+        self.norm = RMSNorm(d)
+        self.fc2 = nn.Linear(d, 256, bias=False)
+
+    def forward(self, x):
+        return self.fc2(self.norm(self.fc1(x)[:, -1:]))
+
+
+def _last_row(T, dynamic=None, lengths=None):
+    calls = [(torch.randn(1, t, 128),) for t in (lengths or [T])]
+    gm, w = capture(LastRow().eval(), calls, dynamic)
+    regions, why = L.form_regions(gm, w)
+    slices = [n for n in gm.graph.nodes if n.target is aten.slice.Tensor]
+    return gm, regions, slices
+
+
+def test_a_slice_that_keeps_the_shape_is_an_identity():
+    """``slice(-1, None)`` over a dimension of static size 1 keeps the whole value: the ops on both sides of it are one
+    region and the slice is a node of it."""
+    gm, regions, slices = _last_row(1)
+    assert len(slices) == 1 and len(regions) == 1
+    assert [o["op"] for o in regions[0].ops] == ["mul_mat", "rms_norm", "mul_mat"]
+    assert slices[0] in set(regions[0].nodes)
+    check_region(regions[0])
+
+
+@pytest.mark.parametrize("dynamic,lengths", [(None, [6]), (True, [6]), (None, [6, 9])],
+                         ids=["static", "symbolic", "symbolic-two-lengths"])
+def test_a_slice_of_the_last_row_of_several_rows_is_not_an_identity(dynamic, lengths):
+    """``slice(-1, None)`` over T > 1 rows drops rows (as a static size and as a symbol): it stays outside the regions
+    and the ops after it are a region of their own."""
+    gm, regions, slices = _last_row(lengths[-1], dynamic, lengths)
+    assert len(slices) == 1
+    assert all(slices[0] not in set(r.nodes) for r in regions)
+    assert [[o["op"] for o in r.ops] for r in regions] == [["rms_norm", "mul_mat"]]
+
+
+def test_cached_attention_option_kv_cache_false():
+    gm, w = kv_capture(KVQwen(layers=1), T=6, decode=True)
+    for opts in ({"kv_cache": False}, L.LowerOpts(kv_cache=False)):
+        regions, why = L.form_regions(gm, w, None, opts)
+        assert not attn_op_present(regions) and not any(r.kv for r in regions)
+        assert "the option kv_cache=False" in _attn_reason(gm, why)
+        ics = by_target(gm, aten.index_copy.default)
+        assert ics and all("kv_cache=False" in why[n] for n in ics)
+    regions, _ = L.form_regions(gm, w, None, {"kv_cache": True})
+    assert any(r.kv for r in regions)
+    assert L.LowerOpts().kv_cache is True and L.LowerOpts.from_dict({}).kv_cache is True
+    # the option does not touch an attention without a cache
+    gm2, w2, r2, _ = one_region(QwenLike().eval(), [(ids(6),)], opts={"kv_cache": False})
+    assert "attn" in ops_of(r2)
+
+
+def test_cached_attention_probe_sees_the_slots():
+    seen = []
+
+    def probe(prog):
+        seen.append(prog)
+        return None
+
+    gm, w, regions, why = kv_lower(KVQwen(layers=1), probe=probe, T=6, decode=True)
+    a = [p for p in seen if any(o["op"] == "attn" for o in p["ops"])]
+    assert len(a) == 1 and a[0]["kv_slots"] == [32]
+    assert [o["kv"] for o in a[0]["ops"] if o["op"] == "attn"] == [0]
+    assert any(v == {"kind": "mask", "cols": 32} for v in a[0]["values"])
+    assert all("kv_slots" not in p for p in seen if p is not a[0])
+    # a probe that refuses the cached attention leaves it on the CPU with the device's reason
+    gm, w, regions, why = kv_lower(KVQwen(layers=1), probe=lambda p: "no kv" if "kv_slots" in p else None, T=6, decode=True)
+    assert not any(r.kv for r in regions)
+    assert any("device: no kv" in v for v in why.values())
+
+
+# -- a Hugging Face model with transformers.StaticCache (a random tiny Qwen2: no weights are needed)
+def _tiny_qwen_static():
+    try:
+        from transformers import AutoModelForCausalLM, Qwen2Config, StaticCache
+    except Exception as err:  # noqa: BLE001
+        pytest.skip(f"transformers does not import: {err}")
+    cfg = Qwen2Config(vocab_size=256, hidden_size=128, intermediate_size=256, num_hidden_layers=2,
+                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64,
+                      tie_word_embeddings=True, attn_implementation="sdpa")
+    torch.manual_seed(0)
+    m = AutoModelForCausalLM.from_config(cfg, dtype=torch.float32).eval()
+    return m, cfg, StaticCache
+
+
+def _static_calls(m, cfg, StaticCache, lengths, decode, L=48):
+    cache = StaticCache(cfg, max_cache_len=L)
+    calls = [((), {"input_ids": torch.randint(0, 256, (1, t)), "past_key_values": cache, "use_cache": True})
+             for t in lengths]
+    if decode:
+        calls.append(((), {"input_ids": torch.randint(0, 256, (1, 1)), "past_key_values": cache, "use_cache": True}))
+    return calls
+
+
+@pytest.mark.parametrize("decode", [False, True], ids=["prefill-fresh", "decode-existing"])
+def test_static_cache_one_region(decode):
+    m, cfg, StaticCache = _tiny_qwen_static()
+    gm, w = capture(m, _static_calls(m, cfg, StaticCache, [5], decode))
+    regions, why = L.form_regions(gm, w)
+    assert len(regions) == 1, [r.describe() for r in regions]
+    r = regions[0]
+    c = r.op_counts()
+    assert c["attn"] == 2 and c["mul_mat"] == 2 * 7 + 1 and c["rope"] == 4 and c["glu"] == 2
+    assert len(r.kv) == 2 and r.to_program()["kv_slots"] == [48, 48]
+    assert [k.form for k in r.kv] == ["existing" if decode else "fresh"] * 2
+    assert all((k.hkv, k.d, k.cells) == (2, 32, 48) for k in r.kv)
+    check_region(r)
+    # the logits and the k and v rows of every layer; the cache tensors themselves are not outputs
+    assert len(r.outputs) == 1 + 4 and all(k.k_out is not None and k.v_out is not None for k in r.kv)
+    # no CPU node runs between the first and the last op but the cache and the mask arithmetic
+    inside = set(r.nodes)
+    cache_nodes = {n for k in r.kv for n in (k.k_copy, k.v_copy, k.pos, *k.epilogue, k.k_base, k.v_base)}
+    idx = {n: i for i, n in enumerate(gm.graph.nodes)}
+    lo, hi = min(idx[o] for o in r.op_nodes), max(idx[o] for o in r.op_nodes)
+    for n in gm.graph.nodes:
+        if lo < idx[n] < hi and n.op == "call_function" and n not in inside and n not in cache_nodes \
+                and n not in set(r.bypassed):
+            assert n.target in (aten.arange.default, aten.add.Tensor, aten.unsqueeze.default, aten.le.Tensor,
+                                aten.expand.default, aten.scalar_tensor.default, aten.where.self,
+                                aten.cos.default, aten.sin.default, aten.mul.Tensor, aten.cat.default,
+                                aten._to_copy.default, aten.embedding.default), n.target
+    # the reasons name the cache nodes the rewrite takes over
+    for k in r.kv:
+        assert "cache" in why[k.k_copy] and "cache" in why[k.v_copy]
+        for e in k.epilogue:
+            assert "cache" in why[e]
+
+
+def test_static_cache_dynamic_prefill_and_option():
+    m, cfg, StaticCache = _tiny_qwen_static()
+    gm, w = capture(m, _static_calls(m, cfg, StaticCache, [5, 7], False))
+    regions, why = L.form_regions(gm, w)
+    assert len(regions) == 1 and str(regions[0].rows).startswith("s") and len(regions[0].kv) == 2
+    regions, why = L.form_regions(gm, w, None, {"kv_cache": False})
+    assert not any(r.kv for r in regions) and not attn_op_present(regions)
+    assert all("the option kv_cache=False" in why[n] for n in gm.graph.nodes
+               if n.op == "call_function" and "scaled_dot" in str(n.target))
