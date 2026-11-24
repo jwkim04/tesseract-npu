@@ -124,6 +124,8 @@ struct counters {
     uint64_t h2d_bytes = 0;        // host -> device bytes, every write (weights, x, op lists)
     uint64_t h2d_weight_bytes = 0; //   of which weight uploads
     uint64_t d2h_bytes = 0;        // device -> host bytes (y, read-backs)
+    uint64_t h2d_writes = 0;       // host -> device transfers (calls of write with a size above 0)
+    uint64_t d2h_reads = 0;        // device -> host transfers (calls of read with a size above 0)
     // graphs
     uint64_t graphs = 0;           // graph_create calls
     uint64_t graph_runs = 0;       // graph_run calls (a run in several chunks counts once)

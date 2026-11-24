@@ -155,6 +155,7 @@ void device::impl::write(uint32_t ch, uint64_t off, const void * src, size_t siz
         throw error(strf("tsr_rt: transport write failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
     }
     cnt.h2d_bytes += size;
+    cnt.h2d_writes++;
     if (is_weight) cnt.h2d_weight_bytes += size;
 }
 void device::impl::read(uint32_t ch, uint64_t off, void * dst, size_t size) {
@@ -163,6 +164,7 @@ void device::impl::read(uint32_t ch, uint64_t off, void * dst, size_t size) {
         throw error(strf("tsr_rt: transport read failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size));
     }
     cnt.d2h_bytes += size;
+    cnt.d2h_reads++;
 }
 
 uint64_t device::impl::perf(uint32_t idx) {

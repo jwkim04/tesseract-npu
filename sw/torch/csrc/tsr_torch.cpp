@@ -887,6 +887,8 @@ public:
         r["h2d_bytes"] = c.h2d_bytes;
         r["h2d_weight_bytes"] = c.h2d_weight_bytes;
         r["d2h_bytes"] = c.d2h_bytes;
+        r["h2d_writes"] = c.h2d_writes;
+        r["d2h_reads"] = c.d2h_reads;
         r["graphs"] = c.graphs;
         r["graph_runs"] = c.graph_runs;
         r["graph_launches"] = c.graph_launches;

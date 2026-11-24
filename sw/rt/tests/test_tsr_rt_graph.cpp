@@ -43,6 +43,7 @@
 #include "tsr_isa.h"
 #include "tsr_ref.h"
 #include "tsr_rt.h"
+#include "tsr/opl.hpp"
 
 using namespace tsr::rt;
 namespace opl = tsr::opl;
@@ -2548,6 +2549,253 @@ static void test_counters() {
     D->graph_free(h);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Transfers: the out values that touch are read in one transfer, the inputs that touch are written in one
+// ---------------------------------------------------------------------------------------------
+// graph_run with the counters taken around it alone, then graph_run_ref; the bits must be equal. `delta` gets the counters of the run.
+static bool run_counted(graph_handle h, uint32_t T, const std::vector<arg_t> & args, const graph_state & st, counters * delta, const char * what) {
+    g_cases++;
+    const graph_shape sh = D->graph_shape_of(h);
+    graph_inputs gi;
+    for (size_t i = 0; i < args.size(); ++i) {
+        graph_arg a;
+        a.data = sh.arg_kind[i] == gv::pos ? (const void *) args[i].p.data() : (const void *) args[i].f.data();
+        gi.args.push_back(a);
+    }
+    std::vector<std::vector<float>> dv(sh.out_n.size()), rv(sh.out_n.size());
+    graph_outputs od, orf;
+    for (size_t i = 0; i < sh.out_n.size(); ++i) {
+        dv[i].assign((size_t) T * sh.out_n[i], -7.0f);
+        rv[i].assign((size_t) T * sh.out_n[i], -7.0f);
+        od.outs.push_back({ dv[i].data(), 0 });
+        orf.outs.push_back({ rv[i].data(), 0 });
+    }
+    try {
+        const counters c0 = D->get_counters();
+        D->graph_run(h, T, gi, od, st);
+        const counters c1 = D->get_counters();
+        if (delta) {
+            *delta = c1;
+            delta->h2d_bytes -= c0.h2d_bytes;
+            delta->d2h_bytes -= c0.d2h_bytes;
+            delta->h2d_writes -= c0.h2d_writes;
+            delta->d2h_reads -= c0.d2h_reads;
+        }
+        D->graph_run_ref(h, T, gi, orf, st);
+    } catch (const std::exception & e) {
+        CHECK(false, "%s: %s", what, e.what());
+        return false;
+    }
+    bool ok = true;
+    for (size_t i = 0; i < dv.size(); ++i) {
+        size_t first = 0;
+        const bool same = same_bits(dv[i], rv[i], &first);
+        CHECK(same, "%s: output %zu: graph_run differs from graph_run_ref at %zu", what, i, first);
+        ok = ok && same;
+    }
+    return ok;
+}
+
+static uint64_t row_bytes(uint32_t n) { return (uint64_t) Lc(n) * 64; }
+
+static void unary_op(PB & pb, int x, int y) {
+    graph_op & o = pb.op(gop::unary, y);
+    o.x = x; o.func = 2;
+}
+
+static void test_transfers() {
+    printf("transfers: out values in one read, inputs in few writes\n");
+    // two cached attn ops with their own slots; four out values side by side: y1, y2, z1 = silu(q1), z2 = silu(y1)
+    {
+        const uint32_t cells = 64;
+        PB pb;
+        const int q1 = pb.in(128), k1 = pb.in(64), v1 = pb.in(64), q2 = pb.in(128), k2 = pb.in(64), v2 = pb.in(64);
+        const int y1 = pb.tmp(128, true), y2 = pb.tmp(128, true), z1 = pb.tmp(128, true), z2 = pb.tmp(128, true);
+        pb.attn(q1, k1, v1, y1, 2, 1, 64, 0.125f, -1, 0);
+        pb.attn(q2, k2, v2, y2, 2, 1, 64, 0.125f, -1, 1);
+        unary_op(pb, q1, z1);
+        unary_op(pb, y1, z2);
+        pb.g.kv_slots = { cells, cells };
+        const graph_handle h = create(pb.g, "transfers: two slots");
+        if (h) {
+            const kv_handle ka = D->kv_create(64, cells), kb = D->kv_create(64, cells);
+            graph_state st;
+            st.kv = std::vector<kv_handle>{ ka, kb };
+            uint32_t pos0 = 0;
+            for (uint32_t T : { 1u, 5u }) {
+                st.pos0 = pos0;
+                const std::vector<arg_t> args = { in_arg(rnd_vec((size_t) T * 128, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)),
+                                                  in_arg(rnd_vec((size_t) T * 128, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)) };
+                counters dc;
+                char what[96];
+                snprintf(what, sizeof(what), "transfers: two slots, T %u at pos0 %u", T, pos0);
+                run_counted(h, T, args, st, &dc, what);
+                CHECK(dc.d2h_reads == 1, "%s: %" PRIu64 " reads of the out values (1 expected)", what, dc.d2h_reads);
+                CHECK(dc.d2h_bytes == (uint64_t) T * 4 * row_bytes(128), "%s: d2h_bytes %" PRIu64, what, dc.d2h_bytes);
+                pos0 += T;
+            }
+            D->kv_free(ka);
+            D->kv_free(kb);
+            D->graph_free(h);
+        }
+    }
+    // a chunked run: one read per chunk (1500 rows: chunks of 680, 680, 140), two out values that touch
+    {
+        const uint32_t cells = 1536, R = 1500;
+        PB pb;
+        const int q = pb.in(128), k = pb.in(64), v = pb.in(64);
+        const int y = pb.tmp(128, true), z = pb.tmp(128, true);
+        pb.attn(q, k, v, y, 2, 1, 64, 0.125f, -1, 0);
+        unary_op(pb, q, z);
+        pb.g.kv_slots = { cells };
+        const graph_handle h = create(pb.g, "transfers: chunks");
+        if (h) {
+            const kv_handle kh = D->kv_create(64, cells);
+            graph_state st;
+            st.kv = std::vector<kv_handle>{ kh };
+            counters dc;
+            run_counted(h, R, { in_arg(rnd_vec((size_t) R * 128, 1.0f)), in_arg(rnd_vec((size_t) R * 64, 1.0f)), in_arg(rnd_vec((size_t) R * 64, 1.0f)) }, st, &dc,
+                        "transfers: 1500 rows");
+            CHECK(dc.d2h_reads == 3, "transfers: 1500 rows: %" PRIu64 " reads (one per chunk, 3 expected)", dc.d2h_reads);
+            CHECK(dc.d2h_bytes == (uint64_t) R * 2 * row_bytes(128), "transfers: 1500 rows: d2h_bytes %" PRIu64, dc.d2h_bytes);
+            D->kv_free(kh);
+            D->graph_free(h);
+        }
+    }
+    // the writes of a run with a plan hit: T = 1, a cached graph whose mask needs no f32 copy. The static block (the cell indices, then the
+    // mask summary: they touch) is one write. The f32 mask area of the slot is reserved but not written, so the in rows, which start
+    // behind it, are the second write.
+    {
+        const uint32_t cells = 64;
+        PB pb;
+        const int q = pb.in(128), k = pb.in(64), v = pb.in(64), y = pb.tmp(128, true);
+        pb.attn(q, k, v, y, 2, 1, 64, 0.125f, -1, 0);
+        pb.g.kv_slots = { cells };
+        const graph_handle h = create(pb.g, "transfers: writes");
+        if (h) {
+            const kv_handle kh = D->kv_create(64, cells);
+            graph_state st;
+            st.kv = std::vector<kv_handle>{ kh };
+            const uint32_t T = 1;
+            for (int round = 0; round < 3; ++round) {
+                const counters p0 = D->get_counters();
+                counters dc;
+                run_counted(h, T, { in_arg(rnd_vec(128, 1.0f)), in_arg(rnd_vec(64, 1.0f)), in_arg(rnd_vec(64, 1.0f)) }, st, &dc, "transfers: writes");
+                const counters p1 = D->get_counters();
+                // the first round builds the plan and writes its op lists; the later rounds hit the plan and the op list cache
+                if (round == 0) continue;
+                CHECK(p1.graph_plan_hits > p0.graph_plan_hits && p1.prog_misses == p0.prog_misses, "transfers: writes: a plan hit in round %d", round);
+                const uint64_t stat = ((uint64_t) T * opl::PRE_KVIDX_BYTES + 63) / 64 * 64 + (opl::msum_bytes(T) + 63) / 64 * 64;
+                const uint64_t rows = row_bytes(128) + 2 * row_bytes(64);
+                CHECK(dc.h2d_writes == 2, "transfers: writes: %" PRIu64 " writes (2 expected: the static block and the in rows)", dc.h2d_writes);
+                CHECK(dc.h2d_bytes == stat + rows, "transfers: writes: h2d_bytes %" PRIu64 " = %" PRIu64 " (static) + %" PRIu64 " (in rows)", dc.h2d_bytes, stat, rows);
+            }
+            D->kv_free(kh);
+            D->graph_free(h);
+        }
+    }
+    // the fallback: placing the out values first costs IO space (in writer order y2 takes the hole that t1 leaves; with the out values
+    // first the side chain lies one wide value higher)
+    {
+        // T is the largest row count that graph_unsupported probes, so the small region is sized for every plan it builds
+        const uint32_t cells = 64, W = 2048, T = D->config().t_max + 1;
+        auto build = [&](PB & pb) {
+            const int q = pb.in(128), k = pb.in(64), v = pb.in(64), xw = pb.in(W);
+            const int y = pb.tmp(128, true), t1 = pb.tmp(W), t2 = pb.tmp(W), y2 = pb.tmp(W, true);
+            pb.attn(q, k, v, y, 2, 1, 64, 0.125f, -1, 0);
+            unary_op(pb, xw, t1);
+            unary_op(pb, t1, t2);
+            unary_op(pb, t2, y2);
+            pb.g.kv_slots = { cells };
+        };
+        auto args = [&] {
+            return std::vector<arg_t>{ in_arg(rnd_vec((size_t) T * 128, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)), in_arg(rnd_vec((size_t) T * 64, 1.0f)),
+                                       in_arg(rnd_vec((size_t) T * W, 1.0f)) };
+        };
+        PB pb;
+        build(pb);
+        const graph_handle h = create(pb.g, "fallback: big device");
+        uint64_t P1 = 0;
+        if (h) {
+            const kv_handle kh = D->kv_create(64, cells);
+            graph_state st;
+            st.kv = std::vector<kv_handle>{ kh };
+            run_counted(h, T, args(), st, nullptr, "fallback: big device");
+            P1 = D->graph_info(h, T).io_bytes;
+            D->kv_free(kh);
+            D->graph_free(h);
+        }
+        if (P1 > 64) {
+            open_options o;
+            o.io_bytes = P1 - 64;
+            device small(o);
+            device * saved = D;
+            D = &small;
+            PB pb2;
+            build(pb2);
+            const graph_handle hs = create(pb2.g, "fallback: small device");
+            if (hs) {
+                const kv_handle ks = small.kv_create(64, cells);
+                graph_state st;
+                st.kv = std::vector<kv_handle>{ ks };
+                run_counted(hs, T, args(), st, nullptr, "fallback: small device");
+                const graph_plan_info info = small.graph_info(hs, T);
+                CHECK(info.T == T, "fallback: the whole run of %u rows is one chunk (T %u)", T, info.T);
+                CHECK(info.io_bytes < P1, "fallback: io_bytes %" PRIu64 " below the plan with the out values first (%" PRIu64 ")", info.io_bytes, P1);
+                CHECK(P1 - info.io_bytes >= (uint64_t) T * row_bytes(W) - 64, "fallback: the out values first cost a wide value (%" PRIu64 " against %" PRIu64 ")", P1, info.io_bytes);
+                // the plan holds nothing of the attempt that did not fit: one attn op with new cells, one list
+                CHECK(info.fa_new == 1 && info.lists == 1, "fallback: the plan has %u attn ops with new cells and %u lists (1 and 1 expected)", info.fa_new, info.lists);
+                small.kv_free(ks);
+                small.graph_free(hs);
+            }
+            D = saved;
+        }
+    }
+    // a graph with a pos argument and no attn op: the position array ends where the in rows begin, so a run that hits the plan and
+    // the op list cache writes its inputs in one transfer (the positions first, then the in rows: address order)
+    {
+        const uint32_t nh = 2, hd = 64, T = 3;
+        PB pb;
+        std::vector<float> tab(hd / 2);
+        for (uint32_t i = 0; i < hd / 2; ++i) tab[i] = (float) std::pow(10000.0, -2.0 * (double) i / (double) hd);
+        const int x = pb.in(nh * hd), t = pb.cst(up_const(tab, 1, hd / 2), hd / 2), p = pb.pos(), y = pb.tmp(nh * hd, true);
+        pb.rope(x, y, nh, hd, hd, t, p);
+        const graph_handle h = create(pb.g, "transfers: pos");
+        if (h) {
+            counters dc;
+            for (int round = 0; round < 2; ++round) {
+                run_counted(h, T, { in_arg(rnd_vec((size_t) T * nh * hd, 1.0f)), pos_arg({ 3, 4, 5 }) }, graph_state(), &dc, "transfers: pos");
+            }
+            CHECK(dc.h2d_writes == 1, "transfers: pos: %" PRIu64 " writes (1 expected: the positions and the in rows touch)", dc.h2d_writes);
+            CHECK(dc.h2d_bytes == 64 + (uint64_t) T * row_bytes(nh * hd), "transfers: pos: h2d_bytes %" PRIu64, dc.h2d_bytes);
+            CHECK(dc.d2h_reads == 1, "transfers: pos: %" PRIu64 " reads (1 expected)", dc.d2h_reads);
+            D->graph_free(h);
+        }
+    }
+    // a graph without slots is planned in writer order. a (out), d, b live together, c (out) is placed above d: the two out values do
+    // not touch, so there are two reads and the bytes of d are not read.
+    {
+        const uint32_t n = 256, T = 3;
+        PB pb;
+        const int x = pb.in(n), a = pb.tmp(n, true), d = pb.tmp(n), b = pb.tmp(n), c = pb.tmp(n, true);
+        unary_op(pb, x, a);
+        unary_op(pb, x, d);
+        unary_op(pb, d, b);
+        pb.ew(gop::add, b, d, c);
+        const graph_handle h = create(pb.g, "transfers: no slots");
+        if (h) {
+            counters dc;
+            run_counted(h, T, { in_arg(rnd_vec((size_t) T * n, 1.0f)) }, graph_state(), &dc, "transfers: no slots");
+            run_counted(h, T, { in_arg(rnd_vec((size_t) T * n, 1.0f)) }, graph_state(), &dc, "transfers: no slots");   // the op lists are cached now
+            CHECK(dc.d2h_reads == 2, "transfers: no slots: %" PRIu64 " reads (2 expected, the out values do not touch)", dc.d2h_reads);
+            CHECK(dc.d2h_bytes == (uint64_t) T * 2 * row_bytes(n), "transfers: no slots: d2h_bytes %" PRIu64 " (no gap is read)", dc.d2h_bytes);
+            CHECK(D->graph_info(h, T).io_bytes == (uint64_t) T * 4 * row_bytes(n), "transfers: no slots: io_bytes %" PRIu64, D->graph_info(h, T).io_bytes);
+            CHECK(dc.h2d_writes == 1, "transfers: no slots: %" PRIu64 " writes (1 expected)", dc.h2d_writes);
+            D->graph_free(h);
+        }
+    }
+}
+
 int main() {
     try {
         D = new device();
@@ -2584,6 +2832,7 @@ int main() {
     test_memory();
     test_threads();
     test_counters();
+    test_transfers();
     neg_fa_new();
     delete D;
     printf("%s (%d cases, %d failures)\n", g_fail == 0 ? "PASS" : "FAIL", g_cases, g_fail);

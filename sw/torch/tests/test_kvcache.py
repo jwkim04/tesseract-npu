@@ -175,6 +175,37 @@ def test_prefill_and_decode_steps_equal_the_stateless_run():
     assert float(cache.layers[0].keys[0, :, 12:].abs().sum()) == 0      # the cells above are untouched
 
 
+def test_a_decode_step_moves_its_data_in_two_writes_and_one_read():
+    """A decode step that hits its plan and the op list cache: the positions, the cell indices and the mask summary go
+    to the device in one transfer and the input row in a second one (the area of the f32 mask lies between them and is
+    not written); the new K and V rows of every layer and the logits come back in one transfer. Verify is off: its
+    reference run and its checks of the planes read the device too."""
+    layers = 3
+    m, cfg = tiny(layers=layers)
+    ids = ids_of(10)
+    old = rt.verify_enabled()
+    try:
+        fn = tt.compile(m.forward, mode="full", verify=False)
+        cache = StaticCache(cfg, max_cache_len=L)
+        step(fn, ids[:, :5], cache)                       # the prefill
+        step(fn, ids[:, 5:6], cache)                      # the first decode step plans and writes its op list
+        r = tt.regions()[-1].region
+        outs = sorted({o.value for o in r.outputs})
+        assert len(outs) == 2 * layers + 1                # the K and V rows of every layer, and the logits
+        out_bytes = sum(-(-r.values[v]["n"] * 4 // 64) * 64 for v in outs)     # one row of each, in lines of 64 bytes
+        keys = ("region_calls", "kv_region_calls", "region_cpu_fallback_calls", "rt_graph_launches", "rt_graph_plan_misses",
+                "rt_prog_misses", "kv_resync_rows", "rt_h2d_writes", "rt_d2h_reads", "rt_d2h_bytes")
+        for t in range(6, 10):
+            k0 = c()
+            step(fn, ids[:, t:t + 1], cache)
+            k1 = c()
+            assert {key: k1[key] - k0[key] for key in keys} == dict(
+                region_calls=1, kv_region_calls=1, region_cpu_fallback_calls=0, rt_graph_launches=1, rt_graph_plan_misses=0,
+                rt_prog_misses=0, kv_resync_rows=0, rt_h2d_writes=2, rt_d2h_reads=1, rt_d2h_bytes=out_bytes), t
+    finally:
+        tt.set_verify(old)
+
+
 def test_generate_with_a_static_cache():
     """``generate(cache_implementation="static")`` through a compiled forward: the prefill of a fresh cache is
     ``is_causal`` attention over the first cells of the cache (no mask), the decode step has a mask input. Both are

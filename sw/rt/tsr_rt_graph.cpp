@@ -609,6 +609,7 @@ struct planner {
     tsr_fanew_map fanew;
     uint32_t cur_op = 0;
     std::vector<uint8_t> have_off;             // per value: placed
+    bool outs_first = false;                   // place the out values right after the inputs: they form one block
     std::set<const_handle> read_consts;
     std::set<weight_handle> read_weights;
 
@@ -943,6 +944,11 @@ struct planner {
             const gv k = desc.values[v].kind;
             if (k == gv::in || k == gv::pos) place((int32_t) v);
         }
+        // Out values are never released, so nothing is freed before them: the first-fit allocator puts them side by side and the
+        // host reads them in one transfer.
+        if (outs_first) {
+            for (int32_t v : g.out_value) place(v);
+        }
         std::vector<int32_t> ops;
         for (uint32_t i = 0; i < desc.ops.size(); ++i) {
             cur_op = i;
@@ -1017,6 +1023,22 @@ std::shared_ptr<plan_t> build_plan(device::impl & d, graph_obj & g, uint32_t T, 
     pl->sig = sig;
     pl->info.T = T;
     slot_key(g, T, cx, &pl->kvoff, &pl->nkv);
+    if (g.has_slots) {
+        // The out values placed early can raise the peak of the IO region: a plan that fits without it is still taken. A failed
+        // planner leaves nothing on the device (its allocator, lists and read sets are its own).
+        try {
+            planner p(d, g, T, lay, *pl, cx);
+            p.outs_first = true;
+            p.run();
+            return pl;
+        } catch (const no_fit_error &) {
+            pl = std::make_shared<plan_t>();
+            pl->T = T;
+            pl->sig = sig;
+            pl->info.T = T;
+            slot_key(g, T, cx, &pl->kvoff, &pl->nkv);
+        }
+    }
     planner p(d, g, T, lay, *pl, cx);
     p.run();
     return pl;
@@ -1285,27 +1307,50 @@ prepared prepare(device::impl & d, graph_obj & g, uint32_t T, const run_ctx & cx
 
 using sink_fn = std::function<void(uint32_t, uint64_t, const void *, size_t)>;
 
+// Gathers the writes of a run whose byte ranges touch into one device write. A write of kBig bytes or more is not copied: it goes
+// straight to the device after the span. No gap is ever written.
+struct write_sink {
+    static constexpr size_t kBig = 64u * 1024u;
+    device::impl & d;
+    std::vector<uint8_t> span;
+    uint32_t ch = 0;
+    uint64_t at = 0;                           // device offset of span[0]
+    explicit write_sink(device::impl & dd) : d(dd) {}
+    void flush() {
+        if (!span.empty()) d.write(ch, at, span.data(), span.size());
+        span.clear();
+    }
+    void put(uint32_t c, uint64_t off, const void * src, size_t n) {
+        if (n == 0) return;
+        if (n >= kBig) {
+            flush();
+            d.write(c, off, src, n);
+            return;
+        }
+        if (!span.empty() && (c != ch || off != at + span.size())) flush();
+        if (span.empty()) {
+            ch = c;
+            at = off;
+        }
+        const uint8_t * b = (const uint8_t *) src;
+        span.insert(span.end(), b, b + n);
+    }
+};
+
 // The inputs, the positions, the KV cell indices and the mask summaries of a run of T rows (the chunk of rows cx.r0 .. of the call,
 // the cells cx.pos0 ..).
 void write_inputs(const graph_obj & g, const plan_t & pl, const prepared & p, uint32_t T, const run_ctx & cx, const graph_inputs & in,
                   const sink_fn & put) {
     const graph_desc & desc = g.desc;
     std::vector<uint8_t> buf;
+    // in address order: the positions, the cell indices and the masks (the static layout), then the in rows (the dynamic area)
     for (size_t ai = 0; ai < g.arg_value.size(); ++ai) {
         const size_t v = (size_t) g.arg_value[ai];
-        const graph_value & x = desc.values[v];
+        if (desc.values[v].kind != gv::pos) continue;
         const graph_arg & a = in.args[ai];
-        if (x.kind == gv::in) {
-            const size_t st = a.stride != 0 ? a.stride : x.n;
-            const uint64_t row = (uint64_t) L(x.n) * LINE;
-            buf.assign((size_t) T * row, 0);
-            for (uint32_t t = 0; t < T; ++t) memcpy(buf.data() + t * row, (const float *) a.data + (size_t) (cx.r0 + t) * st, (size_t) x.n * 4);
-            put(0, pl.off[v], buf.data(), buf.size());
-        } else if (x.kind == gv::pos) {
-            buf.assign((size_t) pad64((uint64_t) T * 4), 0);
-            memcpy(buf.data(), (const int32_t *) a.data + cx.r0, (size_t) T * 4);
-            put(0, p.lay.pos_off[v], buf.data(), buf.size());
-        }
+        buf.assign((size_t) pad64((uint64_t) T * 4), 0);
+        memcpy(buf.data(), (const int32_t *) a.data + cx.r0, (size_t) T * 4);
+        put(0, p.lay.pos_off[v], buf.data(), buf.size());
     }
     auto indices = [&](uint64_t off, uint64_t first) {
         buf.assign((size_t) pad64((uint64_t) T * opl::PRE_KVIDX_BYTES), 0);
@@ -1323,6 +1368,17 @@ void write_inputs(const graph_obj & g, const plan_t & pl, const prepared & p, ui
         memcpy(buf.data(), m.msum.data(), m.msum.size() * 4);
         put(0, p.lay.slots[s].msum_off, buf.data(), buf.size());
         if (m.need_f32) put(0, p.lay.slots[s].f32_off, m.f32.data(), m.f32.size() * 4);
+    }
+    for (size_t ai = 0; ai < g.arg_value.size(); ++ai) {
+        const size_t v = (size_t) g.arg_value[ai];
+        const graph_value & x = desc.values[v];
+        if (x.kind != gv::in) continue;
+        const graph_arg & a = in.args[ai];
+        const size_t st = a.stride != 0 ? a.stride : x.n;
+        const uint64_t row = (uint64_t) L(x.n) * LINE;
+        buf.assign((size_t) T * row, 0);
+        for (uint32_t t = 0; t < T; ++t) memcpy(buf.data() + t * row, (const float *) a.data + (size_t) (cx.r0 + t) * st, (size_t) x.n * 4);
+        put(0, pl.off[v], buf.data(), buf.size());
     }
 }
 
@@ -1498,18 +1554,26 @@ void run_impl(device::impl & d, graph_handle h, uint32_t T, const graph_inputs &
         const prepared cur = r0 == 0 ? std::move(first) : prepare(d, g, tc, cx);
         const plan_t & pl = *cur.plan;
         if (!ref) {
-            write_inputs(g, pl, cur, tc, cx, in, [&d](uint32_t ch, uint64_t off, const void * src, size_t n) { d.write(ch, off, src, n); });
+            write_sink ws(d);
+            write_inputs(g, pl, cur, tc, cx, in, [&ws](uint32_t ch, uint64_t off, const void * src, size_t n) { ws.put(ch, off, src, n); });
+            ws.flush();
             for (const list_t & l : pl.lists) {
                 d.run_blob(l.blob, l.n_ops, l.n_joins, namer(g.desc, l));
                 d.cnt.graph_launches++;
                 d.cnt.graph_records += l.n_ops;
             }
+            // the out values whose bytes touch are read in one transfer; a gap is never read
             std::vector<uint8_t> buf;
-            for (size_t i = 0; i < g.out_value.size(); ++i) {
-                const uint32_t v = g.out_value[i];
-                buf.resize((size_t) tc * L(g.desc.values[v].n) * LINE);
-                d.read(0, pl.off[v], buf.data(), buf.size());
-                copy_out(g, tc, r0, i, buf.data(), out);
+            auto bytes_of = [&](size_t i) { return (uint64_t) tc * L(g.desc.values[g.out_value[i]].n) * LINE; };
+            for (size_t i = 0; i < g.out_value.size();) {
+                const uint64_t base = pl.off[g.out_value[i]];
+                uint64_t span = bytes_of(i);
+                size_t j = i + 1;
+                while (j < g.out_value.size() && pl.off[g.out_value[j]] == base + span) span += bytes_of(j++);
+                buf.resize((size_t) span);
+                d.read(0, base, buf.data(), buf.size());
+                for (size_t k = i; k < j; ++k) copy_out(g, tc, r0, k, buf.data() + (pl.off[g.out_value[k]] - base), out);
+                i = j;
             }
         } else {
             write_inputs(g, pl, cur, tc, cx, in, [&](uint32_t ch, uint64_t off, const void * src, size_t n) {
