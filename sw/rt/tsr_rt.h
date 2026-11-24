@@ -126,12 +126,16 @@ struct counters {
     uint64_t d2h_bytes = 0;        // device -> host bytes (y, read-backs)
     // graphs
     uint64_t graphs = 0;           // graph_create calls
-    uint64_t graph_runs = 0;       // graph_run calls
-    uint64_t graph_launches = 0;   // op lists launched by graph_run
+    uint64_t graph_runs = 0;       // graph_run calls (a run in several chunks counts once)
+    uint64_t graph_launches = 0;   // op lists launched by graph_run (a chunked run adds the lists of every chunk)
     uint64_t graph_records = 0;    // records of those lists (JOINs included)
-    uint64_t graph_plan_hits = 0;  // graph_run / graph_run_ref found the plan of its T (and mask shape) in the graph's cache
+    uint64_t graph_plan_hits = 0;  // graph_run / graph_run_ref found the plan of its T (mask shape, KV plane offsets) in the graph's cache; one lookup per chunk
     uint64_t graph_plan_misses = 0;// ... had to plan it
     uint64_t consts = 0;           // const_upload calls
+    // KV objects (kv_create ...)
+    uint64_t kv_creates = 0;       // kv_create calls
+    uint64_t kv_stores = 0;        // kv_store calls with n >= 1
+    uint64_t kv_store_rows = 0;    // rows given to kv_store
 };
 
 struct memory_info {
@@ -146,6 +150,7 @@ struct memory_info {
 using weight_handle = uint64_t;    // 0 is never a valid handle
 using const_handle  = uint64_t;    // f32 rows in the AUX region (const_upload); 0 is never a valid handle
 using graph_handle  = uint64_t;    // 0 is never a valid handle
+using kv_handle     = uint64_t;    // a K and a V plane that outlive graphs and calls (kv_create); 0 is never a valid handle
 
 // ---- the graph program (the contract with the PyTorch backend: docs/torch-backend.md) ----
 // Values are f32 [T, n] (T rows, one per token); T is the one polymorphic number of a graph. An op reads values and writes
@@ -156,7 +161,7 @@ enum class gv : uint32_t {
     tmp,      // on the device; out: also returned by graph_run
     konst,    // `rows` rows of n f32 uploaded with const_upload (norm weight, bias row: rows 1; RoPE table: n_dims / 2 values)
     pos,      // I32 positions [T], given at every run (rope)
-    mask,     // attention mask [T, T], given at every run: f32, 0 = visible, -inf = masked (attn)
+    mask,     // attention mask [T, T] (cols = 0) or [T, cols], given at every run: f32, 0 = visible, -inf = masked (attn)
 };
 enum class gop : uint32_t { mul_mat, add, mul, scale, rms_norm, glu, unary, rope, attn, cpy };
 const char * gop_name(gop op);
@@ -168,6 +173,8 @@ struct graph_value {
     uint32_t     rows = 1;         // konst
     bool         out = false;      // tmp
     const_handle handle = 0;       // konst (0 only for graph_unsupported, which does not touch the device's constants)
+    uint32_t     cols = 0;         // mask: 0 = [T, T] (the attn op's own planes); else [T, cols], cols = the cells of the KV slot of the
+                                   //       attn ops that read it (cached attention)
 };
 
 // The fields an op uses (the others stay at their defaults):
@@ -179,7 +186,14 @@ struct graph_value {
 //   unary    x, dst, func (0 TANH, 2 SILU, 3 EXP, 4 GELU: exact tanh form, 5 SIGMOID)
 //   rope     x, dst, n_heads, head_dim, n_dims, table (a one-row konst of n_dims / 2 angles A_i), pos, factor
 //            NEOX pairing (i, i + n_dims / 2); the angle of position p and pair i is FM(f32(p), A_i)
-//   attn     q, k, v, dst, n_head, n_head_kv, d, scale, mask (a mask value, or -1: causal); n_kv = T
+//   attn     q, k, v, dst, n_head, n_head_kv, d, scale, mask (a mask value, or -1: causal); kv
+//            kv = -1: the op's own planes (allocated by graph_create): the K and V rows of row t go to cell t and the op attends over
+//                     the T cells of the run (n_kv = T); the mask value, if any, has cols = 0
+//            kv = s >= 0 (cached attention): the op reads and writes the KV slot s: graph_desc::kv_slots[s] cells, bound to a kv_handle
+//                     at every run (graph_state). The rows of row t go to cell pos0 + t and the op attends over the cells of the
+//                     planes (see graph_run). The op owns no planes. One op per slot. E = n_head_kv * d must equal the bound
+//                     object's E and kv_slots[s] its cells. The mask value, if any, has cols = kv_slots[s]. A graph whose attn ops
+//                     all have a slot is run in chunks of rows when it must be (graph_run).
 //   cpy      x, dst
 struct graph_op {
     gop          op = gop::cpy;
@@ -189,22 +203,27 @@ struct graph_op {
     int32_t      q = -1, k = -1, v = -1, mask = -1;
     float        s = 1.0f, sb = 0.0f, eps = 0.0f, factor = 1.0f, scale = 1.0f;
     uint32_t     variant = 0, func = 0, n_heads = 0, head_dim = 0, n_dims = 0, n_head = 0, n_head_kv = 0, d = 0;
+    int32_t      kv = -1;          // attn: the KV slot, -1 none
 };
 
 struct graph_desc {
     std::vector<graph_value> values;
     std::vector<graph_op>    ops;
-    uint32_t                 kv_size = 0;   // cells of every KV plane (attn ops): the largest T of a run
+    uint32_t                 kv_size = 0;   // cells of every KV plane of the attn ops without a slot: the largest T of a run (0 is
+                                            // allowed when every attn op has a slot)
+    std::vector<uint32_t>    kv_slots;      // cells of each KV slot (cached attention); a slot is used by exactly one attn op
 };
 
-// Limits of graph_run (a T beyond them is refused with an error whose text contains "does not fit").
+// Limits of graph_run (a T beyond them is refused with an error whose text contains "does not fit"; a graph whose attn ops all have
+// a KV slot is run in chunks instead of being refused for T above graph_max_attn_tokens).
 constexpr uint32_t graph_max_attn_tokens = 680;   // tokens of one attn op: its mask summary and cell indices in the 256-line preload area
 constexpr uint32_t graph_plan_cache = 16;         // plans (one per T and mask shape) kept per graph, least recently used out
 
 // One argument of graph_run, in the order of the graph's in, pos and mask values (graph_shape::arg_kind):
 //   in    data: float*, T rows of n values, row r at data + r * stride (stride 0: n)
 //   pos   data: int32_t*, T values (stride unused)
-//   mask  data: float*, T rows of T values, row r at data + r * stride (stride 0: T); every value 0 or -inf
+//   mask  data: float*, T rows of T values (cols values for a mask with cols != 0), row r at data + r * stride (stride 0: T or cols);
+//         every value 0 or -inf
 struct graph_arg {
     const void * data = nullptr;
     size_t       stride = 0;
@@ -224,10 +243,25 @@ struct graph_outputs {
 // What a graph takes and gives (to size the arguments).
 struct graph_shape {
     std::vector<gv>       arg_kind;   // of each argument: gv::in, gv::pos or gv::mask
-    std::vector<uint32_t> arg_n;      // in: n; pos and mask: 0
+    std::vector<uint32_t> arg_n;      // in: n; mask: its cols (0: [T, T]); pos: 0
     std::vector<uint32_t> out_n;      // n of each out value
     uint32_t              kv_size = 0;
-    uint64_t              kv_bytes = 0;   // KV planes of the graph, per channel
+    uint64_t              kv_bytes = 0;   // KV planes of the graph's own (attn ops without a slot), per channel
+    std::vector<uint32_t> kv_slots;       // cells of each KV slot (empty: the graph has none)
+};
+
+// The KV object bound to each slot of a run and the first cell of its rows.
+struct graph_state {
+    std::vector<kv_handle> kv;            // one handle per slot of the graph (empty for a graph without slots)
+    uint32_t               pos0 = 0;      // row t of the run is cell pos0 + t, for every slot
+};
+
+// A KV object (kv_info_of): E values per cell, `cells` cells in each of the K and V plane, `bytes` per channel for both planes,
+// k_off / v_off the byte offsets of the planes (the same in every channel).
+struct kv_info {
+    uint32_t E = 0, cells = 0;
+    uint64_t bytes = 0;
+    uint64_t k_off = 0, v_off = 0;
 };
 
 // The plan of one T (graph_info).
@@ -305,16 +339,53 @@ public:
     void         graph_free(graph_handle h);   // releases the planes; unknown handle -> invalid_argument
     graph_shape  graph_shape_of(graph_handle h) const;
 
-    // Runs T rows (1 <= T <= kv_size) through the graph: write the inputs, launch the plan's lists, read the outs. A T that
-    // cannot be placed (the IO region, T above kv_size or above graph_max_attn_tokens with an attn op) throws tsr::rt::error
-    // whose text contains "does not fit"; a mask value other than 0 and -inf the same. Any other failure names the op (tag and
-    // kind) or the device's answer.
-    void graph_run(graph_handle h, uint32_t T, const graph_inputs & in, const graph_outputs & out);
-    // The same lists executed on the host (tsr::ref::opl_exec) on an image of the device's memory (constants, weights) and the
-    // inputs: bit-identical to graph_run on a correct device. It does not use the kernel or the simulator.
-    void         graph_run_ref(graph_handle h, uint32_t T, const graph_inputs & in, const graph_outputs & out);
-    // The plan of T (made, and cached, if the graph has none).
+    // Runs T rows through the graph: write the inputs, launch the plan's lists, read the outs. A T that cannot be placed (the IO
+    // region; T above kv_size or above graph_max_attn_tokens with an attn op without a slot) throws tsr::rt::error whose text
+    // contains "does not fit"; a mask value other than 0 and -inf the same. Any other failure names the op (tag and kind) or the
+    // device's answer.
+    //
+    // Cached attention (the graph has KV slots; `state` binds a kv_handle to each slot): row t of the run is cell state.pos0 + t.
+    // Each cached attn op stores the K and V rows of the run into the cells [pos0, pos0 + T) of its planes and attends over the
+    // planes: with the causal mask (mask -1) row t sees the cells 0 .. pos0 + t, with a given mask the cells it shows. pos0 + T
+    // above the slot's cells is an error whose text contains "does not fit"; so is a given mask that shows, for a row, a cell at
+    // or above pos0 + T (a cell the call does not write; the text names the row and the cell), and in a chunked run a cell at or
+    // above the end of the row's chunk. The handles must exist, match the slot's E and cells (std::invalid_argument otherwise) and
+    // be distinct.
+    // A graph whose attn ops all have a slot (and that has at least one) runs in consecutive chunks of rows when T is above
+    // graph_max_attn_tokens or the plan of T does not fit the IO region: chunk c runs the rows [r0, r1) as cells pos0 + r0 ..,
+    // with the input rows, positions and mask rows of that range, its outs at the same rows of the results. The chunk is the
+    // largest that plans (min(T, graph_max_attn_tokens), halved on "does not fit"; a chunk of one row that does not fit is the
+    // error). Every other graph runs in one piece, with the same errors as ever. A graph without slots ignores state.pos0 and
+    // takes no handles.
+    void graph_run(graph_handle h, uint32_t T, const graph_inputs & in, const graph_outputs & out, const graph_state & state = {});
+    // The same lists executed on the host (tsr::ref::opl_exec) on an image of the device's memory (constants, weights, and for a
+    // cached attention the cells [0, pos0 + T) of the planes, whole groups of 16 cells) and the inputs: bit-identical to graph_run
+    // on a correct device. It does not use the kernel or the simulator. It may be called after graph_run of the same step (the
+    // cells >= pos0 are written again by its own SET_ROWS_KV records, in the image; the device's planes are not changed).
+    void         graph_run_ref(graph_handle h, uint32_t T, const graph_inputs & in, const graph_outputs & out, const graph_state & state = {});
+    // The plan of T (made, and cached, if the graph has none; a plan the runs already made is not made again). For a graph
+    // with attn ops that all have a slot (it runs in chunks): the plan the first chunk of a run of T rows starts with, found as
+    // graph_run finds it; info.T is the rows of that chunk (info.T < T: the run is chunked). pos0 plays no part, the plane
+    // offsets are those of the last graph_run / graph_run_ref (fake ones before any). T above a slot's cells is refused ("does
+    // not fit"). Any other graph: the plan of T with the KV objects and pos0 of the last run; T above graph_max_attn_tokens with
+    // an attn op that has no slot is refused ("does not fit").
     graph_plan_info graph_info(graph_handle h, uint32_t T);
+
+    // ---- KV objects (the planes of a cached attention that outlive graphs and calls) ----
+    // K and V plane of `cells` cells of E values each (E a multiple of 64, up to 511 * 64; geometry tsr_k_kv_geom(E, cells,
+    // num_ch) as the planes of a graph), taken from the top of the WEIGHT heap and zero-filled in every channel (device memory
+    // this open did not write is never read). tsr::rt::error whose text contains "does not fit" when the heap is full or the
+    // geometry cannot be placed; std::invalid_argument for E or cells that no plane can have.
+    kv_handle    kv_create(uint32_t E, uint32_t cells);
+    void         kv_free(kv_handle h);                 // unknown handle -> invalid_argument
+    kv_info      kv_info_of(kv_handle h) const;        // unknown handle -> invalid_argument
+    // n rows of E f32 (row t of k / v at + t * stride floats, 0 = E) into the cells [cell0, cell0 + n) of the K and the V plane,
+    // quantized by the device exactly as the SET_ROWS_KV records of an attn op store them (op lists of two SET_ROWS_KV records per
+    // chunk of at most graph_max_attn_tokens rows). cell0 + n <= cells (std::invalid_argument otherwise, also for n = 0). n = 0: no rows are stored.
+    void         kv_store(kv_handle h, uint32_t cell0, uint32_t n, const float * k, const float * v, size_t k_stride = 0, size_t v_stride = 0);
+    // The stored rows as ggml block_q8_0 rows (E / 32 blocks of 34 bytes per cell, n rows packed), read from the device through
+    // tsr_kv_unpack_row of libtsr_ref. cell0 + n <= cells (std::invalid_argument otherwise, also for n = 0).
+    void         kv_read(kv_handle h, uint32_t cell0, uint32_t n, void * k_blocks, void * v_blocks) const;
 
     counters    get_counters() const;
     void        reset_counters();

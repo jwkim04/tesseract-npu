@@ -77,6 +77,13 @@ struct konst {
 
 struct graph_obj;              // tsr_rt_graph.cpp
 
+// A KV object (kv_create): K and V plane of one geometry from the top of the WEIGHT heap.
+struct kvobj {
+    uint32_t E = 0, cells = 0;
+    tsr_k_kv geom;
+    uint64_t k_off = 0, v_off = 0;   // byte offsets of the planes (the same in every channel)
+};
+
 struct device::impl {
     mutable std::mutex mtx;
     tsr_transport * tp = nullptr;
@@ -100,6 +107,8 @@ struct device::impl {
     const_handle next_const = 1;
     std::unordered_map<graph_handle, std::shared_ptr<graph_obj>> graphs;
     graph_handle next_graph = 1;
+    std::unordered_map<kv_handle, kvobj> kvs;
+    kv_handle next_kv = 1;
 
     std::vector<uint64_t> perf_last;  // PERF_CYCLES, PERF_MVM_CYCLES, PERF_CH_RD_BEATS[c]
     counters cnt;
