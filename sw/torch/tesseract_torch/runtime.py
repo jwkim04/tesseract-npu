@@ -236,6 +236,7 @@ class WeightCache:
 
     @staticmethod
     def key(w: torch.Tensor) -> tuple:
+        # ``_device_run`` builds this key inline for its cache hits: the two expressions must stay equal
         st = w.untyped_storage()
         return (st._cdata, st.data_ptr(), w.storage_offset(), tuple(w.shape), tuple(w.stride()), w.dtype)
 
@@ -257,6 +258,7 @@ class WeightCache:
         device as they are (``Device.upload_blocks``). The key adds the format and K, since the same bytes
         read as another format are another weight."""
         N = int(blocks.shape[0])
+        # the key suffix (fmt, K) is repeated in the inlined cache hit of ``_device_run``
         return self._acquire(blocks, self.key(blocks) + (fmt, K), N, K,
                              lambda dev: dev.upload_blocks(fmt, blocks.detach(), N, K), name, fmt)
 
@@ -405,6 +407,7 @@ class ConstCache(WeightCache):
             return dev.const_upload(x.contiguous())
 
         t2 = t.detach().reshape(1, -1)      # _acquire reads the version and samples a 2D view of the same storage
+        # the key suffix (transform,) is repeated in the inlined cache hit of ``_device_run``
         return self._acquire(t2, self.key(t) + (transform,), 1, n, upload, name, transform)
 
 
@@ -1006,18 +1009,57 @@ def _device_run(rg: RegionRT, ins, cs, ws, ss, kvargs=()) -> list:
     if not T:
         raise TesseractError(f"tesseract: {rg.name}: T = {T} does not fit (the device needs T >= 1)")
     dev = device()
+    # A cache hit is decided here without a Python call per entry: the key of ``WeightCache.key`` (plus the
+    # format and K of a blocks weight, plus the transform of a constant), the version, the device serial, no
+    # sample and a live storage, as ``WeightCache._current`` asks. Every other case (a miss, an inference tensor,
+    # a tensor of another kind, an error) takes the calls of the cache, in list order. The key expression must
+    # stay equal to ``WeightCache.key``. The storage check is needed: the entry of a constant whose 2D view is a
+    # copy (a strided constant) refers to the storage of that copy, which is gone, and the key of another tensor
+    # can then equal the entry's.
+    serial, expired = dev.serial, torch.UntypedStorage._expired
+    wmap, cmap = _cache._map, _consts._map
+    f32, u8 = torch.float32, torch.uint8
+    hits = 0
     wh = []
-    for spec, w in zip(r.weights, ws):
-        if spec.kind == "blocks":
-            _check_f32(w, f"weight {spec.node.name}", rg, torch.uint8)
-            wh.append(_cache.acquire_blocks(w, spec.fmt, spec.K, name=spec.node.name)[1])
-        else:
-            _check_f32(w, f"weight {spec.node.name}", rg)
-            wh.append(_cache.acquire(w, spec.node.name)[1])
     ch = []
-    for spec, c in zip(r.consts, cs):
-        _check_f32(c, f"constant {spec.node.name}", rg)
-        ch.append(_consts.acquire_const(c, spec.transform, spec.n, spec.node.name)[1])
+    try:
+        for spec, w in zip(r.weights, ws):
+            blocks = spec.kind == "blocks"
+            try:
+                st = w.untyped_storage()
+                k = (st._cdata, st.data_ptr(), w.storage_offset(), tuple(w.shape), tuple(w.stride()), w.dtype)
+                e = wmap.get(k + (spec.fmt, spec.K) if blocks else k)
+                hit = (e is not None and e.version == w._version and e.serial == serial and e.sample is None
+                       and w.dtype == (u8 if blocks else f32) and not expired(e.ref.cdata))
+            except (AttributeError, RuntimeError, TypeError):
+                hit = False
+            if hit:
+                wh.append(e.handle)
+                hits += 1
+            elif blocks:
+                _check_f32(w, f"weight {spec.node.name}", rg, torch.uint8)
+                wh.append(_cache.acquire_blocks(w, spec.fmt, spec.K, name=spec.node.name)[1])
+            else:
+                _check_f32(w, f"weight {spec.node.name}", rg)
+                wh.append(_cache.acquire(w, spec.node.name)[1])
+        for spec, c in zip(r.consts, cs):
+            try:
+                st = c.untyped_storage()
+                e = cmap.get((st._cdata, st.data_ptr(), c.storage_offset(), tuple(c.shape), tuple(c.stride()), c.dtype,
+                              spec.transform))
+                hit = (e is not None and e.version == c._version and e.serial == serial and e.sample is None
+                       and e.K == spec.n and c.dtype == f32 and not expired(e.ref.cdata))
+            except (AttributeError, RuntimeError, TypeError):
+                hit = False
+            if hit:
+                ch.append(e.handle)
+                hits += 1
+            else:
+                _check_f32(c, f"constant {spec.node.name}", rg)
+                ch.append(_consts.acquire_const(c, spec.transform, spec.n, spec.node.name)[1])
+    finally:
+        if hits:      # hits before an error are counted as well
+            _bump("cache_hits", hits)
     sv = [float(v) for v in ss]
     key = (dev.serial, tuple(wh), tuple(ch), tuple(sv))
     p0, cells = None, None

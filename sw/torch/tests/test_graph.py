@@ -2083,3 +2083,228 @@ def test_regions_that_read_each_other_through_cpu_ops_are_cut_apart():
                 ref = m(x)
                 assert all(nmse(a, b) < NMSE_FREE for a, b in zip(y, ref))
         assert len(regs()) >= 2 and all(sum(r.region.op_counts().values()) >= 2 for r in regs())
+
+
+# ------------------------------------------------------------------------------------------
+# handle lookups of a region call (the inlined cache hit of runtime._device_run)
+# ------------------------------------------------------------------------------------------
+def _lookup_model(seed=21):
+    """Two square weights [64, 64] and one constant (the norm weight): the region has 2 weights and 1 constant."""
+    torch.manual_seed(seed)
+    return TL.Lin(Norm(TL.rms_ok)).eval()
+
+
+def _warm(m, x=None):
+    """(compiled, x, y) after the first call; the counters are zero again afterwards."""
+    c = full(m)
+    x = torch.randn(1, 5, D64, generator=torch.Generator().manual_seed(5)) if x is None else x
+    with torch.no_grad():
+        y = c(x)
+    assert len(regs()[0].region.weights) == 2 and len(regs()[0].region.consts) == 1
+    tt.reset_counters()
+    return c, x, y
+
+
+def _delta(c, x):
+    """(y, counters of one call of c)."""
+    tt.reset_counters()
+    with torch.no_grad():
+        y = c(x)
+    return y, cnt()
+
+
+def _cache_calls(monkeypatch) -> list:
+    """The names of the cache methods called from now on (the list grows as they are called)."""
+    calls = []
+    for cls, name in ((tt.weight_cache().__class__, "_acquire"), (tt.weight_cache().__class__, "acquire"),
+                      (tt.weight_cache().__class__, "acquire_blocks"), (RT.const_cache().__class__, "acquire_const")):
+        orig = getattr(cls, name)
+        monkeypatch.setattr(cls, name, lambda self, *a, _o=orig, _n=name, **kw: (calls.append(_n), _o(self, *a, **kw))[1])
+    return calls
+
+
+def test_a_warm_region_call_is_all_hits_and_looks_up_without_the_cache_calls(monkeypatch):
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    calls = _cache_calls(monkeypatch)
+    y, k = _delta(c, x)
+    assert calls == []                                  # the hits are decided in the region call
+    assert k["cache_hits"] == 3 and k["uploads"] == 0 and k["consts_uploaded"] == 0 and k["reuploads"] == 0
+    assert torch.equal(y.view(torch.int32), y0.view(torch.int32))
+    assert k["region_calls"] == 1
+
+
+@pytest.mark.parametrize("fmt,K,N", [("q8_0", 64, 64), ("q4_k", 256, 256)])
+def test_a_warm_call_of_a_region_with_blocks_weights_is_all_hits(fmt, K, N, monkeypatch):
+    m = _blocks_model(fmt, K, N)
+    x = torch.randn(1, 3, K, generator=torch.Generator().manual_seed(3)) * 0.5
+    c = full(m)
+    with torch.no_grad():
+        y0 = c(x)
+    assert [w.kind for w in regs()[-1].region.weights] == ["blocks", "blocks"]
+    calls = _cache_calls(monkeypatch)
+    y, k = _delta(c, x)
+    assert calls == []
+    assert (k["cache_hits"], k["uploads"], k["region_calls"]) == (2, 0, 1)
+    assert torch.equal(y.view(torch.int32), y0.view(torch.int32))
+
+
+class _OneStorage(nn.Module):
+    """Two weights [64, 64] that are views of one storage and two norm weights that are views of another: the same
+    shape, strides and dtype, so only the storage offset tells the two of a pair apart."""
+
+    def __init__(self):
+        super().__init__()
+        g = torch.Generator().manual_seed(31)
+        flat = torch.randn(2 * D64 * D64, generator=g) * 0.1
+        norm = torch.rand(2 * D64, generator=g) + 0.5
+        self.wa = nn.Parameter(flat[:D64 * D64].view(D64, D64))
+        self.wb = nn.Parameter(flat[D64 * D64:].view(D64, D64))
+        self.na = nn.Parameter(norm[:D64])
+        self.nb = nn.Parameter(norm[D64:])
+
+    def forward(self, x):
+        h = TL.rms_ok(F.linear(x, self.wa), self.na)
+        return TL.rms_ok(F.linear(h, self.wb), self.nb)
+
+
+def test_weights_and_constants_of_one_storage_are_told_apart_by_their_offset(monkeypatch):
+    m = _OneStorage().eval()
+    assert m.wa.untyped_storage()._cdata == m.wb.untyped_storage()._cdata and m.wb.storage_offset() == D64 * D64
+    assert m.na.untyped_storage()._cdata == m.nb.untyped_storage()._cdata and m.nb.storage_offset() == D64
+    x = torch.randn(1, 5, D64, generator=torch.Generator().manual_seed(5))
+    c = full(m)
+    with torch.no_grad():
+        y0 = c(x)
+        ref = m(x)
+    r = regs()[0].region
+    assert (len(regs()), len(r.weights), len(r.consts)) == (1, 2, 2)
+    assert (cnt()["uploads"], cnt()["consts_uploaded"], cnt()["cache_hits"]) == (2, 2, 0)
+    assert nmse(y0, ref) < NMSE_FREE
+    calls = _cache_calls(monkeypatch)
+    y1, k = _delta(c, x)
+    assert calls == [] and (k["cache_hits"], k["uploads"], k["consts_uploaded"]) == (4, 0, 0)
+    assert torch.equal(y1.view(torch.int32), y0.view(torch.int32))
+
+
+def test_a_weight_changed_in_place_is_looked_up_again():
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    with torch.no_grad():
+        m.b.weight.mul_(2.0)
+    y1, k = _delta(c, x)
+    assert (k["reuploads"], k["uploads"], k["cache_hits"]) == (1, 1, 2)
+    assert nmse(y1, m(x)) < NMSE_FREE and nmse(y0, y1) > 1e-4
+
+
+def test_a_constant_changed_in_place_is_looked_up_again():
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    with torch.no_grad():
+        m.body.weight.mul_(0.4)
+    y1, k = _delta(c, x)
+    assert (k["const_reuploads"], k["consts_uploaded"], k["uploads"], k["cache_hits"]) == (1, 1, 0, 2)
+    assert nmse(y1, m(x)) < NMSE_FREE and nmse(y0, y1) > 1e-4
+
+
+def test_a_weight_with_new_data_under_the_same_parameter_is_uploaded():
+    """p.data = other: a new storage, the version counter of p stays."""
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    v = m.a.weight._version
+    m.a.weight.data = torch.randn(D64, D64, generator=torch.Generator().manual_seed(9)) * 0.1
+    assert m.a.weight._version == v
+    y1, k = _delta(c, x)
+    assert (k["uploads"], k["cache_hits"]) == (1, 2)
+    assert nmse(y1, m(x)) < NMSE_FREE and nmse(y0, y1) > 1e-4
+
+
+def test_a_transposed_square_weight_is_uploaded():
+    """p.data = p.data.t(): the same storage, data pointer and version, other strides."""
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    v, ptr = m.a.weight._version, m.a.weight.data_ptr()
+    m.a.weight.data = m.a.weight.data.t()
+    assert m.a.weight._version == v and m.a.weight.data_ptr() == ptr
+    y1, k = _delta(c, x)
+    assert (k["uploads"], k["cache_hits"]) == (1, 2)
+    assert nmse(y1, m(x)) < NMSE_FREE and nmse(y0, y1) > 1e-4
+
+
+def test_inference_tensor_weights_and_constants_are_checked_through_their_sample():
+    tt.runtime._warned.discard("inference-tensor")
+    with torch.inference_mode():
+        m = _lookup_model()
+    assert m.a.weight.is_inference() and m.body.weight.is_inference()
+    c = full(m)
+    x = torch.randn(1, 5, D64, generator=torch.Generator().manual_seed(5))
+    with torch.inference_mode(), pytest.warns(RuntimeWarning, match="inference tensor"):
+        y0 = c(x)
+    tt.reset_counters()
+    with torch.inference_mode():
+        y1 = c(x)                                       # unchanged: hits through the sample
+        k1 = cnt()
+        m.b.weight.mul_(2.0)
+        m.body.weight.mul_(1.5)
+        y2 = c(x)
+        ref = m(x)
+    k2 = cnt()
+    assert torch.equal(y0.view(torch.int32), y1.view(torch.int32))
+    assert (k1["cache_hits"], k1["uploads"], k1["consts_uploaded"]) == (3, 0, 0)
+    assert (k2["reuploads"], k2["const_reuploads"]) == (1, 1)
+    assert nmse(y2, ref) < NMSE_FREE and nmse(y0, y2) > 1e-4
+
+
+@pytest.mark.parametrize("how", ["close_device", "binding_close"])
+def test_a_closed_device_gives_uploads_on_the_new_device(how):
+    m = _lookup_model()
+    c, x, y0 = _warm(m)
+    if how == "close_device":
+        tt.close_device()
+    else:
+        tt._C.close()
+    y1, k = _delta(c, x)
+    assert (k["uploads"], k["consts_uploaded"], k["cache_hits"]) == (2, 1, 0)
+    assert torch.equal(y0.view(torch.int32), y1.view(torch.int32))
+    y2, k = _delta(c, x)
+    assert (k["uploads"], k["cache_hits"]) == (0, 3)
+
+
+def test_an_entry_with_a_sample_takes_the_calls_of_the_cache(monkeypatch):
+    """The sample is the check of an inference tensor: an entry that has one is never a hit of the inlined check."""
+    m = _lookup_model()
+    c, x, _ = _warm(m)
+    e = tt.weight_cache()._map[tt.weight_cache().key(m.a.weight)]
+    e.sample = RT._sample(m.a.weight)
+    n = []
+    orig = tt.weight_cache().__class__._acquire
+    monkeypatch.setattr(tt.weight_cache().__class__, "_acquire", lambda self, *a, **kw: (n.append(1), orig(self, *a, **kw))[1])
+    _, k = _delta(c, x)
+    assert len(n) == 1 and (k["cache_hits"], k["uploads"]) == (3, 0)
+
+
+def test_the_hits_before_a_refused_weight_are_counted():
+    """Weight 0 is a hit, weight 1 is refused: the hit is counted although the call raises."""
+    m = _lookup_model()
+    c, x, _ = _warm(m)
+    rg = regs()[0]
+    assert len(rg.region.inputs) == 1
+    bad = m.b.weight.detach().to(torch.float64)
+    with RT._lock, pytest.raises(tt.TesseractError, match=r"weight .*must be a float32 CPU tensor, got torch.float64 on cpu"):
+        RT._device_run(rg, [x[0].contiguous()], [m.body.weight.detach()], [m.a.weight.detach(), bad], [])
+    assert (cnt()["cache_hits"], cnt()["uploads"], cnt()["region_calls"]) == (1, 0, 0)
+
+
+def test_a_float16_weight_with_an_entry_of_the_eager_path_is_refused_in_a_region():
+    """The cache holds float16 weights for tt.linear; a region wants float32 ones and refuses them as before."""
+    m = _lookup_model()
+    c, x, _ = _warm(m)
+    rg = regs()[0]
+    w16 = m.a.weight.detach().to(torch.float16)
+    with torch.no_grad():
+        tt.linear(x[0], w16)                            # an entry of the float16 weight
+    assert tt.weight_cache().key(w16) in tt.weight_cache()._map
+    ins = [x[0].contiguous()] if len(rg.region.inputs) == 1 else None
+    assert ins is not None
+    with RT._lock, pytest.raises(tt.TesseractError, match=r"weight .*must be a float32 CPU tensor, got torch.float16 on cpu"):
+        RT._device_run(rg, ins, [m.body.weight.detach()], [w16, m.b.weight.detach()], [])
