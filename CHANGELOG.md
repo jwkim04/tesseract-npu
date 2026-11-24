@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Added
+
+- Cached attention in full mode of the PyTorch backend. With a Hugging Face static KV cache
+  (`model.forward = tt.compile(model.forward)`, `model.generate(..., cache_implementation="static")`) the attention
+  of a generation step runs on the device over K and V rows that the device keeps in q8_0 KV planes across calls. For a
+  Qwen2.5 decoder the prefill is one region call, and every decode step is one region call and one launch. The host
+  cache tensors stay the complete float32 cache, the device holds a shadow of them, and every call that the device does
+  not take runs on the CPU and is exact. The option `kv_cache` (`tt.compile(..., kv_cache=False)`,
+  `TSR_TORCH_KV_CACHE=0|1`, default on) switches it off. A cached step gives the bits of the stateless run of the whole
+  sequence. `docs/torch-backend.md` §1, §3.5 and §3.10.
+- KV objects and KV slots in `tsr_rt` and the extension: `kv_create`, `kv_free`, `kv_info_of`, `kv_store` and `kv_read`;
+  `graph_desc::kv_slots`, the `kv` field of an `attn` op, `cols` of a mask value, and `graph_state` (the KV handles and
+  `pos0`) for `graph_run` and `graph_run_ref`. A graph whose attention ops all have a slot runs a prefill of more than
+  680 rows in chunks, and `graph_info` of such a graph answers with the plan the first chunk starts with. The counters
+  `kv_creates`, `kv_stores` and `kv_store_rows`. In Python: `Device.kv_create`, `kv_free`, `kv_info`, `kv_store`,
+  `kv_read`, `graph_run(h, inputs, kv=None, pos0=0)` and `graph_run_ref(...)`.
+- `tt.kv_caches()` lists the device shadows of KV caches and the pool of free planes. The package counters `kv_caches`,
+  `kv_pool_hits`, `kv_resync_rows` and `kv_region_calls`.
+- `sw/torch/tools/hf_check.py --generate` checks `generate` with a static cache: the region and launch counts, the
+  reference executor with the cache checks of `TSR_TORCH_VERIFY`, a second generation, the logits against the stateless
+  forward and against eager float32.
+
+### Changed
+
+- Full mode lowers a `slice` with step 1 that keeps the shape as an identity, so the head of a one-row forward with
+  `logits_to_keep=1` joins the last region: fewer launches, the same bits.
+
 ## [1.6.0] - 2026-11-18
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).

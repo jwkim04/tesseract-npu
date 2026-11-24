@@ -132,7 +132,7 @@ runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE an
 - Graph scheduling. Tesseract Pivot orders the nodes of a graph before they are lowered, so that independent matrix products run on the MVM unit while the control core and the element-wise pipeline work on other records ([design](docs/design/07-graph-scheduler.md)).
 - Kernel SDK. Basis kernels are freestanding C++20 for the control core and build for the host as well.
 - Bit-exact simulator. `sw/sim` is the oracle for the RTL, the firmware and the host stack. The transports are `sim`, `mock` and `xrt` (the card).
-- PyTorch backend. `torch.compile(model, backend="tesseract")` runs regions of a model's aten graph on the device, one op list each, in full mode, or only the weight matmuls in matmul mode.
+- PyTorch backend. `torch.compile(model, backend="tesseract")` runs regions of a model's aten graph on the device, one op list each, in full mode, or only the weight matmuls in matmul mode. Generation with a Hugging Face static KV cache keeps the K and V rows on the device.
 - Tools. `tsr-selftest` checks a device, `klcheck` and `numcheck` compare a whole model and every weight matmul with the CPU, `tsr-prof` and the profile report show where a token spends its cycles, `tsr-top` monitors a running card, and `tsr-dbg` debugs the control core with GDB.
 
 ## Architecture
@@ -246,6 +246,15 @@ ids = tok("The capital of France is", return_tensors="pt").input_ids
 with torch.no_grad():
     logits = model(ids, use_cache=False).logits   # on the simulator unless TSR_DEVICE says otherwise
 print(tok.decode(logits[0, -1].argmax()))        # " Paris"
+```
+
+To generate text, compile the forward of the model, not the model, and use Hugging Face's static KV cache. The attention then runs on the device, which keeps the K and V rows of earlier steps, so a decode step is one launch that sends one row ([PyTorch backend](docs/torch-backend.md) §1):
+
+```python
+model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32).eval()
+model.forward = tt.compile(model.forward)        # generate calls model.forward
+out = model.generate(ids, max_new_tokens=32, do_sample=False, cache_implementation="static")
+print(tok.decode(out[0]))
 ```
 
 For the card, configure with `-DTSR_WITH_XRT=ON` and set `TSR_DEVICE=xrt` and

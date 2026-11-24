@@ -204,6 +204,19 @@ On the device, attention quantizes Q, K and V as q8_0, as the llama.cpp path doe
 float32 more than matmul mode does. `attention="cpu"` (`TSR_TORCH_ATTENTION=cpu`) runs attention in float32 on the CPU
 and ends the regions at each attention.
 
+Generation with a Hugging Face static KV cache runs its attention on the device too, and the device keeps the K and V
+rows of earlier calls, so a decode step sends one row. `generate` calls `model.forward`, so compile the forward of the
+model, not the model, and ask for the static cache:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32).eval()
+model.forward = tt.compile(model.forward)
+out = model.generate(ids, max_new_tokens=32, do_sample=False, cache_implementation="static")
+print(tok.decode(out[0]))
+```
+
+`hf_check.py MODEL_DIR --generate` checks it ([`docs/torch-backend.md`](torch-backend.md) §1, §3.10 and §6).
+
 `-DTSR_TORCH_PYTHON=<interpreter>` selects the Python with torch. `hf_check.py` compares a Hugging Face model
 through the backend in matmul mode with eager PyTorch (`--download Qwen/Qwen2.5-0.5B-Instruct` fills the model
 directory). With `--full-mode` it checks a full-mode forward: one region and one launch, equal to the reference

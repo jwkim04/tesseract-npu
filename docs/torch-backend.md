@@ -37,6 +37,25 @@ with torch.no_grad():                                # or torch.inference_mode()
   a region ends at each attention. An explicit option wins over the variable. An unknown value of the option is a
   `ValueError`. The variable is read in full mode only: there an unknown value is a `ValueError`, and matmul mode
   ignores it.
+- Generation with a static cache. With a Hugging Face static KV cache the attention of a generation step runs on
+  the device, and the device keeps the K and V rows of earlier calls in KV planes, so a decode step sends one row, not
+  the whole sequence. `generate` calls `self.forward`, so the forward is what must be compiled:
+
+  ```python
+  model.forward = tt.compile(model.forward)     # model is the Hugging Face model itself, not a compiled one
+  out = model.generate(**inputs, max_new_tokens=64, do_sample=False, cache_implementation="static")
+  ```
+
+  `torch.compile(model.forward, backend="tesseract")` is the same. `inputs` is the tokenizer's output.
+  `tt.compile(model)` alone compiles `model.__call__`, which `generate` does not go through. `generate` runs under
+  `torch.no_grad()` by itself. Inside `torch.inference_mode()` the cache tensors have no version counter, so every
+  step falls back to the CPU as a whole, with the warning of §3.8. Without
+  `cache_implementation="static"` transformers uses its dynamic cache (tensors that grow by concatenation). That form
+  is not lowered: its attention stays on the CPU, and the results are still right. For a Hugging Face Qwen2.5
+  decoder the prefill is one region call, and every decode step is one region call and one launch. The option
+  `kv_cache` (default on) switches this off (§5), and §3.10 says how the cache is kept. Pass
+  `generate(..., max_cache_len=N)` to keep one cache geometry across generations, so that the planes and the device
+  graph are reused.
 - Matmul mode. Only weight matmuls (`mm`, `addmm`, `linear`, `matmul`, `mv` with one operand that is a
   parameter, buffer or graph constant, a float32, float16 or bfloat16 CPU tensor with K % 32 == 0 and a shape
   the device accepts) run on the device, each as its own launch. Everything else runs on the CPU, as in the
@@ -98,6 +117,7 @@ ctest --test-dir build/dev -R '^(torch_pytest|rt_|ggml_tesseract_kinds)'   # sim
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct   # §6, matmul mode
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --full-mode --tokens 16
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --full-mode --tokens 16 --attention cpu
+build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --generate --tokens 24 --gen 8   # §6, static cache
 build/tools/torchvenv/bin/python -I sw/torch/tools/fuzz_full.py --gen elem --start 0 --count 50   # §6, the fuzzer
 ```
 
@@ -106,7 +126,7 @@ and the full-mode test of `test_hf.py` ask for full mode themselves. `hf_check.p
 check on a Hugging Face model: one compiled forward must be one region and one launch, checked against the
 reference executor (§3.7), then a second forward in the steady state. It compares the logits with eager float32 and
 with an eager run whose attention is the device's q8_0 path (§6). `--attention cpu` checks the same forward with
-attention on the CPU.
+attention on the CPU. `--generate` checks `generate` with a static cache (§6).
 
 `TSR_DEVICE=mock` runs the same suite on the adapter model of the transport, and `TSR_SIM_TMAX=4` gives the simulated
 core the `T_MAX` of the release image. `-I` ignores `PYTHONPATH`, so the tools find the extension through
@@ -144,10 +164,10 @@ torch.compile(model, backend="tesseract")
        │               then the remaining weight matmuls → device_mm nodes; the rewritten graph runs eagerly
        │               (FX GraphModule, no Inductor)
        ├─ lower.py     full mode: patterns, layout rules and region formation on the aten graph (no device, no extension)
-       └─ runtime.py   device singleton, WeightCache, ConstCache, RegionRT, eager linear / linear_ref, counters, debug, verify
+       └─ runtime.py   device singleton, WeightCache, ConstCache, RegionRT, KV cache states, eager linear / linear_ref, counters, debug, verify
             └─ _tesseract_rt (C++ extension, sw/torch/csrc/tsr_torch.cpp; torch tensors in and out, GIL released)
                  └─ tsr_rt (sw/rt): weight upload, linear, N / K parts, op list per call, OPL cache, counters, reference path;
-                    │              graph API: constants, planner of a region program (plan per T), run, reference run
+                    │              graph API: constants, KV objects, planner of a region program (plan per T), run, reference run
                       ├─ tsr_lower (sw/ggml-tesseract/lower.cmake): shape checks, OPL builder and cache, `graph` launcher, allocator, weight layout,
                       │            tsr-kinds (one encoder per kind), tsr-rec (the record and its encoding)  ← shared
                       ├─ tsr-weights.cpp + ggml-base (pinned llama.cpp): quantize_row_q8_0_ref, f16 / bf16 to_float ← shared
@@ -204,9 +224,24 @@ channels.
   - Values. The inputs, the positions, the KV cell indices and the mask summaries sit at the bottom of the IO
     region (they are preload sources that no record writes). Every other value is placed above them by liveness,
     so a value that is dead gives its bytes to a later one.
-  - KV planes. Each `attn` op has its own two planes (K and V, `kv_size` cells), zero-filled at `graph_create`
-    and placed at the top of the WEIGHT heap. The op writes the T new rows with SET_ROWS_KV and reads them with
-    FLASH_ATTN (`n_kv = T`).
+  - KV planes. An `attn` op without a KV slot has its own two planes (K and V, `kv_size` cells), zero-filled at
+    `graph_create` and placed at the top of the WEIGHT heap. The op writes the T new rows with SET_ROWS_KV and reads
+    them with FLASH_ATTN (`n_kv = T`).
+  - KV objects. `kv_create(E, cells)` makes the K and V planes of a cache (E values per cell, a multiple of 64), zero
+    filled, from the top of the WEIGHT heap. They outlive graphs and calls, until `kv_free`. `kv_info_of` gives the
+    geometry. `kv_store` writes float32 rows into cells, quantized by the device as an attention op stores its rows,
+    and `kv_read` returns cells as ggml `block_q8_0` rows. A wrong argument is `std::invalid_argument`, and a full
+    heap or a geometry that cannot be placed is an error whose text contains "does not fit".
+  - Cached attention. `graph_desc::kv_slots` lists the cells of each KV slot. An `attn` op with `kv = s` reads and
+    writes the slot s instead of owning planes (one op per slot), and its mask value has `cols` = the cells of the
+    slot, so the mask is `[T, cells]`. A run binds one KV object to each slot (`graph_state`, with `pos0`). Row t of
+    the run is cell `pos0 + t`: the op stores the new rows there and attends over the cells of the planes, with the
+    causal mask or with the given mask. `pos0 + T` above the cells, a given mask that shows a cell the call does not
+    write, and handles that do not match the slot are errors (`graph_run` in `tsr_rt.h`).
+  - Chunks. A graph whose attention ops all have a slot runs in chunks of rows when T is above 680 or the plan of T
+    does not fit the IO region: one launch sequence per chunk, the same results. `graph_info(h, T)` of such a graph
+    answers with the plan the first chunk starts with, and its `T` is the rows of that chunk, so a smaller `T` than
+    asked means the run is chunked. A graph with an op without a slot is never chunked.
   - Records. Each op becomes the records of the `tsr-kinds` encoders, added to the same `tsr_opl_builder` as the
     ggml backend's, so hazards, JOINs and the deferred `MUL_MAT_BEGIN` / `MUL_MAT_END` pairs are the builder's. A
     list that reaches 4096 records (SW-29) is cut and the next one started, so a run is one launch per list.
@@ -218,7 +253,10 @@ channels.
 method holds a lease that keeps the device alive until it returns, so `close()` from another thread waits for the
 calls in flight, and a later call raises `TesseractError: ... the device is closed`. It binds the graph API too
 (`const_upload`, `graph_create`, `graph_run`, `graph_run_ref`, `graph_info` and the others of §3.3), with programs
-as Python dicts and values as torch tensors. The API is in
+as Python dicts and values as torch tensors. For cached attention it has `kv_create`, `kv_free`, `kv_info`, `kv_store`
+and `kv_read`, and `graph_run(h, inputs, kv=None, pos0=0)` and `graph_run_ref` take the KV handles of the slots and
+the first cell. A bool or a float where an int is meant, a handle below 0 or above 64 bits and cells beyond the
+planes (also for no rows) are a `ValueError`. The API is in
 [`sw/torch/README.md`](../sw/torch/README.md).
 
 ### 3.5 The partitioner (backend.py, lower.py)
@@ -230,7 +268,8 @@ Then the matmul partitioner below runs on what is left.
 - Candidates. Each pattern of §4 that matches a node and its neighbours gives one device op (a candidate), with
   the aten nodes it replaces. The layout rules say when an aten node is a view of a device value, which is a
   float32 `[T, n]` tensor of token-major rows: `view`, `reshape`, `unsqueeze`, `squeeze`, a float32 copy and a
-  full slice are identities, and `transpose(1, 2)` turns `[1, T, H, D]` into the head-major `[1, H, T, D]`. A `[1, T, 1, D]` view of a `[1, T, D]` value followed by
+  slice with step 1 that keeps the shape are identities (so the head of a one-row forward with `logits_to_keep=1`
+  joins the last region), and `transpose(1, 2)` turns `[1, T, H, D]` into the head-major `[1, H, T, D]`. A `[1, T, 1, D]` view of a `[1, T, D]` value followed by
   `transpose(1, 2)` is a head-major value of one head, so an attention with one KV head or with one head takes its
   Q, K and V projections into its region. The
   grouped KV expansion of attention is seen through. A node whose layout does not fit stays on the CPU, with a
@@ -272,6 +311,21 @@ Then the matmul partitioner below runs on what is left.
   arithmetic) are removed with the region when nothing else uses them. The region keeps a copy of its aten
   subgraph for the CPU fallback (§3.8). If forming the regions of a graph raises, that graph is partitioned in
   matmul mode with a warning, and `strict=True` raises instead.
+
+- Cached attention. The lowering recognizes the idiom of a Hugging Face static cache. It is the update
+  `index_copy(cache, 2, positions, new rows)` of a K and a V cache tensor, the grouped-KV expansion of the updated
+  cache (`expand` and `reshape`, `repeat_interleave`, or SDPA's `enable_gqa`), and `scaled_dot_product_attention` over
+  it with a mask `[.., T, L]` (bool or additive) or, for the prefill of a fresh cache, `is_causal` over the first T
+  cells. The cache is an input of the graph that the graph mutates, or zeros made in the graph (a new `StaticCache`
+  layer initializes itself inside its first call). The cache length L is an integer or a symbol of the graph:
+  transformers sizes a new cache to the longest so far, a longer prompt makes Dynamo compile the graphs again with
+  the length as a symbol, and those graphs serve every later length. The attention becomes an `attn` op with a KV
+  slot (§3.3). A near miss (another start cell, a mask of another shape, another expansion) is not a cached
+  attention: it stays on the CPU, and `TSR_TORCH_DEBUG=1` names the reason. With `kv_cache=False` no cached attention
+  is lowered, and the cache update and the attention over it end the regions on the CPU. The rewrite makes the K and
+  V rows of the call outputs of the region. Each functional `index_copy` and the `copy_` of the new cache into its
+  input are replaced by one in-place write of the T new rows after the region call (`kv_rows_write`). The saved
+  subgraph of the region recomputes the update itself, so the CPU fallback is exact.
 
 Matmul nodes (matmul mode, and the weight matmuls outside every region in full mode):
 
@@ -338,6 +392,9 @@ Full mode adds these rules for the ops of a region:
   Q and the K and V rows are quantized as q8_0. This adds to the difference from eager float32 that the Q8_0
   weights make. Models with large attention scores (small models, the first positions of a prompt) are the most
   sensitive. `attention="cpu"` (or matmul mode) keeps attention in float32.
+- Cached attention. It is the attention kind of the stateless path over q8_0 K and V rows, the numerics of the
+  llama.cpp path with `-ctk q8_0 -ctv q8_0`. A cached step gives the bits of the stateless run of the whole
+  sequence. The host cache stays float32, and the device holds the q8_0 rows (§3.10).
 - Bias and scalars. A bias is the addend of the MUL_MAT record (matmul mode adds it on the CPU). A division by a
   scalar is a multiplication by `f32(1 / s)`, and every float of a program is exactly a float32.
 - Oracle. The reference executor (`tsr_opl_ref`, `sw/ctrl/ref/opl_ref.{hpp,cpp}`) runs the op lists of a plan on
@@ -361,7 +418,7 @@ transport error during an upload, a device execution error. Device calls release
 them on its mutex.
 
 A region falls back as a whole (SW-101). A call that does not fit the device (T above `kv_size` or above 680
-with an attention op, the IO region or a heap full, a mask value that is not 0, -inf or at most -1e9) runs the
+with an attention op that has no KV slot, the IO region or a heap full, a mask value that is not 0, -inf or at most -1e9) runs the
 region's saved aten subgraph on the CPU. Each region gives one `RuntimeWarning` and counts the call in
 `region_cpu_fallback_calls`. A program that the device refuses at `graph_create` makes the region run its saved
 subgraph on the CPU for that key: one `RuntimeWarning` per region carries the device's text, the calls count in
@@ -375,6 +432,28 @@ Rows with every entry -inf and bool masks stay on the device. A mask with anothe
 on the CPU with the warning. If forming the regions of a graph raises, the warning "forming regions failed (...);
 this graph uses matmul mode" is shown once per compiled graph. Region calls are serialized by one lock.
 
+A region with a cached attention also falls back, for that call, when the call breaks one of these rules. The call
+then runs the saved subgraph on the CPU, with the warning and the count as above, and the host cache is exact:
+
+- Batch is 1.
+- The cache tensors are float32 CPU tensors of the shape `[1, Hkv, L, D]` that the graph was made for (for a graph
+  whose cache length is a symbol, K's length gives L, and V must have it too), contiguous, with a version counter
+  (an inference tensor has none), and no tensor is the cache of two slots.
+- The positions are an int64 tensor of T consecutive cells from one cell, and every cached attention of the region
+  starts at that cell.
+- The rows of the call are the cells `p0 .. p0 + T - 1` and must fit the cache. A prefill that is causal over the first
+  T cells of a fresh cache must start at cell 0.
+- The mask of a cached attention is `[.., T, L]`, with leading dimensions of 1.
+- The device has room for the planes (`kv_create`). It frees what nothing uses and tries once more (§3.10).
+
+A prefill of more than 680 rows is not a refusal: it runs in chunks (§3.3). A region has one device graph at a time,
+so a call with another cache length makes the graph of that length, and calls that alternate between lengths make it
+again each time.
+
+`TSR_TORCH_DEBUG=1` logs the first plan of each region. For a run in chunks the line says `first plan: chunk of N rows
+of T`. When the device gives no plan information the line says so and the call goes on: the log never changes what
+runs.
+
 ### 3.9 Weights as ggml blocks (`QuantLinear`)
 
 `tt.QuantLinear(blocks, in_features, fmt, bias=None)` holds a uint8 buffer [N, row_bytes] of Q8_0 or Q4_K blocks and
@@ -385,6 +464,42 @@ The module adds the bias in float32 and casts once to the input's dtype. Under `
 implementation, so the partitioner does not touch it. A weight that cannot be placed raises `TesseractError`.
 There is no loader that maps GGUF tensor names to modules and takes the norms, embeddings and RoPE parameters from
 the same file (SW-81).
+
+### 3.10 KV caches: state, memory and verify
+
+The host cache stays the cache. The `StaticCache` tensors (float32 CPU, `[1, Hkv, L, D]` per layer) are updated in
+place as in eager and always hold the complete cache. The device planes are a shadow of it, q8_0. So every Hugging
+Face cache feature keeps working, and a call that the device does not take runs the saved aten subgraph on the CPU
+and is exact. The cost is that the new K and V rows cross to the host at every step, and that the host keeps the
+float32 cache.
+
+State. `runtime.py` keeps one record per cache (the K and V tensor, by identity) with the number of cells of the
+shadow that equal the quantized host rows. The version counters of the two tensors say whether the host cache changed
+without the device: a reset, an in-place edit, a call that ran on the CPU, a rewind or another graph. Then the
+missing rows are stored again from the host before the next device call (`kv_resync_rows` counts them). A write that
+bumps no version counter (`.data`, raw storage) is not seen. That is the stated limit, and verify mode catches it.
+
+Memory.
+- The planes of a cache whose tensors died go to a pool, and a new cache of the same geometry (E, cells) takes them,
+  without a zero fill and with the same plans. A cache dies when Python frees its tensors. A cache left in a
+  reference cycle waits for the garbage collector, and until then a new cache gets new planes.
+- The pool keeps the planes of the four most recently used geometries and frees older ones on the device. `generate`
+  sizes its cache to the prompt plus the new tokens, so every prompt length is another geometry. Pinning
+  `generate(..., max_cache_len=N)` keeps one geometry, so the planes and the device graph are reused across
+  generations.
+- When a weight upload, a new cache (`kv_create`) or a new program (`graph_create`) finds the device heap full, the
+  runtime frees what nothing uses (the device copies of dead weights and constants, the planes of dead caches after a
+  garbage collection, and the pool) and tries once more.
+- `tt.release_weights()` and `tt.close_device()` free everything. `tt.kv_caches()` lists the caches and the pool.
+
+Verify. `TSR_TORCH_VERIFY=1` adds two checks for a region with a cache. Before the call, the history cells `[0, p0)` of
+both planes are compared with an independent quantizer of the host rows, and a stale shadow raises. After the call,
+the cells the call wrote are compared with the same quantizer applied to the rows the region returned. The first check
+exists because the reference executor reads the history from the device, so it cannot see a stale shadow.
+
+Counters. `kv_caches` (states made), `kv_pool_hits` (states whose planes came from the pool), `kv_resync_rows`,
+`kv_region_calls` (device calls that used a KV slot) and, from the runtime, `rt_kv_creates`, `rt_kv_stores` and
+`rt_kv_store_rows`.
 
 ## 4. Supported ops and fallbacks
 
@@ -420,12 +535,13 @@ tests (`test_lower.py` has the near misses that do not match).
 | `mul`, `div`, `add`, `sub` by a scalar | SCALE | a division is a multiplication by `f32(1 / s)` |
 | Hugging Face `rotate_half` RoPE, with its cos and sin chain traced to `inv_freq` and the positions | ROPE | the angle table is the constant `inv_freq`; positions are an input |
 | `scaled_dot_product_attention` (also its CPU flash form), grouped KV heads, causal, bool or additive mask | SET_ROWS_KV (K, V), FLASH_ATTN | batch 1, head dimension 64, 128, 256 or 512; q, k and v of T rows each; q8_0 numerics (§3.7); not lowered with `attention="cpu"` |
+| the same attention over a static KV cache: `index_copy(cache, 2, positions, rows)` of K and V, the grouped-KV expansion (or `enable_gqa`), SDPA with a mask `[.., T, L]` or `is_causal` over the first T cells | SET_ROWS_KV, FLASH_ATTN on a KV slot (cached attention) | §3.5; the cache update becomes an in-place write of the T new rows; not lowered with `kv_cache=False` or `attention="cpu"` |
 
 Stays on the CPU in full mode, besides what the first table lists: the embedding lookup, the integer mask and
 position arithmetic, the cos and sin tables, LayerNorm, erf GELU and softmax; attention with batch above 1, a
 head dimension outside the four, or a mask that is not `[T, T]` (a key-value cache with more key rows than
-query rows is such a case); a scalar or constant that passes through a dtype-narrowing copy, or through a float16, bfloat16 or float8 cast; an `add` of the `eps` with
-`alpha != 1`; a copy of a head-major value; `scaled_dot_product_attention` with `enable_gqa=True` (grouped KV is lowered when the
+query rows is such a case, unless it is the static cache of §3.5); a scalar or constant that passes through a dtype-narrowing copy, or through a float16, bfloat16 or float8 cast; an `add` of the `eps` with
+`alpha != 1`; a copy of a head-major value; `scaled_dot_product_attention` with `enable_gqa=True` outside a cached attention (grouped KV is lowered when the
 model writes the expansion itself); a graph with a bf16 or f16 value; a lone matmul; and every op that
 the per-op probe of the device refuses.
 
@@ -435,15 +551,18 @@ the per-op probe of the device refuses.
 `TSR_TORCH_MODE` (`full` or `matmul`, default `full`; an explicit `mode` of `tt.compile` or of `options=` wins; an
 unknown value is a `ValueError`). `TSR_TORCH_ATTENTION` (`device` or `cpu`, default `device`; full mode only; an
 explicit `attention` wins; in full mode an unknown value is a `ValueError` that names `device, cpu`, and matmul mode
-ignores it). `TSR_TORCH_DEBUG` (`1` partition, uploads and counters at exit, `2` also every
+ignores it). `TSR_TORCH_KV_CACHE` (`0` or `1`, default `1`; full mode with `attention="device"`; an explicit `kv_cache` wins; `0`
+keeps the cache update and the attention over a static cache on the CPU, where they end the regions; an unknown value
+is a `ValueError` in full mode). `TSR_TORCH_DEBUG` (`1` partition, uploads and counters at exit, `2` also every
 device call, `3` also the rewritten aten graphs), `TSR_TORCH_VERIFY` (`1`: check every device matmul bit for bit
 against libtsr_ref and every region output against the reference executor; a mismatch raises, naming the
 weight or region, the element and both values), `TSR_TORCH_EXT_DIR`, `TSR_TORCH_HF_MODEL`
 (model directory of the opt-in `test_hf.py`) and `TSR_RT_DEBUG` (tsr_rt's log) are described in
 [`sw/torch/README.md`](../sw/torch/README.md). `TSR_TORCH_PYTHON` is a CMake cache variable.
-`tt.compile(model, mode=None, kv_size=None, strict=False, debug=None, verify=None, offload=True, attention=None, **kw)` passes the
-same switches as `options=` of `torch.compile`. `kv_size` (default 4096) is the number of cells of the KV planes of
-each attention op, so the longest sequence of a region call. `offload=False` prints the partition but keeps every
+`tt.compile(model, mode=None, kv_size=None, strict=False, debug=None, verify=None, offload=True, attention=None, kv_cache=None, **kw)` passes the
+same switches as `options=` of `torch.compile` (`kv_cache=False` is `options={"kv_cache": False}`). `kv_size` (default 4096) is the number of cells of the KV planes of
+each attention op without a cache, so the longest sequence of a region call. A cached attention takes its cells from the
+cache. `offload=False` prints the partition but keeps every
 matmul on the CPU and forms no region.
 
 ## 6. Tests
@@ -459,7 +578,9 @@ and on the mock transport with `T_MAX` 1, 4 and 8. The same suites run on the ca
   misaligned rows. Also the op-list cache with exact host traffic, free and re-upload, refusals and two threads.
 - `test_ext.py`: stored blocks equal an independent numpy `quantize_row_q8_0_ref` byte for byte (`spec_model.py`),
   and `linear` equals `linear_ref` equals the numpy spec model of `numcheck.py` (B1b) bit for bit, for 11 shapes times
-  3 dtypes, the N = 151936 head, K > K_MAX, strided and misaligned operands, T up to 300 and native blocks.
+  3 dtypes, the N = 151936 head, K > K_MAX, strided and misaligned operands, T up to 300 and native blocks. It also covers the KV objects of the extension (stored cells against the
+  numpy quantizer, the checks of every argument), `graph_info` of a graph that runs in chunks, and cached attention
+  programs through the bindings (device equal to reference, the refusals and the program errors).
 - `test_numerics.py`: NMSE against torch float32 on uniform [-1, 1] data, well inside the 5e-4 limit of
   test-backend-ops. The single-output shape (N = T = 1, K = 2048; `docs/spec.md` §17, *Exception to op-level NMSE*)
   has an NMSE that is one squared relative error and exceeds the limit in a sizeable share of random draws
@@ -480,7 +601,11 @@ and on the mock transport with `T_MAX` 1, 4 and 8. The same suites run on the ca
   N and K parts, an addend with K parts, Q8_0 and Q4_K, strided arguments, the mask forms of attention, a decoder
   layer and three layers as one program, the OPL and plan caches, the limits and their error texts, malformed and
   refused programs, `const_free` and `graph_free`, two threads, and negative controls (the comparison must fail
-  for a wrong `inv_n`, the other RoPE pairing and a missing FA_NEW).
+  for a wrong `inv_n`, the other RoPE pairing and a missing FA_NEW). The cached attention cases run the same
+  comparison: KV objects (`kv_store` and `kv_read` against an independent quantizer, the planes of an attention run
+  equal to the planes of `kv_store`), the decoder layer with KV slots, sequences over several KV objects and one object
+  in two slots, runs in chunks (also at `pos0` above 0), `graph_info` of a graph with slots, the plan counters, the
+  refusals (handles, cells, masks that show a cell the call does not write) and negative controls.
 - `test-tsr-kinds` (`ggml_tesseract_kinds`, `_tmax4`, `_tmax8`, no ggml): every `tsr-kinds` encoder builds lists
   through `tsr_opl_builder`, runs them on the transport, and compares the DRAM they write with the reference
   executor's image bit for bit, and the outputs of MUL_MAT, RMS_NORM, ROPE and SET_ROWS_KV + FLASH_ATTN with the
@@ -488,7 +613,10 @@ and on the mock transport with `T_MAX` 1, 4 and 8. The same suites run on the ca
   Qwen2.5-0.5B's shape as one list, and has negative controls and the refusals of a kind the image lacks.
 - `test_lower.py` (no device): real aten graphs captured as the backend does. It checks which patterns match and
   which near misses do not, the regions that form and their convexity, the program of a region against its
-  schema, and the flattening recipes of the inputs and outputs.
+  schema, and the flattening recipes of the inputs and outputs. For cached attention it checks the idiom on captured
+  graphs of a Hugging Face static cache (an existing and a fresh cache, prefill and decode, masks, one KV head per head,
+  a cache length that is a symbol, `is_causal` over the first cells), the near misses that must stay on the CPU, the
+  probe of the slots, the option `kv_cache`, and that a slice which keeps the shape is an identity.
 - `test_graph.py` (full mode, `TSR_TORCH_VERIFY` on, so every region call is also run by the reference executor):
   every pattern alone between two matmuls, quantized blocks in a region, the decoder as one region and one
   launch, the mask forms, dynamic and changing sequence lengths, weights and constants changed in place and
@@ -500,12 +628,21 @@ and on the mock transport with `T_MAX` 1, 4 and 8. The same suites run on the ca
   before in-place updates, the mask and scalar rules, two regions in one graph, regions that read each other through
   CPU ops, the order of the regions, a view of a CPU value that a region's operand chain and a CPU op both read (it
   does not split the region), and the layout of outputs.
+- `test_kvcache.py` (full mode, a tiny Qwen2 with a `StaticCache`, `TSR_TORCH_VERIFY` on): prefill and decode steps
+  equal the stateless run of the whole sequence, `generate`, a second generation on a new cache. Then every
+  transition of the cache state of §3.10 is driven and compared with a fresh run on a copy of the host cache: a changed
+  host cache, a reset, a call that ran on the CPU, a rewind, two caches interleaved, a dropped cache, a reopened
+  device, a cache length that changes, prompts of different lengths, a prefill above 680 rows in chunks, the option and
+  the environment variable. The checks of verify are tested against a corrupted plane, the pool, the full heap, the
+  refusals of §3.8, the debug log and `logits_to_keep=1`. The cache check of verify uses
+  `runtime.q8_0_rows`, a quantizer written from the definition.
 - `test_fuzz.py`: the fixed seeds of both generators of `fuzz_full.py` (the seeds that found defects) and a run of
   fresh seeds of each. It fails when more than 5 % of the fresh cases have an unstable output or an output judged by
   absolute error only (a judge that has gone blind shows there). The rules of the judge are pinned on hand-made
   records: NaN and non-finite mismatches, unstable per output, low energy with the float64 reference, strides,
   sharing and the one-ulp probe. The test takes about a minute and a half.
-- `test_hf.py` (opt-in) also runs `hf_check.py --full-mode` with device attention and with `--attention cpu`.
+- `test_hf.py` (opt-in) also runs `hf_check.py --full-mode` with device attention and with `--attention cpu`, and
+  `hf_check.py --generate`.
 
 `sw/torch/tools/hf_check.py` checks a Hugging Face causal LM from its safetensors directory. It refuses a directory
 with pickle files, checks the safetensors sha256 against the Hub's LFS etag, and needs the native libraries of
@@ -538,6 +675,19 @@ from the device's other differences. Only the first is gated. The JSON `forward`
 `region_calls` and `launches`. `--save-logits FILE.npy` stores the logits, and `--expect FILE.npy` checks that the
 full-mode logits are bit-identical to such a file (the JSON key `expect` holds `rows`, `bit_identical_rows` and
 `sha256_expected`): it compares the simulator with the card.
+
+`hf_check.py --generate [--tokens N] [--gen M]` runs `model.generate(..., cache_implementation="static")` through
+`model.forward = tt.compile(model.forward)` in full mode: the first `--tokens` prompt tokens, `--gen` new tokens,
+`TSR_TORCH_VERIFY` on. It checks that the prefill is one region call, that every decode step is one region call and
+one launch with no matmul node outside it, that no call fell back to the CPU, that every region call is verified
+against the reference executor with the cache checks of §3.10, and that every attention ran on a KV slot. A second
+`generate` of the same prompt must give the same tokens with no upload, no plan miss and no row stored again. Teacher
+forced with the tokens that eager float32 generated, the logits of every position (a prefill and one decode step per
+token) must equal the stateless full-mode forward of that sequence within NMSE 1e-10 (the same quantized rows, and
+bit-identical on the simulator), and agree with eager float32 (KL per position, top-1 of at least 80 %). The device's
+own greedy tokens against eager's are reported, not gated. The tool prints the launches, the PERF cycles and the wall
+time per decode step. `--save-logits` and `--expect` work as with `--full-mode`, on the teacher-forced logits.
+`--generate` cannot be combined with `--full-mode`, `--forward-only` or `--speed`.
 
 `sw/torch/tools/fuzz_full.py` is a differential fuzzer of full mode. `fuzz_gen.py` draws a small model from a seed
 (linear layers, residuals, norms, activations, GLU, scalars, views, RoPE, attention with masks, CPU-only ops,
@@ -587,16 +737,23 @@ prints its replay command.
 - Inference only.
 - Matmul mode runs weight matmuls only: bias, activations, norms, RoPE, attention and embeddings run on the CPU,
   and every device matmul is its own launch of the `graph` kernel with x and y crossing the host link each time.
-- Full mode: batch 1 through attention. T is at most `kv_size` (default 4096) and at most 680 per attention op. A
-  region keeps 16 plans (one per T and mask shape). Region calls are serialized by one lock. The device graphs
+- Full mode: batch 1 through attention. Without a cache, T is at most `kv_size` (default 4096) and at most 680
+  per attention op. A cached attention takes cells from its cache, and a graph whose attention ops are all cached runs
+  a call of more than 680 rows in chunks (§3.3). A region keeps 16 plans (one per T and mask shape). Region calls are serialized by one lock. The device graphs
   of a region are freed when the compiled function is collected, on `release_weights()` and on `close_device()`.
-- No device-resident KV cache across calls. A region's attention reads the T rows of its own call, so generation
-  in `hf_check` and `hf_compare` recomputes the whole sequence per step, and every new length is a new plan.
-  A Hugging Face step with `past_key_values` has more key rows than query rows (the mask is not `[T, T]`): its
-  attention stays on the CPU and ends the regions there, so such a graph is several regions.
+- The KV cache across calls is the Hugging Face static cache only, with batch 1. The cache tensors are float32 CPU
+  tensors with a version counter (a cache made inside `torch.inference_mode()` has none and every call with it runs on
+  the CPU, so call `generate` under `torch.no_grad()`). The host keeps the float32 cache and the new rows cross to the host at every step (§3.10).
+  The dynamic cache is not lowered: its attention stays on the CPU and ends the regions there, and so does the
+  attention over a static cache with `kv_cache=False`. A forward without a cache (`use_cache=False`, as the generation of
+  `hf_compare` runs it) reads the T rows of its own call, so that generation recomputes the whole sequence per step and
+  every new length is a new plan.
+- A write into a cache that bumps no version counter (`.data`, raw storage) is not seen, so the device shadow can go
+  stale; `TSR_TORCH_VERIFY=1` raises on it (§3.10). A region has one device graph at a time: calls that alternate
+  between cache lengths make it again each time.
 - `dynamic=True` on a graph whose row length is symbolic forms no region for that op: a row length must be an
   integer.
-- With device attention, Q, K and V are q8_0 (§3.7). A user who needs float32 attention sets `attention="cpu"` or
+- With device attention, Q, K and V are q8_0 (§3.7), and so are the K and V rows of a cached attention. A user who needs float32 attention sets `attention="cpu"` or
   uses matmul mode.
 - A group of two or more outputs that share storage, with a member that needs the contiguous copy, keeps its op on
   the CPU (§3.5).
@@ -620,10 +777,12 @@ rest of the system.
   `[T, n]` values, the `graph_desc` of `tsr_rt.h`. Its values are inputs given at every call, temporaries on the
   device (some of them outputs), constants, the positions and the attention mask. The stateless forward of a
   Hugging Face Qwen2.5 decoder (Qwen2.5-0.5B-Instruct, say) is one region from the first norm to the logits, so one
-  launch. With `attention="cpu"` it is one region per layer and one for the head, and one launch each.
+  launch. With a static cache the forward of a generation step is one region too: the prefill is one region call
+  and every decode step one region call and one launch (§3.5, §3.10). With `attention="cpu"` it is one region per layer and one for the head, and one launch each.
   The embedding lookup, the mask and position arithmetic and the cos and sin tables stay on the CPU in front of it.
 - Contract. A region is polymorphic in one number, T, the number of rows (tokens times batch). Every row length
-  is a compile-time integer. The op list is planned per T at the first call with that T and cached (§3.3). The
+  is a compile-time integer. A cached attention adds the cache length, an integer or a symbol that is read from the
+  cache tensors at each call. The op list is planned per T at the first call with that T and cached (§3.3). The
   values that cross the boundary are 2D float32 `[T, n]` tensors of token-major rows, and the aten `view`,
   `reshape` and `transpose` nodes that give them their model shape stay in the graph around the region call, so
   no shape arithmetic runs inside it (SW-100). Weights are given by handle through the weight cache, norm
@@ -632,13 +791,13 @@ rest of the system.
   made again. So is the graph when a scalar (`eps`, the RoPE factor) changes.
 - Oracle. The reference executor of §3.7 is the oracle of a region, and eager PyTorch is a statistical target
   (SW-99). Eager attention is float32 and the device's is the q8_0 path, so a model-level comparison names both
-  differences (§6). `attention="cpu"` removes the second.
+  differences (§6). `attention="cpu"` removes the second. For a cached attention the oracle of a step is also the
+  stateless run of the whole sequence, bit for bit, and verify compares the shadow with the host rows (§3.10).
 - Fallback. A call that does not fit runs the saved aten subgraph on the CPU (§3.8, SW-101).
 
 Not built:
 
-- A device-resident KV cache with one launch per decode token. It needs a static-cache module whose attention
-  reads the cache of earlier calls (AT §4.6), and its oracle would be the simulator's, not eager's, because the
-  numerics of attention change from PyTorch's float32 cache.
+- A cache that lives on the device only (the host keeps the float32 cache, §3.10), the dynamic cache, and a cache
+  with batch above 1.
 - Tesseract Pivot for regions, the embedding as GET_ROWS, MoE layers (`MOE_ROUTE`, `MUL_MAT_ID`), Gated DeltaNet
   and SSM_CONV, and batch above 1 through attention.
