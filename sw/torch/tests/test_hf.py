@@ -103,3 +103,27 @@ def test_hf_model_generate_with_a_static_cache(tmp_path):
     assert g["nmse_cached_vs_stateless"] <= g["nmse_max"]
     assert res["kl"]["cpu_vs_device"]["top1"] >= 0.8
     assert res["pass"] and r.returncode == 0
+
+
+@pytest.mark.skipif(not MODEL, reason="set TSR_TORCH_HF_MODEL=<local HF model directory> to run")
+def test_hf_generate_example(tmp_path):
+    """The example ``hf_generate.py``: generation with a static cache through a compiled forward, timed per token. Every
+    call of a generation is a region call with cached attention, none falls back to the CPU, and a generation after the
+    first uploads nothing and plans nothing. About a minute on the simulator."""
+    pytest.importorskip("transformers")
+    out = tmp_path / "hf_generate_example.json"
+    cmd = [sys.executable, "-I", str(REPO / "sw" / "torch" / "examples" / "hf_generate.py"), MODEL, "--new", "5",
+           "--reps", "2", "--json", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    assert out.exists(), r.stdout[-4000:] + r.stderr[-4000:]
+    res = json.loads(out.read_text())
+    print(r.stdout[-2000:])
+    assert r.returncode == 0 and res["mode"] == "kv_cache on" and len(res["runs"]) == 2
+    for g in res["runs"]:
+        c = g["counters"]
+        assert g["new_tokens"] == 5 and g["decode_steps"] == 4
+        assert c["region_calls"] == c["kv_region_calls"] == 5 and c["cpu_fallback_calls"] == 0
+        assert c["uploads"] == 0 and c["plan_misses"] == 0
+        assert g["prefill_tok_s"] > 0 and g["decode_tok_s"] > 0
+    assert res["first"]["counters"]["uploads"] > 0
+    assert res["first"]["text"] == res["runs"][0]["text"] == res["runs"][1]["text"]

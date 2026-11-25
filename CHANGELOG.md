@@ -29,6 +29,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 - `sw/torch/tools/hf_check.py --generate` checks `generate` with a static cache: the region and launch counts, the
   reference executor with the cache checks of `TSR_TORCH_VERIFY`, a second generation, the logits against the stateless
   forward and against eager float32.
+- `sw/torch/examples/hf_generate.py` generates text with a static cache through a compiled forward and times it. It
+  prints the time to the first new token, the decode rate and the counters of every generation (region calls, launches,
+  calls that fell back to the CPU, transfers, device cycles). `--kv-cache off` runs the same generation without cached
+  attention, and `--eager` runs it in eager PyTorch on the host CPU. The opt-in `test_hf.py` runs the example.
 
 ### Changed
 
