@@ -118,6 +118,7 @@ build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --full-mode --tokens 16
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --full-mode --tokens 16 --attention cpu
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct --generate --tokens 24 --gen 8   # §6, static cache
+build/tools/torchvenv/bin/python -I sw/torch/examples/hf_generate.py models/hf/Qwen2.5-0.5B-Instruct --new 16   # §6, generation, timed
 build/tools/torchvenv/bin/python -I sw/torch/tools/fuzz_full.py --gen elem --start 0 --count 50   # §6, the fuzzer
 ```
 
@@ -126,7 +127,8 @@ and the full-mode test of `test_hf.py` ask for full mode themselves. `hf_check.p
 check on a Hugging Face model: one compiled forward must be one region and one launch, checked against the
 reference executor (§3.7), then a second forward in the steady state. It compares the logits with eager float32 and
 with an eager run whose attention is the device's q8_0 path (§6). `--attention cpu` checks the same forward with
-attention on the CPU. `--generate` checks `generate` with a static cache (§6).
+attention on the CPU. `--generate` checks `generate` with a static cache (§6). `examples/hf_generate.py` runs such a
+generation and prints its rates (§6).
 
 `TSR_DEVICE=mock` runs the same suite on the adapter model of the transport, and `TSR_SIM_TMAX=4` gives the simulated
 core the `T_MAX` of the release image. `-I` ignores `PYTHONPATH`, so the tools find the extension through
@@ -698,6 +700,20 @@ bit-identical on the simulator), and agree with eager float32 (KL per position, 
 own greedy tokens against eager's are reported, not gated. The tool prints the launches, the PERF cycles and the wall
 time per decode step. `--save-logits` and `--expect` work as with `--full-mode`, on the teacher-forced logits.
 `--generate` cannot be combined with `--full-mode`, `--forward-only` or `--speed`.
+
+`sw/torch/examples/hf_generate.py MODEL_DIR [--new N] [--reps R]` runs
+`model.generate(..., cache_implementation="static")` through `model.forward = tt.compile(model.forward)` in full mode
+and times it. The prompt is one user turn in the model's chat template (the plain text when the tokenizer has none),
+the generation is greedy, and `min_new_tokens` keeps it going for `--new` tokens (default 64). The first generation of
+the process compiles and uploads the weights (with `--eager` it only warms up); it is printed and not counted. For each
+of the `--reps` generations after it (default 3) the tool prints the time from the call of `generate` to the first new
+token and the mean time between two new tokens after the first, with their rates in tokens per second. With the backend
+it also prints the counters of that generation: the region calls and those with cached attention, the launches, the
+calls that fell back to the CPU, the transfers to and from the device, the device cycles, the uploads and the plan
+misses. Its last line gives the median decode rate and the median prefill rate (the prompt tokens over the time to the
+first token) over the repetitions, with their ranges. `--kv-cache off` runs with the option `kv_cache` off, `--eager`
+runs eager PyTorch on the host CPU without the backend, `--cache-len` (default 256) is the `max_cache_len` of the
+cache, and `--json FILE` stores the numbers. The tool checks nothing: `hf_check.py --generate` is the check.
 
 `sw/torch/tools/fuzz_full.py` is a differential fuzzer of full mode. `fuzz_gen.py` draws a small model from a seed
 (linear layers, residuals, norms, activations, GLU, scalars, views, RoPE, attention with masks, CPU-only ops,

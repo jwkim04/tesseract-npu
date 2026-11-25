@@ -14,7 +14,7 @@ tests are in [`docs/torch-backend.md`](../../docs/torch-backend.md).
 | `CMakeLists.txt` | target `tesseract_torch_ext` (added by the top-level CMakeLists with `-DTSR_WITH_TORCH=ON`), ctests `torch_pytest*` |
 | `tesseract_torch/` | `__init__.py` (public API, registers the backend, `compile()`), `backend.py` (Dynamo backend, AOTAutograd, modes and options, regions of the aten graph and their rewrite to `device_region`, partition of the matmuls, `device_mm`), `lower.py` (full mode: patterns, layout rules and region formation, no device), `runtime.py` (device singleton, weight and constant caches, regions, the device shadows of KV caches, eager `linear` and `linear_ref`, `reference_linears`, counters, debug and verify), `quant.py` (`QuantLinear` and the custom op `tesseract::linear_blocks`), `_ext.py` (finds and imports `_tesseract_rt`) |
 | `tests/` | pytest suite (`spec_model.py`: independent numpy models; `test_lower.py`, `test_graph.py` and `test_kvcache.py` for full mode) |
-| `examples/hf_compare.py`, `tools/hf_check.py` | a Hugging Face causal LM (local safetensors) compiled against eager CPU, and the end-to-end numeric check (`--full-mode` for a region forward, `--generate` for `generate` with a static cache) |
+| `examples/hf_compare.py`, `examples/hf_generate.py`, `tools/hf_check.py` | a Hugging Face causal LM (local safetensors) compiled against eager CPU, generation with a static cache and its timing, and the end-to-end numeric check (`--full-mode` for a region forward, `--generate` for `generate` with a static cache) |
 | `tools/fuzz_full.py`, `tools/fuzz_gen.py` | the differential fuzzer of full mode: random models from a seed, run in eager, matmul mode and full mode, and the judge ([`docs/torch-backend.md`](../../docs/torch-backend.md) §6) |
 
 ## Build and use
@@ -100,7 +100,7 @@ cannot be placed, with one warning.
 | `TSR_TORCH_KV_CACHE` | `0` or `1` (default `1`): full mode puts the attention over a static KV cache on the device; `0` keeps it on the CPU; an explicit `kv_cache` wins; an unknown value is a `ValueError` in full mode |
 | `TSR_TORCH_DEBUG` | `1`: the partition of every compiled graph (each region with its inputs, outputs, weights and constants, the CPU nodes beside it with the reason, which matmuls go to the device and why the others stay on the CPU), the records of the first plan of each region, every upload, the counters at exit. `2`: also every device call. `3`: also the rewritten aten graphs. |
 | `TSR_TORCH_VERIFY` | `1`: every device matmul is also computed by the reference model (libtsr_ref on the weight rows read back from the device) and every region output by the reference executor (the region's op lists run on the host on the device's constants and weights), and compared bit for bit. A mismatch raises `TesseractError` naming the weight or region, the element and both values. |
-| `TSR_TORCH_EXT_DIR` | where to find `_tesseract_rt` if it is not on `sys.path`; `hf_check.py`, `hf_compare.py` and `fuzz_full.py` put this directory on `sys.path` (default `build/torch/python`) |
+| `TSR_TORCH_EXT_DIR` | where to find `_tesseract_rt` if it is not on `sys.path`; `hf_check.py`, `hf_compare.py`, `hf_generate.py` and `fuzz_full.py` put this directory on `sys.path` (default `build/torch/python`) |
 | `TSR_TORCH_HF_MODEL` | model directory of the opt-in `tests/test_hf.py` |
 | `TSR_RT_DEBUG` | the runtime's own log (`1`: uploads, calls and launches) |
 
@@ -163,8 +163,9 @@ The suites run in matmul mode (`tests/conftest.py`); `test_graph.py`, `test_kvca
 `StaticCache` through every state of the device shadow and checks each step against the stateless run of the whole
 sequence and against a fresh run on a copy of the host cache.
 
-`hf_compare.py` and `hf_check.py` take a local Hugging Face model directory (safetensors, `trust_remote_code=False`)
-and run with `-I`, because the model directory is data (`docs/torch-backend.md` §6 describes the checks):
+`hf_compare.py`, `hf_check.py` and `hf_generate.py` take a local Hugging Face model directory (safetensors,
+`trust_remote_code=False`) and run with `-I`, because the model directory is data (`docs/torch-backend.md` §6
+describes them):
 
 ```
 build/tools/torchvenv/bin/python -I sw/torch/examples/hf_compare.py models/hf/Qwen2.5-0.5B-Instruct \
@@ -176,6 +177,8 @@ build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL_DIR --forwa
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL_DIR --full-mode --tokens 16   # one region, one launch
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL_DIR --full-mode --tokens 16 --attention cpu
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL_DIR --generate --tokens 24 --gen 8   # generate with a static cache
+build/tools/torchvenv/bin/python -I sw/torch/examples/hf_generate.py models/hf/Qwen2.5-0.5B-Instruct \
+    [--kv-cache on|off | --eager] [--new 64] [--reps 3] [--cache-len 256] [--json OUT]
 build/tools/torchvenv/bin/python -I sw/torch/tools/fuzz_full.py --gen elem --start 0 --count 50   # fuzzer; --replay SEED
 ```
 

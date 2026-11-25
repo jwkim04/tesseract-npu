@@ -29,6 +29,7 @@ Accuracy is a separate question. Check a configuration with [klcheck](klcheck.md
 | `llama-completion` | decode and prefill rates of a raw prompt; with `TSR_STATS=1` it also prints the backend report and the PERF counter deltas |
 | `tsr-mtp` | speculative decoding with a model's MTP head; device cycles per phase for a list of draft lengths |
 | `sw/torch/tools/hf_check.py` | one forward of a Hugging Face model through the PyTorch backend: regions, launches, device cycles, host traffic and KL against eager PyTorch |
+| `sw/torch/examples/hf_generate.py` | generation through the PyTorch backend with a static KV cache: the time to the first token, the decode rate and the counters of each generation |
 | `klcheck`, `tsr-numcheck` | accuracy against the CPU and bit identity against the simulator |
 | `tsr-selftest` | identity of the device: `CAPS`, `T_MAX`, `NUM_CH`, kind table, firmware image id |
 | `tsr-top` | live utilization of the card during a run, with the execution mode of each process |
@@ -252,22 +253,24 @@ tsr-mtp -m TARGET.gguf [-md MTP.gguf] --spec-type draft-mtp --mtp-mode all --mtp
 
 ### PyTorch backend
 
-One forward of Qwen2.5-0.5B-Instruct over 32 prompt tokens through
-`torch.compile(model, backend="tesseract")`, on the same card and image, measured with
-`sw/torch/tools/hf_check.py` ([torch-backend.md](torch-backend.md) §6). The model is the Hugging Face
-checkpoint (bfloat16, 494 M parameters) run in float32, and its weights are uploaded as Q8_0.
+Qwen2.5-0.5B-Instruct through `torch.compile(model, backend="tesseract")`, measured with Tesseract
+Basis 1.7.0 on the same card with the Tesseract Core 1.2.1 image ([torch-backend.md](torch-backend.md)
+§6). The model is the Hugging Face checkpoint (bfloat16, 494 M parameters) run in float32, and its
+weights are uploaded as Q8_0.
+
+One forward over 32 prompt tokens, measured with `sw/torch/tools/hf_check.py`:
 
 | Mode | Device work of a forward | Launches | Host to device | Device to host | Device cycles | Forward time | KL against eager float32 | Top-1 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Matmul mode | 169 matrix products | 169 | 31.6 MB | 58.4 MB | 20.47 M | 0.132 s | 3.6e-3 | 30 of 32 |
+| Matmul mode | 169 matrix products | 169 | 31.6 MB | 58.4 MB | 20.47 M | 0.134 s | 3.6e-3 | 30 of 32 |
 | Full mode, `attention="cpu"` | 25 regions and 23 matrix products | 48 | 5.6 MB | 28.3 MB | 22.84 M | 0.145 s | 3.8e-3 | 31 of 32 |
-| Full mode | 1 region of 314 ops | 1 | 0.1 MB | 19.4 MB | 25.81 M | 0.147 s | 4.4e-2 | 28 of 32 |
+| Full mode | 1 region of 314 ops | 1 | 0.1 MB | 19.4 MB | 25.81 M | 0.145 s | 4.4e-2 | 28 of 32 |
 
 - The launches count every launch of a forward (the counter `rt_execs`): with `attention="cpu"` these
   are the 25 region launches that `hf_check.py` reports and the 23 matrix products between the
   regions. The launches, the host traffic and the forward time are those of the second forward of a
   process, which compiles nothing and uploads no weights or constants. Each mode ran in a second process
-  as well, with forward times of 0.132 s, 0.146 s and 0.146 s. The device cycles are the `PERF_CYCLES`
+  as well, with forward times of 0.133 s, 0.143 s and 0.146 s. The device cycles are the `PERF_CYCLES`
   of one forward.
 - In full mode with device attention the activations stay on the device: the host sends the embedded
   rows and reads the logits. The forward is not faster at this size. The norms, the activations, RoPE
@@ -281,10 +284,6 @@ checkpoint (bfloat16, 494 M parameters) run in float32, and its weights are uplo
   command ran on the simulator with `--save-logits FILE.npy` and on the card with `--expect FILE.npy`
   ([torch-backend.md](torch-backend.md) §2.3). In full mode every region output of the first forward
   equals the reference executor's bit for bit (`TSR_TORCH_VERIFY`).
-- Conditions: torch 2.9.1+cu130, transformers 5.20.2, 8 threads, the model at revision
-  `7ae557604adf67be50417f59c2c2f167def9a775` of Qwen/Qwen2.5-0.5B-Instruct, the extension of a build
-  with `TSR_WITH_XRT=ON` named by `TSR_TORCH_EXT_DIR`, `TSR_DEVICE=xrt`, the image of Conditions below,
-  and a firmware file of the same commit with the image id of Conditions (`bf6b5290d341e94c`).
 
 ```
 hf_check.py MODEL_DIR --forward-only --tokens 32                 # matmul mode
@@ -292,11 +291,66 @@ hf_check.py MODEL_DIR --full-mode --attention cpu --tokens 32
 hf_check.py MODEL_DIR --full-mode --tokens 32
 ```
 
+Generation of 64 new tokens after a prompt of 38 tokens, greedy, with a Hugging Face static KV cache of
+256 cells (`model.forward = tt.compile(model.forward)`, then
+`model.generate(..., cache_implementation="static")`), measured with `sw/torch/examples/hf_generate.py`:
+
+| Generation | Decode tok/s | Time per decode step | Launches per decode step | Device cycles per decode step | Time to the first token |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cached attention (the default) | 87.11 | 11.48 ms | 1 | 1.88 M | 124.6 ms |
+| `kv_cache=False` | 57.63 | 17.35 ms | 48 | 1.91 M | 116.3 ms |
+| Eager PyTorch on the host CPU | 14.35 | 69.70 ms | | | 106.4 ms |
+
+- The decode rate is the inverse of the mean time between two new tokens after the first, over the 63
+  decode steps of a generation. The time to the first token runs from the call of `generate` to the
+  first new token. The time of a token is the time at which `generate` hands it to its streamer. The
+  first generation of a process compiles and uploads the weights and is not timed. Each rate and time
+  is the median of the timed generations: nine in three processes for cached attention (84.53 to 87.49
+  tok/s), and six in two processes for each of the other rows (57.40 to 57.90 tok/s and 13.85 to 14.47
+  tok/s).
+- The launches and the device cycles of a decode step are the difference of the counters `rt_execs` and
+  `rt_perf_cycles` between a generation of 64 and one of 2 new tokens, over the 62 steps between them.
+- With cached attention a decode step is one region call and one launch, with two transfers to the
+  device and one from it. Its 1.88 M device cycles are 9.4 ms at the core clock of 200 MHz. The other
+  2.1 ms of a step are outside the launch: the host side (the generation loop of transformers, the
+  compiled graph and the backend) and the transfers, which were not timed apart.
+- With `kv_cache=False` the cache update and the attention over the cache run in float32 on the CPU and
+  end the regions, so a decode step is 25 region calls and 23 matrix products.
+- Eager PyTorch runs the same prompt, token counts and static cache without the backend, in float32
+  with 8 threads on the host of Conditions. Its first token comes sooner than the device's for this
+  prompt of 38 tokens. The gain of the device is in the decode steps.
+- The llama.cpp path runs the GGUF Q8_0 file of the model (`qwen2.5-0.5b-instruct-q8_0.gguf` of
+  Qwen/Qwen2.5-0.5B-Instruct-GGUF, sha256
+  `ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e`) at 103.08 tok/s decode and 324.07
+  tok/s prefill in the same session: `tg64`, which decodes 64 tokens from an empty context, and `pp38`
+  of `llama-bench`.
+- `hf_check.py --generate` passes on the card. Teacher forced with the 24 prompt tokens and the 8
+  tokens that eager float32 generated, the logits of the 31 positions equal the simulator's bit for bit
+  and equal the stateless full-mode forward of the sequence bit for bit, and every region output equals
+  the reference executor's. KL(eager float32 || device) is 3.8e-2 in the mean with the same top token
+  at 28 of 31 positions, and 5.6e-3 (29 of 31) against eager PyTorch with q8_0 Q, K and V.
+- Conditions: torch 2.9.1+cu130, transformers 5.20.2, 8 threads, the model at revision
+  `7ae557604adf67be50417f59c2c2f167def9a775` of Qwen/Qwen2.5-0.5B-Instruct, the extension of a build
+  with `TSR_WITH_XRT=ON` named by `TSR_TORCH_EXT_DIR`, `TSR_DEVICE=xrt`, the Tesseract Core 1.2.1 image
+  of Conditions below, and the firmware file of that build, Tesseract Basis 1.7.0 with the image id
+  `6584228aef0efb00`. The forward and the generation ran in one session, one process after the other.
+  The 1-minute load average at the start of a generation process was 0.49 to 1.36 for cached attention,
+  2.88 and 2.91 for `kv_cache=False`, and 0.85 and 2.44 for eager PyTorch.
+
+```
+hf_generate.py MODEL_DIR --new 64 --reps 3                     # cached attention
+hf_generate.py MODEL_DIR --new 64 --reps 3 --kv-cache off
+hf_generate.py MODEL_DIR --new 64 --reps 3 --eager
+hf_generate.py MODEL_DIR --new 2 --reps 3                      # also with --kv-cache off: the counters of a decode step
+hf_check.py MODEL_DIR --generate --tokens 24 --gen 8
+LLAMA_ATTN_ROT_DISABLE=1 llama-bench -m qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -p 38 -n 64 -r 3 -t 8
+```
+
 ### Conditions
 
 - Host: AMD Ryzen 7 9700X (8 cores, 16 threads), 14.7 GiB RAM, Linux 7.0.0-38-generic (Ubuntu 24.04),
-  XRT 2.18.179 (2024.2). `-t 8`. The 1-minute load average at the start of the `llama-bench` runs was
-  2.0 to 4.8.
+  XRT 2.18.179 (2024.2). `-t 8`. The 1-minute load average at the start of the `llama-bench` runs of
+  the seven models was 2.0 to 4.8.
 - Card: Alveo U200 with the shell `xilinx_u200_gen3x16_xdma_base_2` (platform 202110.1), PCIe Gen3 x16,
   32 GiB of DDR4 in four channels of 8 GiB (measured at open).
 - Image: `tsr_u200_k4.xclbin`, sha256
@@ -317,12 +371,15 @@ hf_check.py MODEL_DIR --full-mode --tokens 32
   Tesseract Basis 1.5.0 (ABI 1), image id `bf6b5290d341e94c`, 23 kinds, kind table signature 0x249c.
 - Software: this repository at commit 3f434d8, Release build with `TSR_WITH_XRT=ON`, llama.cpp
   pinned at e3797b184 (b11810) with `third_party/patches/0001-ggml-tesseract.patch`.
-- Tesseract Basis 1.6.0 (firmware sha256
-  `43cd40fc2e27e2fdc5483ab0c4a699f6861747fd88372d2d9bf43f1aaa783b61`, image id
-  `59571cb73181324e`) adds host tools. Its firmware, kinds, backend and transport are those of
-  Basis 1.5.0 apart from the version number. On the simulator a decode token of Qwen2.5 0.5B Q8_0
-  takes the same device cycles with both, and `tsr-selftest` passes with it on the card with the
-  Core 1.2.1 image. The numbers here were not measured again.
+- Tesseract Basis 1.7.0 (firmware sha256
+  `ad4ef9b1b77683dc7379970d7d26c2a1e37eedfebecb6b5b502c5b739fd35829`, image id
+  `6584228aef0efb00`) changes the PyTorch backend and its runtime. Its firmware, kinds, ggml backend
+  and transport are those of Basis 1.5.0 apart from the version number. On the simulator a decode
+  token of Qwen2.5 0.5B Q8_0 takes the same device cycles with both, and `tsr-selftest` passes with
+  it on the card with the Core 1.2.1 image. The numbers of the llama.cpp tables here were not
+  measured again. As a check, Gemma 4 E2B ran once more with Basis 1.7.0 on the Core 1.2.1 image:
+  77.60 tok/s prefill and 24.44 tok/s decode. The numbers of the section PyTorch backend were
+  measured with Basis 1.7.0 on the Core 1.2.1 image.
 - Mode: full mode (`TSR_KINDS` unset), the dual weight stream on (`TSR_MVM_DUAL` unset), Tesseract Pivot on
   (`TSR_PIVOT` unset), Q8_0 KV cache, flash attention on. The chat run uses greedy sampling.
 - Power: the card board power from the U200 sensors (`power1_input` of the hwmon node of the card's

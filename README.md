@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
   <a href="rtl/CHANGELOG.md"><img alt="Core: 1.2.1" src="https://img.shields.io/badge/core-1.2.1-green?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Basis: 1.6.0" src="https://img.shields.io/badge/basis-1.6.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.7.0" src="https://img.shields.io/badge/basis-1.7.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -55,18 +55,24 @@ simulator, the records by layer, and the device counters ([profiling](docs/prof-
 
 ## Latest releases
 
-**Tesseract Basis 1.6.0** (2026-11-18), the firmware SDK and the host side
+**Tesseract Basis 1.7.0** (2026-11-25), the firmware SDK and the host side
 
-- `./quickstart.sh` takes a fresh clone to a model that generates text on the simulated NPU, with no card. It builds
-  the stack, checks it with `tsr-selftest`, downloads Qwen2.5 0.5B Q8_0 with a checksum, runs it and profiles one
-  decode token. `./quickstart.sh chat` is a chat on the simulator ([Try it without a card](#try-it-without-a-card)).
-- On a desktop with 16 logical CPUs and 8 build jobs, the first run after a fresh clone took 121 s, the 0.7 GB
-  model download included, and the build took 83 s of it. A second run took 5 s.
-- The profile report takes a simulator run alone: `sw/tools/prof/prof_report.py report --sim DIR --out OUT` gives the
-  timeline, the records and the counters of the simulated device without a card run to compare with.
-- The firmware, the kinds and the backend are those of Basis 1.5.0 apart from the version number. Every kind keeps its
-  numerics revision, and the decode token that `quickstart.sh` profiles takes the same device cycles on the simulator
-  with both versions. Basis 1.6.0 runs on Core 1.2.1, 1.2.0, 1.1.0 and 1.0.0.
+- The PyTorch backend generates text with the KV cache on the device. With a Hugging Face static KV cache
+  (`model.forward = tt.compile(model.forward)`, `model.generate(..., cache_implementation="static")`) the attention
+  of every step runs on the device over the K and V rows that the device keeps. For a Qwen2.5 decoder a decode step
+  is one launch that sends one row ([Quick start](#quick-start)).
+- On the card Qwen2.5-0.5B-Instruct decodes at 87.11 tok/s this way. With the option off (`kv_cache=False`), where
+  the attention over the cache runs on the CPU and a decode step is 48 launches, it decodes at 57.63 tok/s. Eager
+  PyTorch on the host CPU decodes at 14.35 tok/s, and the llama.cpp path decodes the GGUF Q8_0 file of the model at
+  103.08 tok/s.
+- A graph run of the runtime moves its data in fewer transfers. In that generation a decode step is two writes to
+  the device, the positions with the mask data and then the row, and one read from it. The counters `rt_h2d_writes`
+  and `rt_d2h_reads` count them.
+- `sw/torch/examples/hf_generate.py` runs such a generation and prints the time to the first token, the decode rate
+  and the counters of every generation. `hf_check.py --generate` checks one against the stateless forward and the
+  reference executor.
+- The firmware, the kinds and the llama.cpp path are those of Basis 1.6.0 apart from the version number. Basis 1.7.0
+  runs on Core 1.2.1, 1.2.0, 1.1.0 and 1.0.0.
 
 **Tesseract Core 1.2.1** (2026-11-18), the RTL and the Alveo U200 image
 

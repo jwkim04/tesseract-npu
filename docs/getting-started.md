@@ -216,6 +216,8 @@ print(tok.decode(out[0]))
 ```
 
 `hf_check.py MODEL_DIR --generate` checks it ([`docs/torch-backend.md`](torch-backend.md) §1, §3.10 and §6).
+`sw/torch/examples/hf_generate.py MODEL_DIR` runs such a generation with its own prompt and prints the time to the
+first token and the decode rate.
 
 `-DTSR_TORCH_PYTHON=<interpreter>` selects the Python with torch. `hf_check.py` compares a Hugging Face model
 through the backend in matmul mode with eager PyTorch (`--download Qwen/Qwen2.5-0.5B-Instruct` fills the model

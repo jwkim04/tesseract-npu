@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-25
+
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 23 kinds (kind table signature 0x249c).
+It runs on Tesseract Core 1.2.1, 1.2.0, 1.1.0 and 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)). The changes are in
+the PyTorch backend (`sw/torch`) and its runtime (`sw/rt`). The firmware, the kinds, the ggml backend, the transport
+and the simulator are those of Basis 1.6.0 apart from the version number, so on the llama.cpp path no result bit and
+no cycle count changes.
+
 ### Added
 
 - Cached attention in full mode of the PyTorch backend. With a Hugging Face static KV cache
@@ -230,7 +238,8 @@ Basis ABI 1. Targets Tesseract Core capability 1.0.
 - ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
 - Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
 
-[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.6.0...HEAD
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.7.0...HEAD
+[1.7.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.6.0...basis-v1.7.0
 [1.6.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.5.0...basis-v1.6.0
 [1.5.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.4.0...basis-v1.5.0
 [1.4.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.3.0...basis-v1.4.0
